@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_dropdown_field.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
 
 /// Multi-Product Message composer — up to 30 products across 10 sections.
@@ -167,8 +168,12 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
               _field(_toCtrl, 'Recipient Phone *', '+919876543210',
                   Icons.phone_rounded, required: true),
               const SizedBox(height: 14),
-              _field(_catalogCtrl, 'Catalog ID *', 'e.g. 1537566713439863',
-                  Icons.storage_rounded, required: true),
+              CatalogDropdownField(
+                value: _catalogCtrl.text,
+                onChanged: (val) {
+                  setState(() => _catalogCtrl.text = val);
+                },
+              ),
               const SizedBox(height: 14),
               _field(_headerCtrl, 'Header Text *', 'e.g. Our Products',
                   Icons.title_rounded, required: true, maxLength: 60),
@@ -643,9 +648,12 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
               _buildField(_toCtrl, 'Recipient Phone *', '+919876543210',
                   Icons.phone_rounded, required: true),
               const SizedBox(height: 14),
-              _buildField(_catalogCtrl, 'Catalog ID *',
-                  'e.g. 1537566713439863', Icons.storage_rounded,
-                  required: true),
+              CatalogDropdownField(
+                value: _catalogCtrl.text,
+                onChanged: (val) {
+                  setState(() => _catalogCtrl.text = val);
+                },
+              ),
               const SizedBox(height: 14),
               _buildField(_bodyCtrl, 'Carousel Body Text *',
                   'e.g. Check out our featured products!',

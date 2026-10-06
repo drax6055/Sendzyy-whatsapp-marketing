@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
-import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/chatbot/data/models/flow_graph.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/models/whatsapp_flow_model.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/repositories/whatsapp_flow_repository.dart';

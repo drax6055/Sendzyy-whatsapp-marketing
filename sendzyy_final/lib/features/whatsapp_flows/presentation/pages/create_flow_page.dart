@@ -225,6 +225,8 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                   : const Icon(Icons.rocket_launch_rounded, size: 18),
               label: Text(_isPublishing ? 'Publishing...' : 'Save & Publish to Meta'),
               style: ElevatedButton.styleFrom(
+                minimumSize: Size.zero,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 backgroundColor: const Color(0xFF25D366),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -387,7 +389,7 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
             children: [
               Expanded(
                 child: DropdownButtonFormField<String>(
-                  value: _selectedCategory,
+                  initialValue: _selectedCategory,
                   decoration: InputDecoration(
                     labelText: 'Category',
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
@@ -440,6 +442,8 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('Add Field'),
                 style: ElevatedButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   backgroundColor: AppTheme.primaryColor,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),

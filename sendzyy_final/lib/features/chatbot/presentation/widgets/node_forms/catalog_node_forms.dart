@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_dropdown_field.dart';
 import 'package:iFloraBuzz/features/chatbot/data/models/flow_graph.dart';
 
 /// Properties panel form for a Catalog Message node.
@@ -193,7 +194,13 @@ class _SingleProductNodeFormState extends State<SingleProductNodeForm> {
           description: 'Highlights one product with image, price, and "Add to cart".',
         ),
         const SizedBox(height: 16),
-        _field(_catalogCtrl, 'Catalog ID *', 'e.g. 1537566713439863'),
+        CatalogDropdownField(
+          value: _catalogCtrl.text,
+          onChanged: (val) {
+            _catalogCtrl.text = val;
+            _emit();
+          },
+        ),
         const SizedBox(height: 12),
         _field(_productCtrl, 'Product Retailer ID *', 'e.g. 2lc20305pt'),
         const SizedBox(height: 12),
@@ -335,7 +342,13 @@ class _MultiProductNodeFormState extends State<MultiProductNodeForm> {
           description: 'Up to 30 products in 10 sections with cart support.',
         ),
         const SizedBox(height: 16),
-        _field(_catalogCtrl, 'Catalog ID *', 'e.g. 1537566713439863'),
+        CatalogDropdownField(
+          value: _catalogCtrl.text,
+          onChanged: (val) {
+            _catalogCtrl.text = val;
+            _emit();
+          },
+        ),
         const SizedBox(height: 10),
         _field(_headerCtrl, 'Header *', 'e.g. Our Products'),
         const SizedBox(height: 10),
@@ -568,7 +581,13 @@ class _ProductCarouselNodeFormState extends State<ProductCarouselNodeForm> {
           description: '2–10 horizontal product cards, each "Add to cart" ready.',
         ),
         const SizedBox(height: 16),
-        _field(_catalogCtrl, 'Catalog ID *', 'e.g. 1537566713439863'),
+        CatalogDropdownField(
+          value: _catalogCtrl.text,
+          onChanged: (val) {
+            _catalogCtrl.text = val;
+            _emit();
+          },
+        ),
         const SizedBox(height: 10),
         _field(_bodyCtrl, 'Body *', 'e.g. Featured products!', maxLines: 2, maxLength: 1024),
         const SizedBox(height: 16),

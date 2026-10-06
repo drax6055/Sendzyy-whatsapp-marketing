@@ -4,6 +4,7 @@ import 'package:iFloraBuzz/core/di/injection.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_dropdown_field.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
 
 /// Bottom sheet picker that lets an agent select a product and send
@@ -501,19 +502,11 @@ class _SingleProductQuickSendState extends State<_SingleProductQuickSend> {
                 ),
               ),
               const SizedBox(height: 14),
-              TextFormField(
-                controller: _catalogCtrl,
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Catalog ID required' : null,
-                decoration: InputDecoration(
-                  labelText: 'Catalog ID *',
-                  hintText: 'e.g. 1537566713439863',
-                  prefixIcon: const Icon(Icons.storage_rounded, size: 18),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 12),
-                ),
+              CatalogDropdownField(
+                value: _catalogCtrl.text,
+                onChanged: (val) {
+                  setState(() => _catalogCtrl.text = val);
+                },
               ),
               const SizedBox(height: 14),
               TextFormField(

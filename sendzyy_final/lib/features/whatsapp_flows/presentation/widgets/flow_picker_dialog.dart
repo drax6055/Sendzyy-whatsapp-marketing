@@ -156,6 +156,8 @@ class _FlowPickerDialogState extends State<FlowPickerDialog> {
                         icon: const Icon(Icons.add),
                         label: const Text('Create New Flow'),
                         style: ElevatedButton.styleFrom(
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
                           backgroundColor: AppTheme.primaryColor,
                           foregroundColor: Colors.white,
                         ),
@@ -182,7 +184,7 @@ class _FlowPickerDialogState extends State<FlowPickerDialog> {
                         ),
                         const SizedBox(height: 6),
                         DropdownButtonFormField<WhatsAppFlowModel>(
-                          value: _selectedFlow,
+                          initialValue: _selectedFlow,
                           isExpanded: true,
                           decoration: InputDecoration(
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
@@ -263,6 +265,8 @@ class _FlowPickerDialogState extends State<FlowPickerDialog> {
             icon: const Icon(Icons.send_rounded, size: 16),
             label: Text(widget.onSendFlow != null ? 'Send Flow' : 'Select Flow'),
             style: ElevatedButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
               backgroundColor: const Color(0xFF25D366),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),

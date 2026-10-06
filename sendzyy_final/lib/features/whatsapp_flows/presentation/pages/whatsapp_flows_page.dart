@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
+import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
 import 'package:iFloraBuzz/core/utils/snackbar_utils.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/models/whatsapp_flow_model.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/repositories/whatsapp_flow_repository.dart';
@@ -180,6 +181,8 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
               }
             },
             style: ElevatedButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
               backgroundColor: const Color(0xFF25D366),
               foregroundColor: Colors.white,
             ),
@@ -235,6 +238,8 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
               }
             },
             style: ElevatedButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
               backgroundColor: const Color(0xFF2563EB),
               foregroundColor: Colors.white,
             ),
@@ -293,6 +298,8 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
               }
             },
             style: ElevatedButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
               backgroundColor: const Color(0xFFEF4444),
               foregroundColor: Colors.white,
             ),
@@ -313,100 +320,181 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
           f.status.toLowerCase().contains(q);
     }).toList();
 
-    return SizedBox.expand(
-      child: Container(
-        color: const Color(0xFFF8FAFC),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHeader(),
-            _buildTabBar(),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                children: [
-                  _buildFlowsTab(filteredFlows),
-                  _buildSubmissionsTab(),
-                ],
-              ),
+    return Container(
+      color: const Color(0xFFF8FAFC),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildHeader(),
+          _buildTabBar(),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildFlowsTab(filteredFlows),
+                _buildSubmissionsTab(),
+              ],
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSyncMetaButton() {
+    return OutlinedButton.icon(
+      onPressed: _syncingMeta ? null : () => _loadFlows(sync: true),
+      icon: _syncingMeta
+          ? const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF2E7D32)),
+            )
+          : const Icon(Icons.sync_rounded, size: 16, color: Color(0xFF2E7D32)),
+      label: Text(
+        _syncingMeta ? 'Syncing...' : 'Sync Meta',
+        style: const TextStyle(
+          color: Color(0xFF2E7D32),
+          fontWeight: FontWeight.w600,
+          fontSize: 13,
         ),
+      ),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: const Color(0xFF2E7D32),
+        side: const BorderSide(color: Color(0xFF2E7D32), width: 1.2),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      ),
+    );
+  }
+
+  Widget _buildCreateFlowButton() {
+    return ElevatedButton.icon(
+      onPressed: _openCreateFlow,
+      icon: const Icon(Icons.add_rounded, size: 18),
+      label: const Text(
+        'Create New Flow',
+        style: TextStyle(
+          fontWeight: FontWeight.w600,
+          fontSize: 13,
+        ),
+      ),
+      style: ElevatedButton.styleFrom(
+        minimumSize: Size.zero,
+        backgroundColor: AppTheme.primaryColor,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
     );
   }
 
   Widget _buildHeader() {
+    final isMobile = ResponsiveHelper.isMobile(context);
+
     return Container(
-      width: double.infinity,
       color: Colors.white,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 14 : 20,
+        vertical: isMobile ? 12 : 16,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE8F5E9),
-                  borderRadius: BorderRadius.circular(12),
+          if (!isMobile)
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.schema_rounded, color: Color(0xFF2E7D32), size: 26),
                 ),
-                child: const Icon(Icons.schema_rounded, color: Color(0xFF2E7D32), size: 26),
-              ),
-              const SizedBox(width: 14),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'WhatsApp Flows',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1E293B),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'WhatsApp Flows',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1E293B),
+                        ),
                       ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Interactive forms & surveys in WhatsApp',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                _buildSyncMetaButton(),
+                const SizedBox(width: 12),
+                _buildCreateFlowButton(),
+              ],
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8F5E9),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.schema_rounded, color: Color(0xFF2E7D32), size: 22),
                     ),
-                    SizedBox(height: 2),
-                    Text(
-                      'Interactive forms & surveys in WhatsApp',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF64748B),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'WhatsApp Flows',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1E293B),
+                            ),
+                          ),
+                          Text(
+                            'Interactive forms & surveys in WhatsApp',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 16),
-              // Sync Meta Button
-              OutlinedButton.icon(
-                onPressed: _syncingMeta ? null : () => _loadFlows(sync: true),
-                icon: _syncingMeta
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF2E7D32)),
-                      )
-                    : const Icon(Icons.sync_rounded, size: 16, color: Color(0xFF2E7D32)),
-                label: Text(
-                  _syncingMeta ? 'Syncing...' : 'Sync Meta',
-                  style: const TextStyle(
-                    color: Color(0xFF2E7D32),
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                  ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    _buildSyncMetaButton(),
+                    _buildCreateFlowButton(),
+                  ],
                 ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF2E7D32),
-                  side: const BorderSide(color: Color(0xFF2E7D32), width: 1.2),
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                ),
-              ),
-            ],
-          ),
+              ],
+            ),
           const SizedBox(height: 14),
           // Search Bar
           TextField(
@@ -430,7 +518,6 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
 
   Widget _buildTabBar() {
     return Container(
-      width: double.infinity,
       color: Colors.white,
       child: TabBar(
         controller: _tabController,
@@ -493,6 +580,8 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                 icon: const Icon(Icons.add),
                 label: const Text('Create New Flow'),
                 style: ElevatedButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   backgroundColor: AppTheme.primaryColor,
                   foregroundColor: Colors.white,
                 ),
@@ -597,20 +686,21 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
               ],
             ),
             const Divider(height: 24, color: Color(0xFFF1F5F9)),
-            // Details summary and action buttons (matching Image 2)
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            // Details summary and action buttons
+            Wrap(
+              spacing: 16,
+              runSpacing: 10,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Expanded(
-                  child: Wrap(
-                    spacing: 16,
-                    runSpacing: 8,
-                    children: [
-                      _badgeInfo(Icons.category_outlined, flow.categories.join(', ')),
-                      _badgeInfo(Icons.touch_app_outlined, 'CTA: ${flow.ctaText}'),
-                      _badgeInfo(Icons.inbox_outlined, '${flow.submissionsCount} submissions'),
-                    ],
-                  ),
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 8,
+                  children: [
+                    _badgeInfo(Icons.category_outlined, flow.categories.join(', ')),
+                    _badgeInfo(Icons.touch_app_outlined, 'CTA: ${flow.ctaText}'),
+                    _badgeInfo(Icons.inbox_outlined, '${flow.submissionsCount} submissions'),
+                  ],
                 ),
                 Wrap(
                   spacing: 8,
@@ -659,24 +749,30 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
               ],
             ),
             const SizedBox(height: 12),
-            // Full-width Send Test Button (matching Image 2)
-            SizedBox(
-              width: double.infinity,
-              height: 40,
-              child: ElevatedButton.icon(
-                onPressed: () => _showTestSendDialog(flow),
-                icon: const Icon(Icons.send_rounded, size: 15),
-                label: const Text(
-                  'Send Test',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+            // Full-width Send Test Button
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 40,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _showTestSendDialog(flow),
+                      icon: const Icon(Icons.send_rounded, size: 15),
+                      label: const Text(
+                        'Send Test',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: Size.zero,
+                        backgroundColor: const Color(0xFF25D366),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        elevation: 0,
+                      ),
+                    ),
+                  ),
                 ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF25D366),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  elevation: 0,
-                ),
-              ),
+              ],
             ),
           ],
         ),
@@ -759,7 +855,6 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
               childrenPadding: const EdgeInsets.all(16),
               children: [
                 Container(
-                  width: double.infinity,
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),

@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_dropdown_field.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
 
 /// Form to compose and send a Catalog Message.
@@ -358,37 +359,13 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
                   Icons.phone_rounded, required: true),
               const SizedBox(height: 14),
 
-              // Catalog ID field with selector support
-              if (state is CatalogSettingsLoaded && state.catalogs.length > 1) ...[
-                DropdownButtonFormField<String>(
-                  initialValue: state.catalogs.any((c) => c.catalogId == _catalogCtrl.text)
-                      ? _catalogCtrl.text
-                      : state.activeCatalogId,
-                  decoration: InputDecoration(
-                    labelText: 'Target Meta Catalog *',
-                    prefixIcon: const Icon(Icons.storage_rounded, size: 18),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                  ),
-                  items: state.catalogs.map((c) {
-                    return DropdownMenuItem<String>(
-                      value: c.catalogId,
-                      child: Text(
-                        '${c.name} (${c.catalogId})',
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                    );
-                  }).toList(),
-                  onChanged: (val) {
-                    if (val != null) setState(() => _catalogCtrl.text = val);
-                  },
-                ),
-              ] else ...[
-                _buildField(_catalogCtrl, 'Catalog ID *',
-                    'e.g. 1537566713439863', Icons.storage_rounded,
-                    required: true),
-              ],
+              // Catalog ID field
+              CatalogDropdownField(
+                value: _catalogCtrl.text,
+                onChanged: (val) {
+                  setState(() => _catalogCtrl.text = val);
+                },
+              ),
               const SizedBox(height: 14),
 
               // Product SKU with Browse button

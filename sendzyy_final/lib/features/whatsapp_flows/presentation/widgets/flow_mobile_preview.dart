@@ -142,6 +142,7 @@ class FlowMobilePreview extends StatelessWidget {
                 child: ElevatedButton(
                   onPressed: () {},
                   style: ElevatedButton.styleFrom(
+                    minimumSize: Size.zero,
                     backgroundColor: const Color(0xFF25D366),
                     foregroundColor: Colors.white,
                     elevation: 0,
