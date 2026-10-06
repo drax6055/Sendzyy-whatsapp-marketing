@@ -13,13 +13,24 @@
 [![Platform Support](https://img.shields.io/badge/Platform-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Windows-blue)](https://flutter.dev/multi-platform)
 
 <p align="center">
+  <img src="https://img.shields.io/badge/topic-whatsapp--marketing-green?style=flat-square" alt="whatsapp-marketing"/>
+  <img src="https://img.shields.io/badge/topic-whatsapp--cloud--api-blue?style=flat-square" alt="whatsapp-cloud-api"/>
+  <img src="https://img.shields.io/badge/topic-whatsapp--flows-purple?style=flat-square" alt="whatsapp-flows"/>
+  <img src="https://img.shields.io/badge/topic-conversational--commerce-orange?style=flat-square" alt="conversational-commerce"/>
+  <img src="https://img.shields.io/badge/topic-chatbot--builder-red?style=flat-square" alt="chatbot-builder"/>
+  <img src="https://img.shields.io/badge/topic-bulk--whatsapp--sender-teal?style=flat-square" alt="bulk-whatsapp-sender"/>
+  <img src="https://img.shields.io/badge/topic-flutter--monorepo-black?style=flat-square" alt="flutter-monorepo"/>
+</p>
+
+<p align="center">
   <a href="#-what-is-sendzyy">Overview</a> •
   <a href="#-core-capabilities--features">Features</a> •
   <a href="#-system-architecture">Architecture</a> •
   <a href="#-competitive-matrix">Comparison</a> •
   <a href="#-quickstart-guide">Quickstart</a> •
   <a href="#-configuration--environment-variables">Configuration</a> •
-  <a href="#-frequently-asked-questions-faq">FAQ</a>
+  <a href="#-frequently-asked-questions-faq">FAQ</a> •
+  <a href="#-seo-aeo--geo-keyword-taxonomy">Keywords & Topics</a>
 </p>
 
 </div>
@@ -220,7 +231,7 @@ Create a `.env` file in `sendzyy_final_backend/` with the following keys:
 | Environment Variable | Description | Example / Default |
 | :--- | :--- | :--- |
 | `PORT` | Backend HTTP port | `5000` |
-| `MONGO_URI` | MongoDB connection connection string | `mongodb://localhost:27017/sendzyy` |
+| `MONGO_URI` | MongoDB connection string | `mongodb://localhost:27017/sendzyy` |
 | `JWT_SECRET` | Secret key for JSON Web Tokens | `your_ultra_secure_jwt_secret` |
 | `META_APP_ID` | Meta Developer App ID | `123456789012345` |
 | `META_APP_SECRET` | Meta Developer App Secret | `abc123def456...` |
@@ -244,6 +255,28 @@ Sendzyy is built using Flutter, supporting **Web browsers (Chrome, Edge, Safari)
 
 ### How does the multi-phase retry system work?
 When sending bulk messages, temporary recipient issues (network offline, expired sessions, or carrier delays) can lead to delivery failures. Sendzyy automatically puts unconfirmed messages into scheduled retry phases (e.g., Phase 1 after 2 hours, Phase 2 after 6 hours), maximizing campaign conversion rates without duplicate messaging.
+
+---
+
+## 🏷️ SEO, AEO & GEO Keyword Taxonomy
+
+For maximum search discoverability, indexation, and generative citation across Google, Bing, Perplexity, ChatGPT, and Claude:
+
+| Dimension | Target Keywords & Entities |
+| :--- | :--- |
+| **Primary Head Terms** | `WhatsApp Marketing Software`, `WhatsApp Automation Platform`, `WhatsApp Cloud API Monorepo`, `WhatsApp Business API Solution` |
+| **Conversational Commerce** | `WhatsApp Product Catalog`, `WhatsApp Cart Checkout`, `Single Product Message (SPM)`, `Multi Product Message (MPM)` |
+| **Interactive Messaging** | `WhatsApp Flows Builder`, `In-chat Interactive Forms`, `Native WhatsApp Surveys`, `WhatsApp Lead Generation` |
+| **Campaign & Delivery Optimization** | `Bulk WhatsApp Sender`, `Multi-Phase Campaign Retry Engine`, `WhatsApp Message Scheduler`, `Meta Rate Limit Backoff` |
+| **Developer & Architecture** | `Flutter WhatsApp App`, `Node.js WhatsApp Backend`, `MongoDB WhatsApp CRM`, `Meta Embedded Signup Integration`, `Meta Webhook Verification` |
+| **Alternative & Comparison Queries** | `WATI Alternative`, `AiSensy Alternative`, `Twilio WhatsApp Alternative`, `Self-Hosted WhatsApp Marketing`, `Open Source WhatsApp CRM` |
+
+### 📌 GitHub Repository Topics (Copy-Paste)
+
+Add these topics in your GitHub repository's **About ⚙️** section:
+```text
+whatsapp-marketing, whatsapp-cloud-api, whatsapp-business-api, whatsapp-flows, whatsapp-automation, whatsapp-commerce, bulk-whatsapp-sender, meta-cloud-api, flutter, flutter-app, nodejs, expressjs, mongodb, chatbot, crm, marketing-automation, conversational-commerce, monorepo
+```
 
 ---
 
