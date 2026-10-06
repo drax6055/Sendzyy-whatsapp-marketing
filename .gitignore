@@ -1,0 +1,87 @@
+# =============================================================================
+# Root .gitignore for Sendzyy (Monorepo: Frontend + Backend)
+# =============================================================================
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+*.swp
+*.class
+*.pyc
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.history/
+.atom/
+.buildlog/
+
+# Secrets & Environment Variables (Never commit sensitive credentials)
+.env
+.env.*
+!.env.example
+serviceAccountKey.json
+*.keystore
+
+# Logs & Archives
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+server.log
+*.zip
+
+# -----------------------------------------------------------------------------
+# Backend (Node.js)
+# -----------------------------------------------------------------------------
+node_modules/
+jspm_packages/
+web_stage/
+
+# -----------------------------------------------------------------------------
+# Frontend (Flutter / Dart)
+# -----------------------------------------------------------------------------
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+**/build/
+**/doc/api/
+
+# Android
+.gradle/
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+**/android/app/src/main/assets/flutter_assets
+**/android/app/build/
+**/android/build/
+test_output.txt
+
+# iOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/DerivedData/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/flutter_plugins/
+**/ios/Flutter/ephemeral/
+
+# macOS / Linux / Windows / Web
+**/macos/Flutter/ephemeral/
+**/macos/Pods/
+**/macos/.symlinks/
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
+.web_assets/
+.web_entrypoint.js

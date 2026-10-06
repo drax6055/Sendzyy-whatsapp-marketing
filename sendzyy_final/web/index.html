@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Sendzyy">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png" />
+
+  <title>Sendzyy</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<script>
+  // Prevent accidental close/refresh on Web (e.g. during active broadcasts)
+  window.addEventListener('beforeunload', function (e) {
+    var confirmationMessage = 'Are you sure you want to exit? If a campaign or broadcast is in progress, leaving may interrupt it.';
+    (e || window.event).returnValue = confirmationMessage;
+    return confirmationMessage;
+  });
+
+  // Captured WABA/Phone IDs from the embedded signup postMessage
+  window._metaSignupData = null;
+
+  const allowedOrigins = [
+    'https://www.facebook.com',
+    'https://web.facebook.com',
+    'https://business.facebook.com',
+    'https://facebook.com'
+  ];
+
+  // 1. Meta JS SDK initialization
+  window.fbAsyncInit = function () {
+    console.log('[MetaSignup-GlobalInit] window.fbAsyncInit called. Initializing Meta JS SDK...');
+    try {
+      FB.init({
+        appId: '1509853364110343',
+        autoLogAppEvents: true,
+        xfbml: true,
+        version: 'v25.0'
+      });
+      console.log('[MetaSignup-GlobalInit] Meta JS SDK initialized successfully (v25.0).');
+    } catch (err) {
+      console.error('[MetaSignup-GlobalInit] FB.init failed inside fbAsyncInit:', err);
+    }
+  };
+
+  // 2. Listen for postMessage from Meta embedded signup popup/iframe
+  // This fires when user completes setup and carries waba_id + phone_number_id + code
+  window.addEventListener('message', (event) => {
+    console.log('[MetaSignup-GlobalMessage] Message event received from origin:', event.origin);
+    if (!allowedOrigins.includes(event.origin)) {
+      console.warn('[MetaSignup-GlobalMessage] Ignored message from unauthorized origin:', event.origin);
+      return;
+    }
+    try {
+      const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+      console.log('[MetaSignup-GlobalMessage] Parsed message payload:', JSON.stringify(data, null, 2));
+      if (data && data.type === 'WA_EMBEDDED_SIGNUP') {
+        console.log('[MetaSignup-GlobalMessage] Processing WA_EMBEDDED_SIGNUP message action.');
+        if (data.data) {
+          window._metaSignupData = window._metaSignupData || {};
+          if (data.data.waba_id) {
+            window._metaSignupData.wabaId = data.data.waba_id;
+            console.log('[MetaSignup-GlobalMessage] -> Captured WABA ID:', data.data.waba_id);
+          }
+          if (data.data.phone_number_id) {
+            window._metaSignupData.phoneNumberId = data.data.phone_number_id;
+            console.log('[MetaSignup-GlobalMessage] -> Captured Phone Number ID:', data.data.phone_number_id);
+          }
+          if (data.data.code) {
+            window._metaSignupData.code = data.data.code;
+            console.log('[MetaSignup-GlobalMessage] -> Captured Auth Code:', data.data.code);
+          }
+          if (data.data.business_portfolio_id) {
+            window._metaSignupData.businessPortfolioId = data.data.business_portfolio_id;
+            console.log('[MetaSignup-GlobalMessage] -> Captured Business Portfolio ID:', data.data.business_portfolio_id);
+          }
+          const sessionId = data.data.session_id || data.data.sessionId || '';
+          if (sessionId) {
+            window._metaSignupData.sessionId = sessionId;
+            console.log('[MetaSignup-GlobalMessage] -> Captured Session ID:', sessionId);
+          }
+        } else {
+          console.warn('[MetaSignup-GlobalMessage] Received WA_EMBEDDED_SIGNUP event but payload data is empty.');
+        }
+      }
+    } catch (e) {
+      console.error('[MetaSignup-GlobalMessage] Exception parsing or processing message payload:', e);
+    }
+  });
+
+  // 3. Launch WhatsApp Embedded Signup flow via JS SDK FB.login
+  async function launchWhatsAppSignup(appId, configId) {
+    console.log('[launchWhatsAppSignup] Beginning Embedded Signup flow.');
+    console.log('[launchWhatsAppSignup] App ID input:', appId);
+    console.log('[launchWhatsAppSignup] Config ID input:', configId);
+
+    // Reset captured data before each attempt
+    window._metaSignupData = null;
+
+    // Check if the Facebook SDK script was successfully loaded
+    if (!window.FB) {
+      console.error('[launchWhatsAppSignup] ERROR: window.FB is not defined! The Meta SDK script was not loaded. It might be blocked by an adblocker or a firewall.');
+      return {
+        status: 'error_sdk_not_loaded',
+        code: '',
+        wabaId: null,
+        phoneNumberId: null,
+        businessPortfolioId: null,
+        sessionId: '',
+        sessionInfoResponse: JSON.stringify({ error: 'Facebook SDK script not loaded. Check adblockers or network connections.' }),
+      };
+    }
+
+    const finalAppId = appId || '1509853364110343';
+    const finalConfigId = configId || '1468906758584325';
+    console.log('[launchWhatsAppSignup] Resolved parameters -> App ID:', finalAppId, '| Config ID:', finalConfigId);
+
+    try {
+      console.log('[launchWhatsAppSignup] Initializing FB SDK for this session with App ID:', finalAppId);
+      FB.init({
+        appId: finalAppId,
+        autoLogAppEvents: true,
+        xfbml: true,
+        version: 'v25.0'
+      });
+      console.log('[launchWhatsAppSignup] FB.init executed successfully.');
+    } catch (e) {
+      console.warn("[launchWhatsAppSignup] FB.init encountered an error (continuing onboarding attempt):", e);
+    }
+
+    return new Promise((resolve) => {
+      // Local message event listener to capture live postMessage notifications from the FB frame/popup
+      function onMessage(event) {
+        console.log('[launchWhatsAppSignup-LocalMessage] Message received from origin:', event.origin);
+        if (!allowedOrigins.includes(event.origin)) {
+          console.warn('[launchWhatsAppSignup-LocalMessage] Ignored message from unauthorized origin:', event.origin);
+          return;
+        }
+        try {
+          const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+          console.log('[launchWhatsAppSignup-LocalMessage] Parsed message payload:', JSON.stringify(data, null, 2));
+          if (data && data.type === 'WA_EMBEDDED_SIGNUP') {
+            console.log('[launchWhatsAppSignup-LocalMessage] Processing WA_EMBEDDED_SIGNUP message action.');
+            if (data.data) {
+              window._metaSignupData = window._metaSignupData || {};
+              if (data.data.waba_id) {
+                window._metaSignupData.wabaId = data.data.waba_id;
+                console.log('[launchWhatsAppSignup-LocalMessage] -> Stored WABA ID:', data.data.waba_id);
+              }
+              if (data.data.phone_number_id) {
+                window._metaSignupData.phoneNumberId = data.data.phone_number_id;
+                console.log('[launchWhatsAppSignup-LocalMessage] -> Stored Phone Number ID:', data.data.phone_number_id);
+              }
+              if (data.data.code) {
+                window._metaSignupData.code = data.data.code;
+                console.log('[launchWhatsAppSignup-LocalMessage] -> Stored Auth Code:', data.data.code);
+              }
+              if (data.data.business_portfolio_id) {
+                window._metaSignupData.businessPortfolioId = data.data.business_portfolio_id;
+                console.log('[launchWhatsAppSignup-LocalMessage] -> Stored Business Portfolio ID:', data.data.business_portfolio_id);
+              }
+              const sessionId = data.data.session_id || data.data.sessionId || '';
+              if (sessionId) {
+                window._metaSignupData.sessionId = sessionId;
+                console.log('[launchWhatsAppSignup-LocalMessage] -> Stored Session ID:', sessionId);
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[launchWhatsAppSignup-LocalMessage] Error parsing message event data:', e);
+        }
+      }
+
+      console.log('[launchWhatsAppSignup] Registering local message listener.');
+      window.addEventListener('message', onMessage);
+
+      console.log('[launchWhatsAppSignup] Opening Meta signup popup via FB.login with Config ID:', finalConfigId);
+      FB.login(
+        function (response) {
+          console.log('[launchWhatsAppSignup] FB.login callback fired.');
+          console.log('[launchWhatsAppSignup] Removing local message listener.');
+          window.removeEventListener('message', onMessage);
+          
+          console.log('[launchWhatsAppSignup] FB.login Raw Response:', JSON.stringify(response, null, 2));
+
+          if (response.status === 'connected' && response.authResponse) {
+            const code = response.authResponse.code;
+            console.log('[launchWhatsAppSignup] FB.login flow completed successfully. Auth code obtained:', code);
+            
+            const resolvedResult = {
+              status: 'success',
+              code: code || (window._metaSignupData && window._metaSignupData.code ? window._metaSignupData.code : ''),
+              wabaId: window._metaSignupData ? window._metaSignupData.wabaId : null,
+              phoneNumberId: window._metaSignupData ? window._metaSignupData.phoneNumberId : null,
+              businessPortfolioId: window._metaSignupData ? window._metaSignupData.businessPortfolioId : null,
+              sessionId: window._metaSignupData ? (window._metaSignupData.sessionId || '') : '',
+              sessionInfoResponse: window._metaSignupData ? JSON.stringify(window._metaSignupData) : '',
+            };
+            
+            console.log('[launchWhatsAppSignup] Resolving promise as SUCCESS with data:', JSON.stringify(resolvedResult, null, 2));
+            resolve(resolvedResult);
+          } else {
+            console.warn('[launchWhatsAppSignup] FB.login did not return a successful connected status. Status:', response.status);
+            
+            // Fallback: If we captured valid WABA/phone IDs via postMessage, proceed as success
+            if (window._metaSignupData && (window._metaSignupData.wabaId || window._metaSignupData.phoneNumberId)) {
+              console.log('[launchWhatsAppSignup] Fallback triggered: Captured valid WABA/Phone ID from postMessage popup events.');
+              const resolvedResult = {
+                status: 'success',
+                code: window._metaSignupData.code || '',
+                wabaId: window._metaSignupData.wabaId,
+                phoneNumberId: window._metaSignupData.phoneNumberId,
+                businessPortfolioId: window._metaSignupData.businessPortfolioId || null,
+                sessionId: window._metaSignupData.sessionId || '',
+                sessionInfoResponse: JSON.stringify(window._metaSignupData),
+              };
+              console.log('[launchWhatsAppSignup] Resolving promise as SUCCESS (fallback) with data:', JSON.stringify(resolvedResult, null, 2));
+              resolve(resolvedResult);
+            } else {
+              console.warn('[launchWhatsAppSignup] No valid onboarding metadata captured. Resolving promise as CANCELLED.');
+              resolve({ status: 'cancelled' });
+            }
+          }
+        },
+        {
+          config_id: finalConfigId,
+          response_type: 'code',
+          override_default_response_type: true,
+          extras: {
+            setup: {},
+            featureType: '',
+            sessionInfoVersion: '3',
+          },
+        }
+      );
+    });
+  }
+</script>
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+
+<body>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    function openRazorpay(options, callback) {
+      console.log('Opening Razorpay with options:', JSON.stringify(options));
+
+      // Use the handler property for standard Razorpay behavior with order_id
+      options.handler = function (response) {
+        console.log('Razorpay Payment Success Response:', JSON.stringify(response));
+        callback(response.razorpay_payment_id, response.razorpay_order_id, response.razorpay_signature);
+      };
+
+      options.modal = {
+        ondismiss: function () {
+          console.log('Razorpay Checkout Modal Dismissed');
+          callback(null, null, null); // Call with nulls so the loading state clears
+        }
+      };
+
+      var rzp1 = new Razorpay(options);
+      rzp1.open();
+    }
+  </script>
+  <script src="contact_picker.js"></script>
+  <!-- Firebase JS SDK & Service Worker Registration -->
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/firebase-messaging-sw.js')
+          .then(function (registration) {
+            console.log('[Firebase SW] Service worker registered successfully:', registration.scope);
+          })
+          .catch(function (err) {
+            console.error('[Firebase SW] Service worker registration failed:', err);
+          });
+      });
+    }
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+
+</html>

@@ -1,0 +1,10821 @@
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const axios = require('axios');
+const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const mongoose = require('mongoose');
+const dns = require('dns');
+
+// Configure reliable DNS servers for MongoDB Atlas SRV query resolution
+try {
+    dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+} catch (err) {
+    console.warn('Unable to set custom DNS servers:', err);
+}
+const { verifyMetaWebhookSignature } = require('./middleware/verifyMetaSignature');
+const WebhookRawLog = require('./models/WebhookRawLog');
+const WhatsAppFlow = require('./models/WhatsAppFlow');
+const WhatsAppFlowResponse = require('./models/WhatsAppFlowResponse');
+const { WhatsAppFlowService, compileFieldsToFlowJson } = require('./services/WhatsAppFlowService');
+const { createFlowController } = require('./controllers/flowController');
+const WhatsAppOrder = require('./models/WhatsAppOrder');
+const CatalogService = require('./services/CatalogService');
+const { createCatalogController } = require('./controllers/catalogController');
+const webhookIngestionService = require('./services/WebhookIngestionService');
+const { processIncomingWebhookPayload } = require('./services/WebhookRouter');
+
+//  MongoDB Connection 
+if (process.env.MONGODB_URI) {
+    mongoose.connect(process.env.MONGODB_URI)
+        .then(async () => {
+            console.log(' MongoDB connected');
+            // Seed panel packages into database table if missing
+            await seedPanelPackages();
+            // Backfill reporting timezone for existing tenants
+            await backfillTenantReportingTimezones();
+            // Recover any pending/stuck webhook logs on boot
+            await webhookIngestionService.recoverPendingWebhookLogs();
+            // Drop the  9999ld unique compound index on {tenantId, version} if it exists.
+            // We now use a single-field unique index on {tenantId} since one doc per tenant.
+            try {
+                const col = mongoose.connection.collection('retryconfigurations');
+                await col.dropIndex('tenantId_1_version_1');
+                console.log(' Dropped old retryconfigurations index tenantId_1_version_1');
+            } catch (_) {
+                // Index may not exist — that's fine
+            }
+        })
+        .catch(err => console.error(' MongoDB connection error:', err));
+} else {
+    console.warn(' MONGODB_URI missing in .env');
+}
+
+//  Schemas 
+const tenantSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    subscription: {
+        planId: { type: String, default: 'free' },
+        planName: { type: String, default: '' },
+        billingCycle: { type: String, default: 'monthly' },
+        price: { type: Number, default: 0 },
+        expiryDate: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+        lastPaymentId: String,
+        lastPaymentDate: Date,
+    },
+    whatsappConfig: {
+        phoneNumberId: String,         // WABA phone number ID (Step 6)
+        accessToken: String,            // Customer business token (Step 5)
+        businessAccountId: String,      // WABA ID (Step 3)
+        businessPortfolioId: String,    // Business Portfolio ID (Step 3 — required for Step 5)
+        metaAppId: String,
+        businessId: String,
+        displayPhone: String,          // Human-readable phone e.g. +91 98765 43210 (Step 6)
+        verifiedName: String,           // Business display name (Step 6)
+        qualityRating: String,          // GREEN / YELLOW / RED (Step 6)
+        throughputLevel: String,        // STANDARD / HIGH / NOT_APPLICABLE (Step 6)
+        onboardedAt: Date,              // Timestamp when PARTNER_ADDED webhook fired (Step 3)
+        verified: { type: Boolean, default: false },
+        templateRejections: { type: Map, of: String, default: {} }, // Map of templateName -> rejectionReason
+        nameApprovalStatus: { type: String, default: 'UNKNOWN' }, // APPROVED | PENDING_REVIEW | DECLINED
+        codeVerificationStatus: { type: String, default: 'UNKNOWN' }, // VERIFIED | NOT_VERIFIED
+        phoneStatus: { type: String, default: 'PENDING' }, // CONNECTED | PENDING | UNREGISTERED | RESTRICTED
+        registrationPin: { type: String, default: '123456' },
+        registrationError: { type: mongoose.Schema.Types.Mixed, default: null },
+        // ── Token health tracking ────────────────────────────────────────────
+        tokenExpiry: { type: Date, default: null },   // null = never expires (system user token)
+        tokenType: { type: String, default: 'user' }, // 'user' | 'system_user'
+        tokenStatus: { type: String, default: 'active', enum: ['active', 'expiring_soon', 'expired', 'unknown'] },
+        reportingTimezone: { type: String, default: 'Asia/Kolkata' }, // WABA timezone for daily analytics reconciliation
+        // ── Catalog Management (Supports multiple catalogs) ────────────────
+        catalogId: { type: String, default: null }, // Active / primary catalog ID
+        catalogs: [{
+            catalogId: { type: String, required: true },
+            name: { type: String, default: '' },
+            vertical: { type: String, default: 'commerce' },
+            isDefault: { type: Boolean, default: false },
+            discoveredAt: { type: Date, default: Date.now },
+            productCount: { type: Number, default: 0 }
+        }],
+        commerceSettings: {
+            autoSendPaymentLink: { type: Boolean, default: true },
+            paymentGateway: { type: String, default: 'razorpay' },
+            razorpayKeyId: { type: String, default: '' },
+            razorpayKeySecret: { type: String, default: '' },
+        },
+    },
+    webhookSecret: { type: String, default: '' },  // AES-256 encrypted hex string
+    openaiApiKey: { type: String, default: '' },
+    instagramConfig: {
+        instagramAccountId: { type: String, default: '' },
+        username: { type: String, default: '' },
+        accessToken: { type: String, default: '' },
+        tokenExpiry: { type: Date, default: null },
+        connected: { type: Boolean, default: false }
+    },
+    status: { type: String, enum: ['active', 'inactive'], default: 'active' },
+}, { timestamps: true });
+const Tenant = mongoose.model('Tenant', tenantSchema);
+
+async function backfillTenantReportingTimezones() {
+    try {
+        const res = await Tenant.updateMany(
+            {
+                $or: [
+                    { 'whatsappConfig.reportingTimezone': { $exists: false } },
+                    { 'whatsappConfig.reportingTimezone': null },
+                    { 'whatsappConfig.reportingTimezone': '' }
+                ]
+            },
+            { $set: { 'whatsappConfig.reportingTimezone': 'Asia/Kolkata' } }
+        );
+        if (res.modifiedCount > 0) {
+            console.log(`[Startup] Backfilled reportingTimezone for ${res.modifiedCount} tenant(s) to 'Asia/Kolkata'`);
+        }
+    } catch (e) {
+        console.error('[Startup] Failed to backfill tenant reporting timezones:', e.message);
+    }
+}
+
+const clientSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    name: { type: String, required: true },
+    mobileNumber: { type: String, required: true },
+    companyName: String,
+    emailId: String,
+    venue: { type: String, required: true },
+    remark: { type: String },
+}, { timestamps: true });
+
+clientSchema.index({ tenantId: 1, name: 1 });
+clientSchema.index({ tenantId: 1, mobileNumber: 1 });
+clientSchema.index({ tenantId: 1, companyName: 1 });
+
+const Client = mongoose.model('Client', clientSchema);
+
+// Panel Package Schema & Model
+const panelPackageSchema = new mongoose.Schema({
+    planId: { type: String, required: true, unique: true },
+    name: { type: String, required: true },
+    description: { type: String, default: '' },
+    basePrice: { type: Number, required: true },
+    gstPercent: { type: Number, default: 18 },
+    totalPrice: { type: Number, required: true },
+    panelDays: { type: Number, required: true },
+    isActive: { type: Boolean, default: true },
+}, { timestamps: true });
+
+const PanelPackage = mongoose.model('PanelPackage', panelPackageSchema);
+
+const INITIAL_PANEL_PACKAGES = [
+    { planId: 'panel_1m', name: '1 Month Access', description: '1 month full panel access', basePrice: Math.round(1499 / 1.18), gstPercent: 18, totalPrice: 1499, panelDays: 30 },
+    { planId: 'panel_3m', name: '3 Month Access', description: '3 months full panel access', basePrice: Math.round(3999 / 1.18), gstPercent: 18, totalPrice: 3999, panelDays: 90 },
+    { planId: 'panel_6m', name: '6 Month Access', description: '6 months full panel access', basePrice: Math.round(7499 / 1.18), gstPercent: 18, totalPrice: 7499, panelDays: 180 },
+    { planId: 'panel_12m', name: '12 Month Access', description: '12 months full panel access', basePrice: Math.round(14999 / 1.18), gstPercent: 18, totalPrice: 14999, panelDays: 365 },
+];
+
+async function seedPanelPackages() {
+    try {
+        for (const pkg of INITIAL_PANEL_PACKAGES) {
+            await PanelPackage.findOneAndUpdate(
+                { planId: pkg.planId },
+                { $setOnInsert: pkg },
+                { upsert: true, new: true }
+            );
+        }
+        console.log(' Panel packages seeded successfully');
+    } catch (err) {
+        console.error(' Failed to seed panel packages:', err);
+    }
+}
+
+async function getPlanById(planId) {
+    try {
+        let plan = null;
+        if (planId) {
+            plan = await PanelPackage.findOne({ planId: planId });
+            if (!plan && mongoose.Types.ObjectId.isValid(planId)) {
+                plan = await PanelPackage.findById(planId);
+            }
+        }
+        if (!plan) {
+            plan = await PanelPackage.findOne({ planId: 'panel_12m' }) || await PanelPackage.findOne().sort({ panelDays: -1 });
+        }
+        if (plan) {
+            return {
+                id: plan.planId,
+                planId: plan.planId,
+                name: plan.name,
+                description: plan.description,
+                basePrice: plan.basePrice,
+                gstPercent: plan.gstPercent,
+                totalPrice: plan.totalPrice,
+                panelDays: plan.panelDays,
+            };
+        }
+    } catch (err) {
+        console.error('Error fetching package by ID from DB:', err);
+    }
+    // Hardcoded fallback for absolute safety if DB is unavailable
+    return { id: 'panel_12m', planId: 'panel_12m', name: '12 Month Access', description: '12 months full panel access', basePrice: Math.round(14999 / 1.18), gstPercent: 18, totalPrice: 14999, panelDays: 365 };
+}
+
+const conversationSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    contactId: { type: String, required: true },
+    name: String,
+    lastMessage: String,
+    lastActive: { type: Date, default: Date.now },
+    hasReply: { type: Boolean, default: false },
+}, { timestamps: true });
+conversationSchema.index({ tenantId: 1, contactId: 1 }, { unique: true });
+const Conversation = mongoose.model('Conversation', conversationSchema);
+
+const messageSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    contactId: { type: String, required: true },
+    text: String,
+    isMe: Boolean,
+    time: String,
+    timestamp: { type: Date, default: Date.now },
+    // Structured message metadata (optional — legacy docs without these fields remain readable)
+    messageType: { type: String },          // 'text'|'template'|'image'|'video'|'audio'|'voice'|'document'|'sticker'|'location'|'contacts'|'reaction'|'interactive'|'unsupported'
+    mediaUrl: { type: String },          // Meta mediaId for media messages
+    templateName: { type: String },          // template name for outbound templates
+    templateBody: { type: String },          // resolved body text of the template
+    interactivePayload: { type: mongoose.Schema.Types.Mixed }, // { type, title, id }
+    wamid: { type: String },                 // WhatsApp message ID from Meta
+    contextMessageId: { type: String },      // WhatsApp message ID of the replied-to message (if any)
+    replyContextPreview: { type: String, default: null }, // Snapshot of replied-to message text/preview
+    status: { type: String, default: 'sent' }, // 'sent' | 'delivered' | 'read' | 'failed'
+    errorDetails: { type: String },         // Why message failed
+    source: { type: String, default: null }, // 'chatbot' | 'chatbot_reply' | 'chatbot_trigger' | null (null = live chat)
+});
+const Message = mongoose.model('Message', messageSchema);
+
+const campaignSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    id: { type: String, required: true },
+    template: String,
+    timestamp: { type: Date, default: Date.now },
+    dispatchedAt: { type: Date, default: null },
+    totalCount: { type: Number, default: 0 },
+    successCount: { type: Number, default: 0 },
+    failureCount: { type: Number, default: 0 },
+    deliveredCount: { type: Number, default: 0 },
+    readCount: { type: Number, default: 0 },
+    // Retry configuration snapshot
+    retryConfig: {
+        version: { type: Number, required: true, default: 0 },
+        phases: [{
+            phaseNumber: { type: Number, required: true },
+            intervalHours: { type: Number, required: true }
+        }]
+    },
+    // Campaign execution state
+    status: {
+        type: String,
+        enum: ['initial', 'retrying', 'completed', 'error'],
+        default: 'initial'
+    },
+    currentPhase: { type: Number, default: 1 },
+    // Phase-wise statistics
+    phaseStats: [{
+        phaseNumber: { type: Number, required: true },
+        successCount: { type: Number, default: 0 },
+        failureCount: { type: Number, default: 0 },
+        executedAt: { type: Date },
+        completedAt: { type: Date }
+    }]
+}, { timestamps: true });
+campaignSchema.index({ tenantId: 1, id: 1 }, { unique: true });
+campaignSchema.index({ tenantId: 1, status: 1 });
+const Campaign = mongoose.model('Campaign', campaignSchema);
+
+const paymentRecordSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    paymentId: { type: String, required: true },
+    orderId: String,
+    category: { type: String, default: 'panel_renewal' }, // 'panel_renewal' | 'credit_purchase'
+    description: String,
+    amount: Number,
+    credits: { type: Number, default: 0 },
+    timestamp: { type: Date, default: Date.now },
+}, { timestamps: true });
+paymentRecordSchema.index({ tenantId: 1, timestamp: -1 });
+const PaymentRecord = mongoose.model('PaymentRecord', paymentRecordSchema);
+
+const recipientSchema = new mongoose.Schema({
+    tenantId: String,
+    campaignId: String,
+    wamid: { type: String, unique: true },
+    to: String,
+    name: { type: String, default: null },   // client name captured at send time
+    status: { type: String, default: 'sent' },
+    sentAt: String,
+    deliveredAt: String,
+    readAt: String,
+    failedAt: String,
+    phaseNumber: { type: Number, default: null },
+    deliveryTimestamp: { type: Date, default: null },
+    retryHistory: [{
+        phaseNumber: Number,
+        attemptedAt: Date,
+        status: String
+    }],
+    // Campaign template button click tracking
+    clickedButtons: { type: [String], default: [] },   // deduped list of clicked button texts
+    buttonClicks: [{                                     // full click log with timestamps
+        buttonText: { type: String },
+        buttonId:   { type: String },
+        clickedAt:  { type: Date, default: Date.now }
+    }]
+});
+recipientSchema.index({ campaignId: 1, phaseNumber: 1 });
+recipientSchema.index({ campaignId: 1, status: 1 });
+recipientSchema.index({ campaignId: 1, phaseNumber: 1, status: 1, 'retryHistory.phaseNumber': 1 });
+recipientSchema.index({ wamid: 1, sentAt: 1 }, { sparse: true, background: true });
+recipientSchema.index({ wamid: 1, deliveredAt: 1 }, { sparse: true, background: true });
+recipientSchema.index({ wamid: 1, readAt: 1 }, { sparse: true, background: true });
+recipientSchema.index({ wamid: 1, failedAt: 1 }, { sparse: true, background: true });
+recipientSchema.index({ tenantId: 1, deliveryTimestamp: 1 }, { background: true });
+const Recipient = mongoose.model('Recipient', recipientSchema);
+
+const retryConfigurationSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    version: { type: Number, required: true },
+    phases: [{
+        phaseNumber: {
+            type: Number,
+            required: true,
+            min: [1, 'Phase number must be at least 1'],
+            max: [5, 'Phase number must be at most 5']
+        },
+        intervalHours: {
+            type: Number,
+            required: true,
+            min: [1, 'Interval must be at least 1 hour'],
+            max: [48, 'Interval must be at most 48 hours']
+        }
+    }],
+    createdAt: { type: Date, default: Date.now },
+    isActive: { type: Boolean, default: true }
+}, { timestamps: true });
+
+// Validation: 0-5 phases
+retryConfigurationSchema.path('phases').validate(function (phases) {
+    return phases.length >= 0 && phases.length <= 5;
+}, 'Phase count must be between 0 and 5');
+
+// Validation: Ascending order of intervals
+retryConfigurationSchema.path('phases').validate(function (phases) {
+    if (phases.length <= 1) return true;
+    for (let i = 1; i < phases.length; i++) {
+        if (phases[i].intervalHours <= phases[i - 1].intervalHours) {
+            return false;
+        }
+    }
+    return true;
+}, 'Interval hours must be in ascending order');
+
+// Validation: Sequential phase numbers
+retryConfigurationSchema.path('phases').validate(function (phases) {
+    for (let i = 0; i < phases.length; i++) {
+        if (phases[i].phaseNumber !== i + 1) {
+            return false;
+        }
+    }
+    return true;
+}, 'Phase numbers must be sequential starting from 1');
+
+// Indexes — one config per tenant
+retryConfigurationSchema.index({ tenantId: 1, isActive: 1 });
+retryConfigurationSchema.index({ tenantId: 1 }, { unique: true });
+
+const RetryConfiguration = mongoose.model('RetryConfiguration', retryConfigurationSchema);
+
+const scheduledRetryPhaseSchema = new mongoose.Schema({
+    campaignId: { type: String, required: true, index: true },
+    tenantId: { type: String, required: true },
+    phaseNumber: { type: Number, required: true },
+    scheduledAt: { type: Date, required: true, index: true },
+    status: {
+        type: String,
+        enum: ['pending', 'executing', 'completed', 'cancelled', 'failed'],
+        default: 'pending'
+    },
+    executedAt: { type: Date },
+    errorMessage: { type: String }
+}, { timestamps: true });
+
+// Indexes
+scheduledRetryPhaseSchema.index({ status: 1, scheduledAt: 1 });
+scheduledRetryPhaseSchema.index({ campaignId: 1, phaseNumber: 1 });
+
+const ScheduledRetryPhase = mongoose.model('ScheduledRetryPhase', scheduledRetryPhaseSchema);
+
+const scheduledCampaignSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    campaignName: { type: String, default: '' },
+    template: { type: String, required: true },
+    language: { type: String, default: 'en_US' },
+    recipients: { type: Array, required: true }, // [{mobileNumber, variables}]
+    mediaId: String,
+    mediaType: String,
+    scheduledAt: { type: Date, required: true },
+    status: { type: String, default: 'pending' }, // pending | running | completed | failed | cancelled
+    resultCampaignId: String,
+    successCount: { type: Number, default: 0 },
+    failureCount: { type: Number, default: 0 },
+    errorMessage: String,
+}, { timestamps: true });
+const ScheduledCampaign = mongoose.model('ScheduledCampaign', scheduledCampaignSchema);
+
+const statusMappingSchema = new mongoose.Schema({
+    wamid: { type: String, unique: true },
+    tenantId: String,
+    campaignId: String,
+    to: String,
+    timestamp: { type: Date, default: Date.now },
+});
+const StatusMapping = mongoose.model('StatusMapping', statusMappingSchema);
+
+const chatbotSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    name: { type: String, required: true },
+    triggerKeywords: { type: [String], default: [] },
+    flow: { type: mongoose.Schema.Types.Mixed, default: {} },
+    isActive: { type: Boolean, default: false },
+}, { timestamps: true });
+const Chatbot = mongoose.model('Chatbot', chatbotSchema);
+
+const chatbotSessionSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    contactId: { type: String, required: true },
+    chatbotId: { type: String, required: true },
+    currentNodeId: { type: String },
+    lastReply: { type: String },
+    waitingForReply: { type: Boolean, default: false },
+}, { timestamps: true });
+chatbotSessionSchema.index({ tenantId: 1, contactId: 1 }, { unique: true });
+const ChatbotSession = mongoose.model('ChatbotSession', chatbotSessionSchema);
+
+const chatbotAnalyticsSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    chatbotId: { type: String, required: true },
+    date: { type: Date, required: true },
+    totalSessions: { type: Number, default: 0 },
+    completedSessions: { type: Number, default: 0 },
+    droppedSessions: { type: Number, default: 0 },
+    messagesSent: { type: Number, default: 0 },
+});
+chatbotAnalyticsSchema.index({ tenantId: 1, chatbotId: 1, date: 1 });
+const ChatbotAnalytics = mongoose.model('ChatbotAnalytics', chatbotAnalyticsSchema);
+
+const leadSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    name: { type: String, default: '' },
+    mobileNumber: { type: String, required: true },   // normalised, e.g. "919876543210"
+    email: { type: String, default: '' },
+    companyName: { type: String, default: '' },
+    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart'], required: true },
+    formName: { type: String, default: '' },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    status: { type: String, enum: ['new', 'contacted', 'converted', 'failed'], default: 'new' },
+    clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
+    isDuplicate: { type: Boolean, default: false },
+}, { timestamps: true });
+leadSchema.index({ tenantId: 1, createdAt: -1 });
+leadSchema.index({ tenantId: 1, mobileNumber: 1 });
+const Lead = mongoose.model('Lead', leadSchema);
+
+const leadTriggerSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'any'], default: 'any' },
+    formName: { type: String, default: '' },
+    action: { type: String, enum: ['send_template', 'start_chatbot'], required: true },
+    templateName: { type: String, default: '' },
+    templateLanguage: { type: String, default: 'en_US' },
+    mediaId: { type: String, default: '' },
+    mediaType: { type: String, default: '' },
+    variableMapping: { type: mongoose.Schema.Types.Mixed, default: {} }, // {"1":"name","2":"mobileNumber"}
+    chatbotId: { type: String, default: '' },
+    isActive: { type: Boolean, default: true },
+}, { timestamps: true });
+const LeadTrigger = mongoose.model('LeadTrigger', leadTriggerSchema);
+
+const clientTriggerSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true, unique: true },
+    templateName: { type: String, required: true },
+    templateLanguage: { type: String, default: 'en_US' },
+    mediaId: { type: String, default: '' },
+    mediaType: { type: String, default: '' },
+    variableMapping: { type: mongoose.Schema.Types.Mixed, default: {} }, // {"1":"name","2":"mobileNumber"}
+    isActive: { type: Boolean, default: true },
+}, { timestamps: true });
+const ClientTrigger = mongoose.model('ClientTrigger', clientTriggerSchema);
+
+const webhookLogSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    sourceIp: String,
+    httpStatus: Number,
+    timestamp: { type: Date, default: Date.now, expires: 2592000 }, // TTL 30 days
+});
+const WebhookLog = mongoose.model('WebhookLog', webhookLogSchema);
+
+const onboardingLogSchema = new mongoose.Schema({
+    tenantId: { type: String, default: null },
+    sessionId: { type: String, default: null },
+    wabaId: { type: String, default: null },
+    businessPortfolioId: { type: String, default: null },
+    phoneNumberId: { type: String, default: null },
+    step: { type: String, required: true },
+    status: { type: String, enum: ['info', 'success', 'warning', 'error'], default: 'info' },
+    message: { type: String, required: true },
+    details: { type: mongoose.Schema.Types.Mixed, default: null },
+    timestamp: { type: Date, default: Date.now, expires: 2592000 }, // TTL 30 days
+});
+const OnboardingLog = mongoose.model('OnboardingLog', onboardingLogSchema);
+
+const indiaMartConfigSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true, unique: true },
+    glusrMobile: { type: String, required: true },
+    glusrCrmKey: { type: String, required: true },
+    lastSyncedAt: { type: Date, default: null }
+}, { timestamps: true });
+indiaMartConfigSchema.index({ tenantId: 1 });
+const IndiaMartConfig = mongoose.model('IndiaMartConfig', indiaMartConfigSchema);
+
+async function saveOnboardingLog({ tenantId, sessionId, wabaId, businessPortfolioId, phoneNumberId, step, status = 'info', message, details }) {
+    try {
+        const log = new OnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            phoneNumberId,
+            step,
+            status,
+            message,
+            details
+        });
+
+        // If tenantId is missing but we have wabaId, try to find the tenant to backfill tenantId
+        if (!log.tenantId && wabaId) {
+            const tenant = await Tenant.findOne({ 'whatsappConfig.businessAccountId': wabaId });
+            if (tenant) {
+                log.tenantId = tenant._id.toString();
+            }
+        }
+
+        await log.save();
+
+        const prefix = `[Onboarding][${status.toUpperCase()}][${step}]`;
+        const detailsStr = details ? ` | Details: ${JSON.stringify(details)}` : '';
+        console.log(`${prefix} ${message}${detailsStr}`);
+    } catch (err) {
+        console.error(`Failed to save onboarding log:`, err.message);
+    }
+}
+
+
+const groupSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true },
+    name: { type: String, required: true },
+    clientIds: { type: [String], default: [] },
+}, { timestamps: true });
+groupSchema.index({ tenantId: 1 });
+const Group = mongoose.model('Group', groupSchema);
+
+// ── Notification System Schemas ──────────────────────────────────────────────
+const notificationSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true, index: true },
+    userId: { type: String, default: null },
+    title: { type: String, required: true },
+    body: { type: String, required: true },
+    icon: { type: String, default: null },
+    imageUrl: { type: String, default: null },
+    type: { type: String, required: true, default: 'system' },
+    category: { type: String, required: true, default: 'system' },
+    actionData: { type: mongoose.Schema.Types.Mixed, default: {} },
+    isRead: { type: Boolean, default: false, index: true },
+    readAt: { type: Date, default: null },
+    isDeleted: { type: Boolean, default: false },
+    fcmMessageId: { type: String, default: null },
+    deliveredAt: { type: Date, default: null },
+    pushSent: { type: Boolean, default: false },
+}, { timestamps: true });
+
+notificationSchema.index({ tenantId: 1, createdAt: -1 });
+notificationSchema.index({ tenantId: 1, isRead: 1, isDeleted: 1 });
+
+const Notification = mongoose.model('Notification', notificationSchema);
+
+const fcmTokenSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true, index: true },
+    userId: { type: String, default: null },
+    token: { type: String, required: true },
+    platform: { type: String, enum: ['android', 'ios', 'web'], required: true },
+    deviceId: { type: String, default: null },
+    deviceName: { type: String, default: null },
+    appVersion: { type: String, default: null },
+    isActive: { type: Boolean, default: true },
+    lastUsedAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+fcmTokenSchema.index({ tenantId: 1, isActive: 1 });
+fcmTokenSchema.index({ token: 1 }, { unique: true });
+
+const FCMToken = mongoose.model('FCMToken', fcmTokenSchema);
+
+// ── App Version Management Schema ─────────────────────────────────────────────
+const appVersionSchema = new mongoose.Schema({
+    platform: { type: String, default: 'android', enum: ['android', 'ios'], required: true },
+    version: { type: String, required: true },
+    buildNumber: { type: Number, required: true },
+    apkUrl: { type: String, required: true },
+    apkFileName: { type: String, required: true },
+    sha256: { type: String, required: true },
+    forceUpdate: { type: Boolean, default: false },
+    releaseNotes: { type: [String], default: [] },
+    fileSize: { type: Number, default: 0 },
+    isActive: { type: Boolean, default: true },
+}, { timestamps: true });
+
+appVersionSchema.index({ platform: 1, isActive: 1, buildNumber: -1 });
+
+const AppVersion = mongoose.model('AppVersion', appVersionSchema);
+
+// ── Retry / Campaign Lifecycle / Notification Services ─────────────────────────
+const ConfigurationManager = require('./services/ConfigurationManager');
+const RetryScheduler = require('./services/RetryScheduler');
+const PhaseExecutor = require('./services/PhaseExecutor');
+const CampaignLifecycleManager = require('./services/CampaignLifecycleManager');
+const CampaignExecutor = require('./services/CampaignExecutor');
+const MessageTracker = require('./services/MessageTracker');
+const ReportGenerator = require('./services/ReportGenerator');
+const SocketEmitter = require('./services/SocketEmitter');
+const FCMService = require('./services/FCMService');
+const NotificationService = require('./services/NotificationService');
+
+const configManager = new ConfigurationManager(RetryConfiguration);
+
+// messageSender adapter: wraps the existing WhatsApp send logic so PhaseExecutor
+// can delegate to it without knowing about Express or axios directly.
+const messageSenderAdapter = {
+    /**
+     * Send a WhatsApp template message to a single recipient as part of a retry phase.
+     * @param {Object} recipient  - Recipient document
+     * @param {Object} campaign   - Campaign document
+     * @param {number} phaseNumber - Current retry phase number
+     */
+    async sendMessage(recipient, campaign, phaseNumber) {
+        const tenant = await Tenant.findById(campaign.tenantId);
+        if (!tenant) throw new Error(`Tenant not found: ${campaign.tenantId}`);
+
+        const config = tenant.whatsappConfig;
+        if (!config?.accessToken || !config?.phoneNumberId) {
+            throw new Error('WhatsApp not configured for tenant');
+        }
+
+        const payload = {
+            messaging_product: 'whatsapp',
+            to: recipient.to,
+            type: 'template',
+            template: {
+                name: campaign.template,
+                language: { code: 'en_US' }
+            }
+        };
+
+        const response = await axios.post(
+            `${WHATSAPP_API_URL}/${config.phoneNumberId}/messages`,
+            payload,
+            { headers: { Authorization: `Bearer ${config.accessToken}` } }
+        );
+
+        const wamid = response.data?.messages?.[0]?.id;
+        if (!wamid) throw new Error('No wamid returned from WhatsApp API');
+
+        // Track the new wamid → campaign mapping so delivery webhooks are handled
+        await StatusMapping.findOneAndUpdate(
+            { wamid },
+            { wamid, tenantId: campaign.tenantId, campaignId: campaign.id, to: recipient.to },
+            { upsert: true }
+        );
+
+        // Record the retry attempt in the recipient's history
+        await Recipient.findOneAndUpdate(
+            { _id: recipient._id },
+            {
+                $set: { wamid, status: 'sent', sentAt: new Date().toISOString() },
+                $push: {
+                    retryHistory: {
+                        phaseNumber,
+                        attemptedAt: new Date(),
+                        status: 'sent'
+                    }
+                }
+            }
+        );
+
+        // Log the retry-phase outbound message so it appears in the conversation/chat screen
+        try {
+            let retryTemplateBody = '';
+            try {
+                const tplComponents = await fetchTemplateComponents(tenant, campaign.template);
+                const bodyComponent = (tplComponents || []).find(c => c.type === 'BODY');
+                retryTemplateBody = bodyComponent?.text || '';
+            } catch (_) { /* non-fatal — fall back to empty body */ }
+
+            const retryPreview = buildPreview('template', {
+                templateName: campaign.template,
+                templateBody: retryTemplateBody,
+            });
+
+            await Conversation.findOneAndUpdate(
+                { tenantId: campaign.tenantId, contactId: recipient.to },
+                {
+                    name: recipient.to,
+                    lastMessage: retryPreview,
+                    lastActive: new Date(),
+                    $setOnInsert: { hasReply: false }
+                },
+                { upsert: true }
+            );
+
+            await Message.create({
+                tenantId: campaign.tenantId,
+                contactId: recipient.to,
+                text: retryTemplateBody || `📋 Template: ${campaign.template}`,
+                isMe: true,
+                time: new Date().toISOString(),
+                messageType: 'template',
+                templateName: campaign.template,
+                templateBody: retryTemplateBody,
+                wamid: wamid,
+                status: 'sent',
+            });
+
+            await broadcastConversations(campaign.tenantId);
+            await broadcastMessages(campaign.tenantId, recipient.to);
+        } catch (msgErr) {
+            console.error(
+                `[messageSender] Failed to create Message/Conversation log for retry phase ${phaseNumber} ` +
+                `to ${recipient.to}: ${msgErr.message}`
+            );
+        }
+
+        console.log(
+            `[messageSender] Sent retry phase ${phaseNumber} message to ${recipient.to} ` +
+            `(campaign ${campaign.id}, wamid ${wamid})`
+        );
+    }
+};
+
+const retryScheduler = new RetryScheduler({ ScheduledRetryPhase, Campaign });
+const phaseExecutor = new PhaseExecutor({
+    Campaign,
+    Recipient,
+    messageSender: messageSenderAdapter,
+    retryScheduler
+});
+retryScheduler.phaseExecutor = phaseExecutor;
+
+const campaignLifecycleManager = new CampaignLifecycleManager({
+    Campaign,
+    Recipient,
+    configurationManager: configManager,
+    retryScheduler
+});
+
+// Wire campaignLifecycleManager into phaseExecutor after both are created
+phaseExecutor.campaignLifecycleManager = campaignLifecycleManager;
+
+const campaignExecutor = new CampaignExecutor({
+    Campaign,
+    Recipient,
+    StatusMapping,
+    Tenant,
+    axios,
+    socketEmitter: SocketEmitter,
+    campaignLifecycleManager
+});
+
+const messageTracker = new MessageTracker(Recipient);
+const reportGenerator = new ReportGenerator(Campaign, ScheduledRetryPhase, Recipient);
+
+//  Logging 
+const logFile = 'server.log';
+function logToFile(msg) {
+    const timestamp = new Date().toISOString();
+    fs.appendFileSync(logFile, `[${timestamp}] ${msg}\n`);
+}
+const originalLog = console.log;
+const originalError = console.error;
+console.log = (...args) => { logToFile(args.join(' ')); originalLog(...args); };
+console.error = (...args) => { logToFile(args.join(' ')); originalError(...args); };
+
+process.on('unhandledRejection', (reason, promise) => console.error(' Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error(' Uncaught Exception:', err));
+
+//  App Setup 
+const app = express();
+
+// Enable CORS for web clients (https://app.sendzyy.com, etc.) including preflight OPTIONS requests
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow all origins (including app.sendzyy.com) with credentials
+        callback(null, true);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'tenant-id'],
+    credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+SocketEmitter.setIo(io);
+app.use(bodyParser.json({
+    limit: '50mb',
+    verify: (req, res, buf) => {
+        req.rawBody = buf.toString();
+    }
+}));
+app.use(bodyParser.raw({
+    type: (req) => {
+        const contentType = req.headers['content-type'] || '';
+        return contentType.toLowerCase().includes('application/octet-stream');
+    },
+    limit: '50mb'
+}));
+
+// Root route response
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Sendzyy | Backend Server</title>
+        </head>
+        <body>
+            <h1>✅ Sendzyy is running </h1>
+            <p>IFLORA - Sendzyy backend server running</p>
+        </body>
+        </html>
+    `);
+});
+
+const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'app.sendzyy_auth$token@1502200214082002%&asdavcwrgwwvtsrfw453rtbruyntyu';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v25.0';
+
+console.log(` Server starting at: ${new Date().toLocaleString()}`);
+
+//  Razorpay 
+let razorpay;
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+    razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+    console.log(' Razorpay initialized');
+} else {
+    console.warn(' Razorpay keys missing. Payment features disabled.');
+}
+
+//  Email 
+const transporter = nodemailer.createTransport({
+    service: process.env.EMAIL_SERVICE,
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+});
+
+//  Helpers 
+async function logCreditTransaction(tenantId, type, credits, description) {
+    // No-op: credit transaction logging removed
+}
+
+async function sendCredentialsEmail(email, password, businessName) {
+    try {
+        await transporter.sendMail({
+            from: `"Sendzyy" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: `🎉 Welcome to Sendzyy — Your Account is Ready!`,
+            html: `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f0f7f0;font-family:'Segoe UI',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f7f0;padding:40px 0;">
+<tr><td align="center">
+<table width="580" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:20px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.10);">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:linear-gradient(135deg,#1B5E20 0%,#2E7D32 55%,#43A047 100%);padding:50px 48px 38px;text-align:center;">
+      <div style="background:rgba(255,255,255,0.15);border-radius:50%;width:80px;height:80px;margin:0 auto 20px;display:table-cell;vertical-align:middle;text-align:center;">
+        <span style="font-size:40px;">🚀</span>
+      </div>
+      <h1 style="margin:0 0 8px;color:#fff;font-size:32px;font-weight:800;letter-spacing:0.5px;">Welcome to Sendzyy!</h1>
+      <p style="margin:0;color:rgba(255,255,255,0.82);font-size:15px;">WhatsApp Business Messaging Platform</p>
+    </td>
+  </tr>
+
+  <!-- Body -->
+  <tr>
+    <td style="padding:40px 48px 0;">
+      <p style="margin:0 0 4px;color:#aaa;font-size:12px;text-transform:uppercase;letter-spacing:1.5px;font-weight:600;">Hello,</p>
+      <h2 style="margin:0 0 16px;color:#1B5E20;font-size:24px;font-weight:700;">${businessName} 👋</h2>
+      <p style="margin:0 0 28px;color:#555;font-size:15px;line-height:1.8;">
+        Your account has been created successfully. Use the credentials below to log in and start sending bulk WhatsApp messages to your customers.
+      </p>
+    </td>
+  </tr>
+
+  <!-- Credentials Card -->
+  <tr>
+    <td style="padding:0 48px;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(135deg,#f1fdf3,#e8f5e9);border:2px solid #a5d6a7;border-radius:16px;">
+        <tr>
+          <td style="padding:24px 28px 8px;">
+            <p style="margin:0 0 20px;color:#2E7D32;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;">🔐 Your Login Credentials</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 28px 12px;border-bottom:1px solid #c8e6c9;">
+            <p style="margin:0 0 4px;color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Email Address</p>
+            <p style="margin:0;color:#1B5E20;font-size:17px;font-weight:700;font-family:'Courier New',monospace;">${email}</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:12px 28px 24px;">
+            <p style="margin:0 0 4px;color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Password</p>
+            <p style="margin:0;color:#1B5E20;font-size:26px;font-weight:800;letter-spacing:4px;font-family:'Courier New',monospace;">${password}</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- CTA Button -->
+  <tr>
+    <td style="padding:32px 48px 24px;text-align:center;">
+      <a href="https://app.sendzyy.com" target="_blank"
+         style="display:inline-block;background:linear-gradient(135deg,#2E7D32,#43A047);color:#fff;text-decoration:none;font-size:16px;font-weight:700;padding:16px 56px;border-radius:50px;box-shadow:0 6px 20px rgba(46,125,50,0.38);letter-spacing:0.5px;">
+        ✨ &nbsp; Login to Dashboard
+      </a>
+    </td>
+  </tr>
+
+  <!-- Features -->
+  <tr>
+    <td style="padding:0 48px 28px;">
+      <p style="margin:0 0 14px;color:#333;font-size:14px;font-weight:700;">What you can do with Sendzyy:</p>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td width="50%" style="padding:5px 6px 5px 0;">
+            <div style="background:#e8f5e9;border-radius:8px;padding:10px 14px;color:#2E7D32;font-size:13px;">📤 Bulk WhatsApp Messaging</div>
+          </td>
+          <td width="50%" style="padding:5px 0 5px 6px;">
+            <div style="background:#e8f5e9;border-radius:8px;padding:10px 14px;color:#2E7D32;font-size:13px;">📋 Message Templates</div>
+          </td>
+        </tr>
+        <tr>
+          <td width="50%" style="padding:5px 6px 5px 0;">
+            <div style="background:#e8f5e9;border-radius:8px;padding:10px 14px;color:#2E7D32;font-size:13px;">📊 Campaign Analytics</div>
+          </td>
+          <td width="50%" style="padding:5px 0 5px 6px;">
+            <div style="background:#e8f5e9;border-radius:8px;padding:10px 14px;color:#2E7D32;font-size:13px;">💬 Live Customer Chat</div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Warning -->
+  <tr>
+    <td style="padding:0 48px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="background:#fff8e1;border-left:4px solid #FFC107;border-radius:0 10px 10px 0;padding:14px 18px;">
+            <p style="margin:0;color:#795548;font-size:13px;line-height:1.7;">
+              ⚠️ <strong>Security tip:</strong> Change your password after first login via <strong>Settings → Security & Password</strong>.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Footer -->
+  <tr>
+    <td style="background:#f5f5f5;border-top:1px solid #e0e0e0;padding:28px 48px;text-align:center;">
+      <p style="margin:0 0 4px;color:#1B5E20;font-size:15px;font-weight:700;">Sendzyy</p>
+      <p style="margin:0 0 10px;color:#aaa;font-size:12px;">WhatsApp Business Messaging · iFlora Info Pvt. Ltd.</p>
+      <p style="margin:0;color:#ccc;font-size:11px;">© ${new Date().getFullYear()} Sendzyy · <a href="https://app.sendzyy.com" style="color:#4CAF50;text-decoration:none;">app.sendzyy.com</a></p>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
+        });
+        console.log(` Welcome email sent to ${email}`);
+    } catch (error) { console.error(' Welcome email failed:', error); }
+}
+
+async function sendInvoiceEmail(email, businessName, paymentId, pkg, amount) {
+    try {
+        const now = new Date();
+        const dateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+        const invoiceNo = `INV-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${paymentId.slice(-6).toUpperCase()}`;
+
+        await transporter.sendMail({
+            from: `"Sendzyy" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: `✅ Payment Successful — ${pkg.name} Plan Activated | Sendzyy`,
+            html: `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f0f7f0;font-family:'Segoe UI',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f7f0;padding:40px 0;">
+<tr><td align="center">
+<table width="580" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:20px;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.10);">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:linear-gradient(135deg,#1B5E20 0%,#2E7D32 55%,#43A047 100%);padding:50px 48px 38px;text-align:center;">
+      <div style="background:rgba(255,255,255,0.15);border-radius:50%;width:80px;height:80px;margin:0 auto 20px;display:table-cell;vertical-align:middle;text-align:center;">
+        <span style="font-size:44px;">✅</span>
+      </div>
+      <h1 style="margin:0 0 8px;color:#fff;font-size:32px;font-weight:800;">Payment Successful!</h1>
+      <p style="margin:0;color:rgba(255,255,255,0.82);font-size:15px;">Your <strong>${pkg.name}</strong> plan is now active</p>
+    </td>
+  </tr>
+
+  <!-- Greeting -->
+  <tr>
+    <td style="padding:40px 48px 0;">
+      <p style="margin:0 0 4px;color:#aaa;font-size:12px;text-transform:uppercase;letter-spacing:1.5px;font-weight:600;">Hello,</p>
+      <h2 style="margin:0 0 14px;color:#1B5E20;font-size:24px;font-weight:700;">${businessName} 👋</h2>
+      <p style="margin:0 0 28px;color:#555;font-size:15px;line-height:1.8;">
+        Thank you for your purchase! Your payment has been verified and ${pkg.credits > 0 ? `<strong>${pkg.credits.toLocaleString('en-IN')} credits</strong> have been added to your account.` : `your <strong>${pkg.name}</strong> plan is now active.`}
+      </p>
+    </td>
+  </tr>
+
+  <!-- Invoice Table -->
+  <tr>
+    <td style="padding:0 48px;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="border:2px solid #a5d6a7;border-radius:16px;overflow:hidden;">
+        <!-- Invoice Header -->
+        <tr>
+          <td colspan="2" style="background:linear-gradient(135deg,#f1fdf3,#e8f5e9);padding:16px 24px;border-bottom:1px solid #c8e6c9;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td>
+                  <p style="margin:0;color:#2E7D32;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">🧾 Invoice Receipt</p>
+                  <p style="margin:3px 0 0;color:#888;font-size:11px;font-family:'Courier New',monospace;">${invoiceNo}</p>
+                </td>
+                <td align="right">
+                  <p style="margin:0;color:#888;font-size:12px;">${dateStr}</p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <!-- Rows -->
+        <tr>
+          <td style="padding:14px 24px;color:#777;font-size:13px;border-bottom:1px solid #f0f0f0;">Plan</td>
+          <td style="padding:14px 24px;color:#1B5E20;font-size:14px;font-weight:700;text-align:right;border-bottom:1px solid #f0f0f0;">${pkg.name}</td>
+        </tr>
+        ${pkg.credits > 0 ? `<tr>
+          <td style="padding:14px 24px;color:#777;font-size:13px;border-bottom:1px solid #f0f0f0;">Credits Added</td>
+          <td style="padding:14px 24px;color:#333;font-size:14px;font-weight:600;text-align:right;border-bottom:1px solid #f0f0f0;">${pkg.credits.toLocaleString('en-IN')} credits</td>
+        </tr>` : ''}
+        <tr>
+          <td style="padding:14px 24px;color:#777;font-size:13px;border-bottom:1px solid #f0f0f0;">Payment ID</td>
+          <td style="padding:14px 24px;color:#555;font-size:12px;font-family:'Courier New',monospace;text-align:right;border-bottom:1px solid #f0f0f0;">${paymentId}</td>
+        </tr>
+        <!-- Total -->
+        <tr>
+          <td style="padding:18px 24px;background:#e8f5e9;">
+            <span style="color:#2E7D32;font-size:15px;font-weight:700;">Total Paid</span>
+          </td>
+          <td style="padding:18px 24px;background:#e8f5e9;text-align:right;">
+            <span style="color:#1B5E20;font-size:26px;font-weight:800;">₹${Number(amount).toLocaleString('en-IN')}</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- CTA -->
+  <tr>
+    <td style="padding:32px 48px 24px;text-align:center;">
+      <a href="https://app.sendzyy.com" target="_blank"
+         style="display:inline-block;background:linear-gradient(135deg,#2E7D32,#43A047);color:#fff;text-decoration:none;font-size:16px;font-weight:700;padding:16px 56px;border-radius:50px;box-shadow:0 6px 20px rgba(46,125,50,0.38);letter-spacing:0.5px;">
+        🚀 &nbsp; Go to Dashboard
+      </a>
+    </td>
+  </tr>
+
+  <!-- Support Note -->
+  <tr>
+    <td style="padding:0 48px 36px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="background:#e3f2fd;border-left:4px solid #90CAF9;border-radius:0 10px 10px 0;padding:14px 18px;">
+            <p style="margin:0;color:#1565C0;font-size:13px;line-height:1.7;">
+              💬 <strong>Need help?</strong> Reply to this email or contact our support team. We're here to help you get the most out of Sendzyy.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- Footer -->
+  <tr>
+    <td style="background:#f5f5f5;border-top:1px solid #e0e0e0;padding:28px 48px;text-align:center;">
+      <p style="margin:0 0 4px;color:#1B5E20;font-size:15px;font-weight:700;">Sendzyy</p>
+      <p style="margin:0 0 10px;color:#aaa;font-size:12px;">WhatsApp Business Messaging · iFlora Info Pvt. Ltd.</p>
+      <p style="margin:0;color:#ccc;font-size:11px;">© ${new Date().getFullYear()} Sendzyy · <a href="https://app.sendzyy.com" style="color:#4CAF50;text-decoration:none;">app.sendzyy.com</a></p>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
+        });
+        console.log(` Invoice email sent to ${email}`);
+    } catch (error) { console.error(' Invoice email failed:', error); }
+}
+
+//  Auth Middleware 
+const authenticate = (req, res, next) => {
+    // Accept token from Authorization header OR ?token= query param (for browser window.open requests)
+    const token = req.headers['authorization']?.split(' ')[1] || req.query.token;
+    if (!token) return res.sendStatus(401);
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        if (!user.tenantId) return res.status(401).json({ error: 'Invalid session' });
+        req.user = user;
+        next();
+    });
+};
+
+// ── Instagram OAuth Connection Flow ──────────────────────────────────────────
+
+// 1. Initiate Instagram OAuth Flow
+app.get('/api/instagram/auth', authenticate, (req, res) => {
+    try {
+        const token = req.headers['authorization']?.split(' ')[1] || req.query.token;
+        const clientId = process.env.INSTAGRAM_CLIENT_ID;
+        const redirectUri = 'https://appapi.sendzyy.com/api/instagram/callback';
+        const scope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights';
+        const authUrl =
+            `https://www.instagram.com/oauth/authorize` +
+            `?force_reauth=true` +
+            `&client_id=${clientId}` +
+            `&redirect_uri=${redirectUri}` +
+            `&response_type=code` +
+            `&scope=${encodeURIComponent(scope)}` +
+            `&state=${encodeURIComponent(token)}`;
+
+        return res.redirect(authUrl);
+    } catch (error) {
+        console.error('[INSTAGRAM AUTH] ❌ ERROR');
+        console.error('[INSTAGRAM AUTH] Error message:', error.message);
+        console.error('[INSTAGRAM AUTH] Stack:', error.stack);
+
+        return res.status(500).json({
+            error: 'Internal Server Error'
+        });
+    }
+});
+
+// 2. OAuth Callback Handler
+app.get('/api/instagram/callback', async (req, res) => {
+    const { code, state } = req.query;
+    const targetFrontend = 'https://app.sendzyy.com';
+
+    // Check Instagram OAuth errors
+    if (req.query.error) {
+        console.error('[INSTAGRAM CALLBACK] ❌ Instagram returned an OAuth error');
+        console.error(
+            '[INSTAGRAM CALLBACK] Error:',
+            req.query.error
+        );
+        console.error(
+            '[INSTAGRAM CALLBACK] Reason:',
+            req.query.error_reason
+        );
+        console.error(
+            '[INSTAGRAM CALLBACK] Description:',
+            req.query.error_description
+        );
+
+        return res.redirect(
+            `${targetFrontend}/?error=${encodeURIComponent(
+                req.query.error_description ||
+                req.query.error ||
+                'Instagram authorization failed'
+            )}`
+        );
+    }
+
+    if (!code || !state) {
+        console.error(
+            '[INSTAGRAM CALLBACK] ❌ Missing code or state'
+        );
+        console.error(
+            '[INSTAGRAM CALLBACK] Code received:',
+            !!code
+        );
+        console.error(
+            '[INSTAGRAM CALLBACK] State received:',
+            !!state
+        );
+
+        return res.redirect(
+            `${targetFrontend}/?error=${encodeURIComponent(
+                'Missing code or state'
+            )}`
+        );
+    }
+
+    // 3. Verify JWT state
+    jwt.verify(
+        state,
+        process.env.JWT_SECRET,
+        async (err, user) => {
+            if (err) {
+                console.error(
+                    '[INSTAGRAM CALLBACK] ❌ JWT verification failed'
+                );
+                console.error(
+                    '[INSTAGRAM CALLBACK] JWT error:',
+                    err.message
+                );
+
+                return res.redirect(
+                    `${targetFrontend}/?error=${encodeURIComponent(
+                        'Invalid state token'
+                    )}`
+                );
+            }
+
+            if (!user?.tenantId) {
+                console.error(
+                    '[INSTAGRAM CALLBACK] ❌ tenantId missing in JWT'
+                );
+
+                return res.redirect(
+                    `${targetFrontend}/?error=${encodeURIComponent(
+                        'Tenant ID missing'
+                    )}`
+                );
+            }
+
+            const tenantId = user.tenantId;
+
+            try {
+                // 4. Check environment variables
+                const clientId =
+                    process.env.INSTAGRAM_CLIENT_ID;
+
+                const clientSecret =
+                    process.env.INSTAGRAM_CLIENT_SECRET ||
+                    process.env.META_APP_SECRET;
+
+                if (!clientId) {
+                    throw new Error(
+                        'INSTAGRAM_CLIENT_ID is not configured'
+                    );
+                }
+
+                if (!clientSecret) {
+                    throw new Error(
+                        'INSTAGRAM_CLIENT_SECRET or META_APP_SECRET is not configured'
+                    );
+                }
+
+                // 5. Exchange code for short-lived token
+                const redirectUri =
+                    'https://appapi.sendzyy.com/api/instagram/callback';
+
+                const tokenParams = new URLSearchParams();
+                tokenParams.append(
+                    'client_id',
+                    clientId
+                );
+                tokenParams.append(
+                    'client_secret',
+                    clientSecret
+                );
+                tokenParams.append(
+                    'grant_type',
+                    'authorization_code'
+                );
+                tokenParams.append(
+                    'redirect_uri',
+                    redirectUri
+                );
+                tokenParams.append(
+                    'code',
+                    code
+                );
+
+                const tokenResponse = await axios.post(
+                    'https://api.instagram.com/oauth/access_token',
+                    tokenParams,
+                    {
+                        headers: {
+                            'Content-Type':
+                                'application/x-www-form-urlencoded'
+                        }
+                    }
+                );
+
+                const {
+                    access_token: shortLivedToken
+                } = tokenResponse.data;
+
+                if (!shortLivedToken) {
+                    throw new Error(
+                        'Instagram did not return short-lived access token'
+                    );
+                }
+
+                // 6. Exchange short-lived → long-lived
+                const longLivedResponse =
+                    await axios.get(
+                        'https://graph.instagram.com/access_token',
+                        {
+                            params: {
+                                grant_type:
+                                    'ig_exchange_token',
+                                client_secret:
+                                    clientSecret,
+                                access_token:
+                                    shortLivedToken
+                            }
+                        }
+                    );
+
+                const {
+                    access_token: longLivedToken,
+                    expires_in
+                } = longLivedResponse.data;
+
+                if (!longLivedToken) {
+                    throw new Error(
+                        'Instagram did not return long-lived access token'
+                    );
+                }
+
+                // 7. Fetch Instagram profile
+                const profileResponse =
+                    await axios.get(
+                        'https://graph.instagram.com/me',
+                        {
+                            params: {
+                                fields:
+                                    'id,username,name',
+                                access_token:
+                                    longLivedToken
+                            }
+                        }
+                    );
+
+                const {
+                    id: instagramAccountId,
+                    username,
+                    name
+                } = profileResponse.data;
+
+                const tokenExpiry =
+                    expires_in
+                        ? new Date(
+                            Date.now() +
+                            expires_in * 1000
+                        )
+                        : null;
+
+                // 8. Find tenant
+                const tenant =
+                    await Tenant.findById(tenantId);
+
+                if (!tenant) {
+                    console.error(
+                        '[INSTAGRAM DATABASE] ❌ Tenant not found:',
+                        tenantId
+                    );
+
+                    return res.redirect(
+                        `${targetFrontend}/?error=${encodeURIComponent(
+                            'Tenant not found'
+                        )}`
+                    );
+                }
+
+                // 9. Save Instagram configuration
+                tenant.instagramConfig = {
+                    instagramAccountId,
+                    username,
+                    name: name || username,
+                    accessToken: longLivedToken,
+                    tokenExpiry,
+                    connected: true
+                };
+
+                await tenant.save();
+
+                return res.redirect(
+                    `${targetFrontend}/?instagram_connected=true`
+                );
+
+            } catch (error) {
+                console.error(
+                    '[INSTAGRAM CALLBACK] ❌ ERROR DURING OAUTH FLOW'
+                );
+                console.error(
+                    '[INSTAGRAM CALLBACK] Error message:',
+                    error.message
+                );
+                console.error(
+                    '[INSTAGRAM CALLBACK] Error response:',
+                    error.response?.data || 'No response data'
+                );
+                console.error(
+                    '[INSTAGRAM CALLBACK] HTTP status:',
+                    error.response?.status || 'N/A'
+                );
+                console.error(
+                    '[INSTAGRAM CALLBACK] Stack:',
+                    error.stack
+                );
+
+                const errMsg =
+                    error.response?.data?.error_message ||
+                    error.response?.data?.error?.message ||
+                    error.message ||
+                    'Instagram connection failed';
+
+                console.error(
+                    '[INSTAGRAM CALLBACK] Redirecting with error:',
+                    errMsg
+                );
+
+                return res.redirect(
+                    `${targetFrontend}/?error=${encodeURIComponent(
+                        errMsg
+                    )}`
+                );
+            }
+        }
+    );
+});
+
+
+// 4. Get Instagram Profile
+app.get('/api/instagram/profile', authenticate, async (req, res) => {
+    try {
+        const tenant =
+            await Tenant.findById(req.user.tenantId);
+
+        if (!tenant) {
+            console.error(
+                '[INSTAGRAM PROFILE API] ❌ Tenant not found'
+            );
+
+            return res.status(404).json({
+                error: 'Tenant not found'
+            });
+        }
+
+        let config =
+            tenant.instagramConfig || {
+                connected: false
+            };
+
+        // Auto-refresh long-lived token if it is connected
+        // and expires in less than 15 days
+        if (
+            config.connected &&
+            config.accessToken &&
+            config.tokenExpiry
+        ) {
+            const expiryTime =
+                new Date(config.tokenExpiry).getTime();
+
+            const timeDiff =
+                expiryTime - Date.now();
+
+            const fifteenDaysInMs =
+                15 * 24 * 60 * 60 * 1000;
+
+            if (
+                timeDiff > 0 &&
+                timeDiff < fifteenDaysInMs
+            ) {
+                try {
+                    const refreshResponse =
+                        await axios.get(
+                            'https://graph.instagram.com/refresh_access_token',
+                            {
+                                params: {
+                                    grant_type:
+                                        'ig_refresh_token',
+                                    access_token:
+                                        config.accessToken
+                                }
+                            }
+                        );
+
+                    const {
+                        access_token: newAccessToken,
+                        expires_in: newExpiresIn
+                    } = refreshResponse.data;
+
+                    const newTokenExpiry =
+                        newExpiresIn
+                            ? new Date(
+                                Date.now() +
+                                newExpiresIn * 1000
+                            )
+                            : null;
+
+                    tenant.instagramConfig.accessToken =
+                        newAccessToken;
+
+                    tenant.instagramConfig.tokenExpiry =
+                        newTokenExpiry;
+
+                    await tenant.save();
+
+                    config =
+                        tenant.instagramConfig;
+
+                } catch (refreshErr) {
+                    console.error(
+                        '[INSTAGRAM REFRESH] ❌ Refresh failed'
+                    );
+                    console.error(
+                        '[INSTAGRAM REFRESH] Error:',
+                        refreshErr.message
+                    );
+                    console.error(
+                        '[INSTAGRAM REFRESH] Response:',
+                        refreshErr.response?.data ||
+                        'No response data'
+                    );
+                }
+            }
+        }
+
+        // IMPORTANT:
+        // Never return Instagram access token to frontend
+        const safeConfig = {
+            instagramAccountId:
+                config.instagramAccountId,
+            username:
+                config.username,
+            name:
+                config.name,
+            tokenExpiry:
+                config.tokenExpiry,
+            connected:
+                config.connected
+        };
+
+        return res.json(safeConfig);
+
+    } catch (error) {
+        console.error(
+            '[INSTAGRAM PROFILE API] ❌ ERROR:',
+            error.message
+        );
+        console.error(
+            '[INSTAGRAM PROFILE API] Stack:',
+            error.stack
+        );
+
+        return res.status(500).json({
+            error: 'Internal Server Error'
+        });
+    }
+});
+
+
+// 5. Disconnect Instagram Profile
+app.post('/api/instagram/disconnect', authenticate, async (req, res) => {
+    try {
+        const tenant =
+            await Tenant.findById(req.user.tenantId);
+
+        if (!tenant) {
+            console.error(
+                '[INSTAGRAM DISCONNECT] ❌ Tenant not found'
+            );
+
+            return res.status(404).json({
+                error: 'Tenant not found'
+            });
+        }
+
+        tenant.instagramConfig = {
+            instagramAccountId: '',
+            username: '',
+            name: '',
+            accessToken: '',
+            tokenExpiry: null,
+            connected: false
+        };
+
+        await tenant.save();
+
+        return res.json({
+            success: true,
+            message: 'Instagram profile disconnected'
+        });
+
+    } catch (error) {
+        console.error(
+            '[INSTAGRAM DISCONNECT] ❌ ERROR:',
+            error.message
+        );
+
+        console.error(
+            '[INSTAGRAM DISCONNECT] Stack:',
+            error.stack
+        );
+
+        return res.status(500).json({
+            error: 'Internal Server Error'
+        });
+    }
+});
+
+//  System Update broadcast (triggered via Postman/admin)
+app.post('/api/admin/system-update', (req, res) => {
+    const { secret, message } = req.body;
+    const adminSecret = process.env.ADMIN_UPDATE_SECRET || 'sendzyy-update-secret-9988';
+
+    if (!secret || secret !== adminSecret) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
+    }
+
+    if (!message || typeof message !== 'string') {
+        return res.status(400).json({ error: 'Bad Request: Message is required and must be a string' });
+    }
+
+    console.log(`[System Update] Triggered update alert broadcast with message: "${message}"`);
+
+    // Broadcast update alert to all connected sockets
+    io.emit('system_update', { message });
+
+    return res.json({ success: true, message: 'Broadcast sent to all clients.' });
+});
+
+// ── Admin: Upgrade all existing tenants to permanent never-expiring tokens ──
+// POST /api/admin/regenerate-permanent-tokens
+// Use this once after setting META_SYSTEM_TOKEN to upgrade all tenants who
+// were onboarded with a short-lived user token.
+// Protected by ADMIN_UPDATE_SECRET (same as system-update).
+app.post('/api/admin/regenerate-permanent-tokens', async (req, res) => {
+    const { secret } = req.body;
+    const adminSecret = process.env.ADMIN_UPDATE_SECRET || 'sendzyy-update-secret-9988';
+    if (!secret || secret !== adminSecret) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
+    }
+
+    const systemToken = process.env.META_SYSTEM_TOKEN;
+    if (!systemToken || systemToken === 'PASTE_YOUR_SYSTEM_USER_TOKEN_HERE') {
+        return res.status(400).json({
+            error: 'META_SYSTEM_TOKEN is not set in .env. Set it first then call this endpoint.'
+        });
+    }
+
+    // Respond immediately — processing is async
+    res.json({ success: true, message: 'Permanent token regeneration started in background. Check /onboarding-logs for progress.' });
+
+    // Background processing
+    (async () => {
+        const tenants = await Tenant.find({
+            'whatsappConfig.verified': true,
+            'whatsappConfig.businessPortfolioId': { $ne: null, $exists: true },
+        }).select('_id whatsappConfig name email').lean();
+
+        console.log(`[Admin] Starting permanent token regeneration for ${tenants.length} tenants...`);
+
+        let upgraded = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        for (const tenant of tenants) {
+            const cfg = tenant.whatsappConfig;
+
+            // Skip tenants that already have a permanent system_user token
+            if (cfg.tokenType === 'system_user' && !cfg.tokenExpiry) {
+                skipped++;
+                continue;
+            }
+
+            try {
+                const result = await processOnboarding(
+                    cfg.businessAccountId,
+                    cfg.businessPortfolioId,
+                    tenant._id.toString(),
+                    null
+                );
+
+                if (result?.businessToken) {
+                    upgraded++;
+                    console.log(`[Admin] ✅ Upgraded tenant ${tenant._id} (${tenant.email}) to permanent token`);
+                } else {
+                    failed++;
+                    console.warn(`[Admin] ⚠️ Tenant ${tenant._id} (${tenant.email}) — processOnboarding returned no business token`);
+                }
+            } catch (err) {
+                failed++;
+                console.error(`[Admin] ❌ Failed to upgrade tenant ${tenant._id} (${tenant.email}):`, err.message);
+            }
+        }
+
+        console.log(`[Admin] Permanent token regeneration complete. Upgraded: ${upgraded}, Skipped (already permanent): ${skipped}, Failed: ${failed}`);
+    })().catch(err => {
+        console.error('[Admin] Fatal error in regenerate-permanent-tokens:', err.message);
+    });
+});
+
+// ── NOTIFICATION REST API ENDPOINTS ───────────────────────────────────────────
+
+// 1. Register or update FCM Device Token
+app.post('/api/notifications/register-token', async (req, res) => {
+    const { tenantId, token, platform, deviceId, deviceName, appVersion } = req.body;
+    if (!tenantId || !token || !platform) {
+        return res.status(400).json({ error: 'tenantId, token, and platform are required' });
+    }
+
+    try {
+        const FCMToken = mongoose.model('FCMToken');
+        const updatedToken = await FCMToken.findOneAndUpdate(
+            { token },
+            {
+                tenantId,
+                token,
+                platform,
+                deviceId: deviceId || null,
+                deviceName: deviceName || null,
+                appVersion: appVersion || null,
+                isActive: true,
+                lastUsedAt: new Date()
+            },
+            { upsert: true, new: true }
+        );
+
+        // Deactivate or remove any old stale tokens for the same deviceId
+        if (deviceId) {
+            await FCMToken.deleteMany({
+                deviceId,
+                token: { $ne: token }
+            });
+        }
+
+        // Subscribe device token to tenant FCM topic
+        await FCMService.subscribeToTenantTopic(token, tenantId);
+
+        res.json({ success: true, token: updatedToken });
+    } catch (err) {
+        console.error('[Notifications API] Error registering token:', err.message);
+        res.status(500).json({ error: 'Failed to register token' });
+    }
+});
+
+// 2. Get Notifications (Paginated)
+app.get('/api/notifications', async (req, res) => {
+    const tenantId = req.headers['tenant-id'] || req.query.tenantId;
+    if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
+
+    try {
+        const { page, limit, category, unreadOnly } = req.query;
+        const result = await NotificationService.getForTenant(tenantId, {
+            page: parseInt(page, 10) || 1,
+            limit: parseInt(limit, 10) || 20,
+            category: category || 'all',
+            unreadOnly: unreadOnly === 'true'
+        });
+        res.json(result);
+    } catch (err) {
+        console.error('[Notifications API] Error fetching notifications:', err.message);
+        res.status(500).json({ error: 'Failed to fetch notifications' });
+    }
+});
+
+// 3. Get Unread Notification Count
+app.get('/api/notifications/count', async (req, res) => {
+    const tenantId = req.headers['tenant-id'] || req.query.tenantId;
+    if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
+
+    try {
+        const count = await NotificationService.getUnreadCount(tenantId);
+        res.json({ unreadCount: count });
+    } catch (err) {
+        console.error('[Notifications API] Error fetching unread count:', err.message);
+        res.status(500).json({ error: 'Failed to fetch unread count' });
+    }
+});
+
+// 4. Mark single notification as read
+app.patch('/api/notifications/:id/read', async (req, res) => {
+    const tenantId = req.headers['tenant-id'] || req.body.tenantId;
+    const notificationId = req.params.id;
+    if (!tenantId || !notificationId) {
+        return res.status(400).json({ error: 'tenantId and notificationId are required' });
+    }
+
+    try {
+        const result = await NotificationService.markRead(notificationId, tenantId);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[Notifications API] Error marking notification read:', err.message);
+        res.status(500).json({ error: 'Failed to mark notification read' });
+    }
+});
+
+// 5. Mark all notifications as read for tenant
+app.patch('/api/notifications/mark-all-read', async (req, res) => {
+    const tenantId = req.headers['tenant-id'] || req.body.tenantId;
+    if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
+
+    try {
+        const result = await NotificationService.markAllRead(tenantId);
+        res.json(result);
+    } catch (err) {
+        console.error('[Notifications API] Error marking all read:', err.message);
+        res.status(500).json({ error: 'Failed to mark all read' });
+    }
+});
+
+// 5b. Clear/Delete all notifications for a tenant
+app.delete('/api/notifications/clear-all', async (req, res) => {
+    const tenantId = req.headers['tenant-id'] || req.query.tenantId || req.body?.tenantId;
+    const category = req.query.category || req.body?.category || null;
+    if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
+
+    try {
+        const result = await NotificationService.deleteAll(tenantId, category);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[Notifications API] Error clearing all notifications:', err.message);
+        res.status(500).json({ error: 'Failed to clear all notifications' });
+    }
+});
+
+// 6. Delete notification (soft delete)
+app.delete('/api/notifications/:id', async (req, res) => {
+    const tenantId = req.headers['tenant-id'] || req.query.tenantId;
+    const notificationId = req.params.id;
+    if (!tenantId || !notificationId) {
+        return res.status(400).json({ error: 'tenantId and notificationId are required' });
+    }
+
+    try {
+        const result = await NotificationService.delete(notificationId, tenantId);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[Notifications API] Error deleting notification:', err.message);
+        res.status(500).json({ error: 'Failed to delete notification' });
+    }
+});
+
+// 7. Send Test Notification (for local development testing)
+app.post('/api/notifications/test', async (req, res) => {
+    const { tenantId, title, body, category } = req.body;
+    if (!tenantId) return res.status(400).json({ error: 'tenantId is required' });
+
+    try {
+        const notification = await NotificationService.create({
+            tenantId,
+            title: title || '🔔 Test Notification',
+            body: body || 'This is a test notification from local development server!',
+            type: 'system',
+            category: category || 'system',
+            actionData: { screen: 'test' }
+        });
+        res.json({ success: true, notification });
+    } catch (err) {
+        console.error('[Notifications API] Test notification error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+//  Register — validates only, does NOT save to DB. Returns a short-lived registration token.
+app.post('/register', async (req, res) => {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: 'Missing fields' });
+    try {
+        const existing = await Tenant.findOne({ email });
+        if (existing) return res.status(400).json({ error: 'Email already registered' });
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Issue a short-lived registration token (15 min) — no DB write yet
+        const regToken = jwt.sign(
+            { type: 'registration', name, email, hashedPassword },
+            process.env.JWT_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        res.status(201).json({ message: 'Validation successful. Complete payment to activate.', regToken });
+    } catch (error) {
+        console.error(' Registration Error:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// Create panel order for NEW registration (public - uses regToken)
+app.post('/create-panel-order-register', async (req, res) => {
+    const { regToken, planId } = req.body;
+    if (!regToken) return res.status(400).json({ error: 'regToken required' });
+    let regData;
+    try {
+        regData = jwt.verify(regToken, process.env.JWT_SECRET);
+        if (regData.type !== 'registration') return res.status(400).json({ error: 'Invalid registration token' });
+    } catch (e) {
+        return res.status(401).json({ error: 'Registration token expired or invalid. Please register again.' });
+    }
+    if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+    const plan = await getPlanById(planId);
+    try {
+        const order = await razorpay.orders.create({
+            amount: plan.totalPrice * 100,
+            currency: 'INR',
+            receipt: `reg_${Date.now()}`,
+            payment_capture: 1, // Auto-capture: no manual capture needed on Razorpay dashboard
+            notes: { email: regData.email, panelDays: plan.panelDays, planId: plan.id }
+        });
+        res.json({ ...order, panelDays: plan.panelDays, price: plan.totalPrice, planId: plan.id });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create order', details: error });
+    }
+});
+
+// Verify panel payment for NEW registration - creates tenant in DB only on success
+app.post('/verify-panel-payment-register', async (req, res) => {
+    const { regToken, planId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    if (!regToken) return res.status(400).json({ error: 'regToken required' });
+    let regData;
+    try {
+        regData = jwt.verify(regToken, process.env.JWT_SECRET);
+        if (regData.type !== 'registration') return res.status(400).json({ error: 'Invalid registration token' });
+    } catch (e) {
+        return res.status(401).json({ error: 'Registration token expired. Please register again.' });
+    }
+    const plan = await getPlanById(planId);
+    try {
+        const expectedSignature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest('hex');
+        if (expectedSignature !== razorpay_signature)
+            return res.status(400).json({ error: 'Invalid payment signature' });
+
+        const existing = await Tenant.findOne({ email: regData.email });
+        if (existing) return res.status(400).json({ error: 'Email already registered' });
+
+        const now = new Date();
+        const panelExpiresAt = new Date(now.getTime() + plan.panelDays * 24 * 60 * 60 * 1000);
+
+        const tenant = await Tenant.create({
+            name: regData.name,
+            email: regData.email,
+            password: regData.hashedPassword,
+            subscription: {
+                planId: plan.id,
+                planName: plan.name,
+                price: plan.totalPrice,
+                expiryDate: panelExpiresAt,
+                lastPaymentId: razorpay_payment_id,
+                lastPaymentDate: now,
+            },
+            status: 'active',
+        });
+
+        sendCredentialsEmail(regData.email, '(your chosen password)', regData.name);
+        try { sendInvoiceEmail(regData.email, regData.name, razorpay_payment_id, { name: plan.name, credits: 0, price: plan.totalPrice }, plan.totalPrice); } catch (_) { }
+
+        // Save payment record
+        await PaymentRecord.create({
+            tenantId: tenant._id.toString(),
+            paymentId: razorpay_payment_id,
+            orderId: razorpay_order_id,
+            category: 'panel_renewal',
+            description: `${plan.name} — New Registration`,
+            amount: plan.totalPrice,
+            timestamp: now,
+        });
+
+        res.json({ success: true, message: 'Account created. Please log in.' });
+    } catch (error) {
+        console.error(' Registration payment verification error:', error);
+        res.status(500).json({ error: 'Failed to complete registration', details: error.message });
+    }
+});
+
+//  Login 
+app.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    try {
+        const tenant = await Tenant.findOne({ email });
+        if (!tenant) return res.status(401).json({ error: 'Invalid credentials' });
+
+        const isMatch = await bcrypt.compare(password, tenant.password);
+        if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
+
+        // Block login if account status is inactive
+        if (tenant.status === 'inactive') {
+            return res.status(403).json({
+                error: 'account_inactive',
+                message: 'Your account is inactive. Please contact support.',
+            });
+        }
+
+        // Block login if no paid plan has ever been activated
+        const planId = tenant.subscription?.planId;
+        if (!planId || planId === 'free') {
+            return res.status(403).json({
+                error: 'no_subscription',
+                message: 'No active subscription found. Please complete your plan purchase to log in.',
+            });
+        }
+
+        // Block login if panel subscription has expired
+        if (tenant.subscription?.expiryDate) {
+            const now = new Date();
+            const expiryDate = new Date(tenant.subscription.expiryDate);
+            if (now > expiryDate) {
+                return res.status(403).json({
+                    error: 'subscription_expired',
+                    message: 'Your subscription has expired. Please renew your plan to continue.',
+                    expiredAt: tenant.subscription.expiryDate,
+                });
+            }
+        }
+
+        const token = jwt.sign(
+            { tenantId: tenant._id.toString(), email: tenant.email },
+            process.env.JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.json({
+            token,
+            tenant: {
+                id: tenant._id.toString(),
+                name: tenant.name,
+                email: tenant.email,
+                status: tenant.status || 'active',
+                subscription: tenant.subscription,
+                whatsappConfig: tenant.whatsappConfig,
+            }
+        });
+    } catch (error) {
+        console.error(' Login Error:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// Panel plans - returns all available plans from DB table
+app.get('/panel-plans', async (req, res) => {
+    try {
+        const packages = await PanelPackage.find({ isActive: { $ne: false } }).sort({ panelDays: 1 });
+        res.json(packages.map(p => ({
+            id: p.planId,
+            name: p.name,
+            description: p.description,
+            basePrice: p.basePrice,
+            gstPercent: p.gstPercent,
+            totalPrice: p.totalPrice,
+            panelDays: p.panelDays,
+        })));
+    } catch (error) {
+        console.error('Error fetching panel packages:', error);
+        res.status(500).json({ error: 'Failed to fetch panel packages' });
+    }
+});
+// Create panel order for authenticated renewal
+app.post('/create-panel-order', authenticate, async (req, res) => {
+    if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+    const plan = await getPlanById(req.body.planId);
+    try {
+        const order = await razorpay.orders.create({
+            amount: plan.totalPrice * 100,
+            currency: 'INR',
+            receipt: `panel_${Date.now()}`,
+            payment_capture: 1, // Auto-capture: no manual capture needed on Razorpay dashboard
+            notes: { tenantId: req.user.tenantId, panelDays: plan.panelDays, planId: plan.id }
+        });
+        res.json({ ...order, panelDays: plan.panelDays, price: plan.totalPrice, planId: plan.id });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create panel order', details: error });
+    }
+});
+
+// Create panel order for RENEWAL - public, authenticates via email+password
+app.post('/create-panel-order-renew', async (req, res) => {
+    const { email, password, planId } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    const tenant = await Tenant.findOne({ email });
+    if (!tenant) return res.status(401).json({ error: 'Invalid credentials' });
+    const valid = await bcrypt.compare(password, tenant.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+    const plan = await getPlanById(planId);
+    try {
+        const order = await razorpay.orders.create({
+            amount: plan.totalPrice * 100,
+            currency: 'INR',
+            receipt: `renew_${Date.now()}`,
+            payment_capture: 1, // Auto-capture: no manual capture needed on Razorpay dashboard
+            notes: { tenantId: tenant._id.toString(), panelDays: plan.panelDays, planId: plan.id }
+        });
+        res.json({ ...order, panelDays: plan.panelDays, price: plan.totalPrice, planId: plan.id });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create panel order', details: error });
+    }
+});
+
+// Verify panel payment for RENEWAL - public, authenticates via email+password
+app.post('/verify-panel-payment-renew', async (req, res) => {
+    const { email, password, planId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+    const tenant = await Tenant.findOne({ email });
+    if (!tenant) return res.status(401).json({ error: 'Invalid credentials' });
+    const valid = await bcrypt.compare(password, tenant.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    const plan = await getPlanById(planId);
+    try {
+        const expectedSignature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest('hex');
+        if (expectedSignature !== razorpay_signature)
+            return res.status(400).json({ error: 'Invalid payment signature' });
+        const now = new Date();
+        const panelExpiresAt = new Date(now.getTime() + plan.panelDays * 24 * 60 * 60 * 1000);
+        await Tenant.findByIdAndUpdate(tenant._id, {
+            'subscription.planId': plan.id,
+            'subscription.planName': plan.name,
+            'subscription.price': plan.totalPrice,
+            'subscription.expiryDate': panelExpiresAt,
+            'subscription.lastPaymentId': razorpay_payment_id,
+            'subscription.lastPaymentDate': now,
+        });
+        try { sendInvoiceEmail(tenant.email, tenant.name, razorpay_payment_id, { name: plan.name, credits: 0, price: plan.totalPrice }, plan.totalPrice); } catch (_) { }
+        await PaymentRecord.create({
+            tenantId: tenant._id.toString(),
+            paymentId: razorpay_payment_id,
+            orderId: razorpay_order_id,
+            category: 'panel_renewal',
+            description: `${plan.name} — Renewal`,
+            amount: plan.totalPrice,
+            timestamp: now,
+        });
+        res.json({ success: true, panelExpiresAt });
+    } catch (error) {
+        res.status(500).json({ error: 'Panel payment verification failed', details: error.message });
+    }
+});
+
+// Verify panel payment - authenticated renewal
+app.post('/verify-panel-payment', authenticate, async (req, res) => {
+    const { planId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const tenantId = req.user.tenantId;
+    const plan = await getPlanById(planId);
+    try {
+        const expectedSignature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest('hex');
+        if (expectedSignature !== razorpay_signature)
+            return res.status(400).json({ error: 'Invalid payment signature' });
+        const now = new Date();
+        const panelExpiresAt = new Date(now.getTime() + plan.panelDays * 24 * 60 * 60 * 1000);
+        await Tenant.findByIdAndUpdate(tenantId, {
+            'subscription.planId': plan.id,
+            'subscription.planName': plan.name,
+            'subscription.price': plan.totalPrice,
+            'subscription.expiryDate': panelExpiresAt,
+            'subscription.lastPaymentId': razorpay_payment_id,
+            'subscription.lastPaymentDate': now,
+        });
+        const tenant = await Tenant.findById(tenantId);
+        try { sendInvoiceEmail(tenant.email, tenant.name, razorpay_payment_id, { name: plan.name, credits: 0, price: plan.totalPrice }, plan.totalPrice); } catch (_) { }
+        await PaymentRecord.create({
+            tenantId,
+            paymentId: razorpay_payment_id,
+            orderId: razorpay_order_id,
+            category: 'panel_renewal',
+            description: `${plan.name} — Renewal`,
+            amount: plan.totalPrice,
+            timestamp: now,
+        });
+
+        // Trigger payment notification
+        try {
+            await NotificationService.create({
+                tenantId,
+                title: '💳 Payment Successful',
+                body: `${plan.name} plan activated! Your account is valid till ${panelExpiresAt.toLocaleDateString('en-IN')}`,
+                type: 'payment_success',
+                category: 'payment',
+                actionData: { screen: 'payments' }
+            });
+        } catch (_) { }
+
+        res.json({ success: true, panelExpiresAt });
+    } catch (error) {
+        res.status(500).json({ error: 'Panel payment verification failed', details: error.message });
+    }
+});
+
+app.get('/config', (req, res) => res.json({ razorpayKeyId: process.env.RAZORPAY_KEY_ID }));
+
+// Payment history for authenticated tenant
+app.get('/payment-history', authenticate, async (req, res) => {
+    try {
+        const records = await PaymentRecord.find({ tenantId: req.user.tenantId })
+            .sort({ timestamp: -1 })
+            .limit(100)
+            .lean();
+        res.json(records);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch payment history' });
+    }
+});
+
+//  Webhook Verification 
+app.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    if (mode && token === VERIFY_TOKEN) {
+        console.log(' Webhook Verified!');
+        return res.status(200).send(challenge);
+    }
+    res.sendStatus(403);
+});
+
+//  Templates 
+app.get('/fetch-templates', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        const config = tenant.whatsappConfig;
+        if (!config.accessToken || !config.businessAccountId)
+            return res.status(400).json({ error: 'WhatsApp not configured' });
+        const response = await axios.get(
+            `${WHATSAPP_API_URL}/${config.businessAccountId}/message_templates`,
+            { headers: { Authorization: `Bearer ${config.accessToken}` } }
+        );
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json({ error: 'Failed to fetch templates' });
+    }
+});
+
+app.delete('/delete-template', authenticate, async (req, res) => {
+    const { name } = req.query;
+    if (!name) return res.status(400).json({ error: 'Template name is required' });
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        const config = tenant.whatsappConfig;
+        if (!config.accessToken || !config.businessAccountId)
+            return res.status(400).json({ error: 'WhatsApp not configured' });
+        const response = await axios.delete(
+            `${WHATSAPP_API_URL}/${config.businessAccountId}/message_templates`,
+            { params: { name }, headers: { Authorization: `Bearer ${config.accessToken}` } }
+        );
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json({ error: 'Failed to delete template', details: error.response?.data || error.message });
+    }
+});
+
+app.post('/create-template', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        const config = tenant.whatsappConfig;
+        if (!config.accessToken || !config.businessAccountId)
+            return res.status(400).json({ error: 'WhatsApp not configured' });
+        const response = await axios.post(
+            `${WHATSAPP_API_URL}/${config.businessAccountId}/message_templates`,
+            req.body,
+            { headers: { Authorization: `Bearer ${config.accessToken}` } }
+        );
+        res.json(response.data);
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        res.status(error.response?.status || 500).json({ error: 'Failed to create template', details: errorData });
+    }
+});
+
+// In-memory OTP store: key = `${tenantId}:${phone}` → { otp, expiresAt }
+const otpStore = new Map();
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+// Test Authentication Template — generate OTP and send via WhatsApp
+app.post('/send-otp', authenticate, async (req, res) => {
+    const { to, templateName, languageCode } = req.body;
+    if (!to || !templateName) return res.status(400).json({ error: 'to and templateName are required' });
+
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        const config = tenant.whatsappConfig;
+        if (!config.accessToken || !config.phoneNumberId)
+            return res.status(400).json({ error: 'WhatsApp not configured' });
+
+        // Generate 6-digit OTP and store with TTL
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const key = `${req.user.tenantId}:${to}`;
+        otpStore.set(key, { otp, expiresAt: Date.now() + OTP_TTL_MS });
+
+        const payload = {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'template',
+            template: {
+                name: templateName,
+                language: { code: languageCode || 'en' },
+                components: [
+                    { type: 'body', parameters: [{ type: 'text', text: otp }] },
+                    { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: otp }] },
+                ],
+            },
+        };
+
+        const response = await axios.post(
+            `${WHATSAPP_API_URL}/${config.phoneNumberId}/messages`,
+            payload,
+            { headers: { Authorization: `Bearer ${config.accessToken}` } }
+        );
+
+        res.json({ success: true, wamid: response.data.messages?.[0]?.id });
+    } catch (error) {
+        console.error(' Send OTP Error:', error.response?.data || error.message);
+        res.status(error.response?.status || 500).json({
+            error: 'Failed to send OTP',
+            details: error.response?.data || error.message,
+        });
+    }
+});
+
+// Verify OTP
+app.post('/verify-otp', authenticate, async (req, res) => {
+    const { to, otp } = req.body;
+    if (!to || !otp) return res.status(400).json({ error: 'to and otp are required' });
+
+    const key = `${req.user.tenantId}:${to}`;
+    const record = otpStore.get(key);
+
+    if (!record) return res.status(400).json({ error: 'No OTP found for this number. Please request a new one.' });
+    if (Date.now() > record.expiresAt) {
+        otpStore.delete(key);
+        return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+    }
+    if (record.otp !== otp.trim()) {
+        return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
+    }
+
+    otpStore.delete(key); // single-use
+    res.json({ success: true, message: 'OTP verified successfully.' });
+});
+
+//  Profile & Config 
+app.get('/me', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        res.json({
+            id: tenant._id.toString(),
+            name: tenant.name,
+            email: tenant.email,
+            status: tenant.status || 'active',
+            createdAt: tenant.createdAt,
+            subscription: {
+                ...tenant.subscription.toObject(),
+                expiresAt: tenant.subscription.expiryDate,
+            },
+            whatsappConfig: tenant.whatsappConfig,
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch profile' });
+    }
+});
+
+app.post('/update-config', authenticate, async (req, res) => {
+    const { phoneNumberId, accessToken, businessAccountId, metaAppId, displayPhone, verifiedName, qualityRating, throughputLevel, catalogId, catalogs } = req.body;
+    try {
+        const updateFields = {
+            'whatsappConfig.verified': true,
+        };
+        if (phoneNumberId !== undefined) updateFields['whatsappConfig.phoneNumberId'] = phoneNumberId;
+        if (accessToken !== undefined) updateFields['whatsappConfig.accessToken'] = accessToken;
+        if (businessAccountId !== undefined) updateFields['whatsappConfig.businessAccountId'] = businessAccountId;
+        if (metaAppId !== undefined) updateFields['whatsappConfig.metaAppId'] = metaAppId;
+        if (displayPhone !== undefined) updateFields['whatsappConfig.displayPhone'] = displayPhone;
+        if (verifiedName !== undefined) updateFields['whatsappConfig.verifiedName'] = verifiedName;
+        if (qualityRating !== undefined) updateFields['whatsappConfig.qualityRating'] = qualityRating;
+        if (throughputLevel !== undefined) updateFields['whatsappConfig.throughputLevel'] = throughputLevel;
+        if (catalogId !== undefined) updateFields['whatsappConfig.catalogId'] = catalogId;
+        if (catalogs !== undefined) updateFields['whatsappConfig.catalogs'] = catalogs;
+
+        const updatedTenant = await Tenant.findByIdAndUpdate(req.user.tenantId, { $set: updateFields }, { new: true });
+        if (updatedTenant && (accessToken || businessAccountId)) {
+            CatalogService.syncCatalogs(updatedTenant).catch(e => console.warn('[update-config] Background catalog sync notice:', e.message));
+        }
+        res.json({ success: true, message: 'Configuration updated' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to update configuration' });
+    }
+});
+
+// ── PATCH /api/tenant/status & PATCH /api/tenant/:id/status ───────────────────
+// Update tenant status ('active' / 'inactive')
+const updateTenantStatusHandler = async (req, res) => {
+    try {
+        const { status, tenantId: bodyTenantId } = req.body;
+        const targetId = req.params.id || bodyTenantId || req.user?.tenantId;
+
+        if (!targetId) {
+            return res.status(400).json({ error: 'tenantId is required' });
+        }
+
+        if (!status || !['active', 'inactive'].includes(status)) {
+            return res.status(400).json({ error: "status must be 'active' or 'inactive'" });
+        }
+
+        const updatedTenant = await Tenant.findByIdAndUpdate(
+            targetId,
+            { $set: { status } },
+            { new: true }
+        );
+
+        if (!updatedTenant) {
+            return res.status(404).json({ error: 'Tenant not found' });
+        }
+
+        res.json({
+            success: true,
+            message: `Tenant status updated to ${status}`,
+            tenant: {
+                id: updatedTenant._id.toString(),
+                name: updatedTenant.name,
+                email: updatedTenant.email,
+                status: updatedTenant.status,
+                subscription: updatedTenant.subscription,
+                whatsappConfig: updatedTenant.whatsappConfig,
+                createdAt: updatedTenant.createdAt,
+                updatedAt: updatedTenant.updatedAt,
+            }
+        });
+    } catch (error) {
+        console.error('Error updating tenant status:', error);
+        res.status(500).json({ error: 'Failed to update tenant status', details: error.message });
+    }
+};
+
+app.patch('/api/tenant/status', (req, res, next) => {
+    if (req.headers['authorization'] || req.query.token) {
+        return authenticate(req, res, () => updateTenantStatusHandler(req, res));
+    }
+    updateTenantStatusHandler(req, res);
+});
+// NOTE: /api/tenant/:id/status and /api/tenants/:id/status are now registered in the Super Admin module
+// with authenticateSuperAdmin middleware for proper access control.
+
+
+
+
+// GET /onboarding-status — Checks verification status dynamically from Meta and templates setup
+app.get('/onboarding-status', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        
+        const config = tenant.whatsappConfig || {};
+        const wabaId = config.businessAccountId;
+        const accessToken = config.accessToken;
+        const phoneId = config.phoneNumberId;
+        
+        const status = {
+            whatsappConnected: !!(wabaId && accessToken),
+            phoneVerified: !!phoneId,
+            metaBusinessVerified: 'NOT_VERIFIED', // VERIFIED | PENDING | NOT_VERIFIED
+            hasApprovedTemplate: false
+        };
+        
+        if (status.whatsappConnected) {
+            try {
+                const wabaRes = await axios.get(
+                    `${WHATSAPP_API_URL}/${wabaId}`,
+                    {
+                        params: {
+                            fields: 'business_verification_status',
+                            access_token: accessToken
+                        }
+                    }
+                );
+                
+                const metaStatus = wabaRes.data?.business_verification_status;
+                if (metaStatus === 'verified') {
+                    status.metaBusinessVerified = 'VERIFIED';
+                } else if (['pending', 'pending_need_feedback', 'pending_rca', 'pending_submission', 'in_eligibility_review'].includes(metaStatus)) {
+                    status.metaBusinessVerified = 'PENDING';
+                } else {
+                    status.metaBusinessVerified = 'NOT_VERIFIED';
+                }
+            } catch (err) {
+                console.error('[OnboardingStatus] Failed to fetch business_verification_status:', err.response?.data || err.message);
+            }
+            
+            try {
+                const templatesRes = await axios.get(
+                    `${WHATSAPP_API_URL}/${wabaId}/message_templates`,
+                    {
+                        params: {
+                            access_token: accessToken,
+                            limit: 100
+                        }
+                    }
+                );
+                const templates = templatesRes.data?.data || [];
+                status.hasApprovedTemplate = templates.some(t => t.status === 'APPROVED');
+            } catch (err) {
+                console.error('[OnboardingStatus] Failed to fetch message templates:', err.response?.data || err.message);
+            }
+        }
+        
+        res.json(status);
+    } catch (error) {
+        console.error('[OnboardingStatus] Fatal error:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// GET /template-rejection-reason/:name — Fetches cached rejection reason for a template
+app.get('/template-rejection-reason/:name', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        
+        const templateName = req.params.name;
+        const savedReason = tenant.whatsappConfig?.templateRejections?.get(templateName) || null;
+        
+        res.json({ name: templateName, reason: savedReason });
+    } catch (error) {
+        console.error('[TemplateRejectionReason] Error:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// GET /token-status — Returns token health info for the authenticated tenant
+// Used by the frontend to show reconnect banners and warnings
+app.get('/token-status', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId).select('whatsappConfig').lean();
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        const cfg = tenant.whatsappConfig || {};
+        const now = new Date();
+        const tokenExpiry = cfg.tokenExpiry ? new Date(cfg.tokenExpiry) : null;
+        const daysLeft = tokenExpiry ? Math.ceil((tokenExpiry - now) / (1000 * 60 * 60 * 24)) : null;
+
+        res.json({
+            tokenStatus: cfg.tokenStatus || 'unknown',     // 'active' | 'expiring_soon' | 'expired' | 'unknown'
+            tokenType: cfg.tokenType || 'user',            // 'user' | 'system_user'
+            tokenExpiry: tokenExpiry ? tokenExpiry.toISOString() : null,
+            daysLeft,                                      // null if never expires
+            verified: cfg.verified || false,
+            needsReconnect: cfg.tokenStatus === 'expired' || !cfg.verified,
+        });
+    } catch (err) {
+        console.error('[GET /token-status] Error:', err.message);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// Refresh Meta Account — re-fetches WABA ID and Phone Number ID using the stored token.
+// Called when embedded signup completes but IDs were not captured from the JS SDK.
+// [Obsolete manual refresh-meta-account route removed to avoid conflicts. Real route is defined below in onboarding routes.]
+
+app.post('/change-password', authenticate, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword)
+        return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    if (newPassword.length < 6)
+        return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'User not found' });
+        const valid = await bcrypt.compare(currentPassword, tenant.password);
+        if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+        const hashed = await bcrypt.hash(newPassword, 10);
+        await Tenant.findByIdAndUpdate(req.user.tenantId, { password: hashed });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to change password' });
+    }
+});
+
+app.post('/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+    try {
+        const tenant = await Tenant.findOne({ email });
+        if (!tenant) return res.status(404).json({ error: 'No account found with this email' });
+
+        // Generate a random 10-char password
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#$';
+        let newPassword = '';
+        for (let i = 0; i < 10; i++) newPassword += chars[Math.floor(Math.random() * chars.length)];
+
+        const hashed = await bcrypt.hash(newPassword, 10);
+        await Tenant.findByIdAndUpdate(tenant._id, { password: hashed });
+
+        await transporter.sendMail({
+            from: `"Sendzyy" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: '🔐 Sendzyy — Your New Password',
+            html: `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Password Reset</title></head>
+<body style="margin:0;padding:0;background-color:#f0f4f0;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f4f0;padding:40px 0;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg,#1B5E20 0%,#2E7D32 60%,#388E3C 100%);padding:40px 48px;text-align:center;">
+            <div style="display:inline-block;background:rgba(255,255,255,0.15);border-radius:50%;padding:16px;margin-bottom:16px;">
+              <span style="font-size:36px;">🔐</span>
+            </div>
+            <h1 style="margin:0;color:#ffffff;font-size:26px;font-weight:700;letter-spacing:0.5px;">Password Reset</h1>
+            <p style="margin:8px 0 0;color:rgba(255,255,255,0.8);font-size:14px;">Sendzyy — WhatsApp Business Platform</p>
+          </td>
+        </tr>
+
+        <!-- Body -->
+        <tr>
+          <td style="padding:40px 48px;">
+            <p style="margin:0 0 8px;color:#555;font-size:14px;text-transform:uppercase;letter-spacing:1px;font-weight:600;">Hello,</p>
+            <h2 style="margin:0 0 20px;color:#1B5E20;font-size:22px;font-weight:700;">${tenant.name} 👋</h2>
+            <p style="margin:0 0 24px;color:#444;font-size:15px;line-height:1.7;">
+              We received a request to reset your <strong>Sendzyy</strong> account password. Here is your new temporary password — please keep it safe.
+            </p>
+
+            <!-- Password Box -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+              <tr>
+                <td style="background:#f8fdf8;border:2px dashed #4CAF50;border-radius:12px;padding:24px;text-align:center;">
+                  <p style="margin:0 0 8px;color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1.5px;font-weight:600;">Your New Password</p>
+                  <p style="margin:0;color:#1B5E20;font-size:28px;font-weight:800;letter-spacing:4px;font-family:'Courier New',monospace;">${newPassword}</p>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Steps -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
+              <tr>
+                <td style="background:#f9f9f9;border-radius:10px;padding:20px 24px;">
+                  <p style="margin:0 0 12px;color:#333;font-size:14px;font-weight:700;">📋 Next Steps:</p>
+                  <table cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="padding:4px 0;color:#555;font-size:14px;">
+                        <span style="color:#4CAF50;font-weight:700;margin-right:8px;">1.</span> Click the button below to go to the login page
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:4px 0;color:#555;font-size:14px;">
+                        <span style="color:#4CAF50;font-weight:700;margin-right:8px;">2.</span> Sign in using your email and the password above
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:4px 0;color:#555;font-size:14px;">
+                        <span style="color:#4CAF50;font-weight:700;margin-right:8px;">3.</span> Go to <strong>Settings → Security & Password</strong> to set a new one
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+
+            <!-- CTA Button -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
+              <tr>
+                <td align="center">
+                  <a href="https://app.sendzyy.com" target="_blank"
+                     style="display:inline-block;background:linear-gradient(135deg,#2E7D32,#43A047);color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:16px 48px;border-radius:50px;letter-spacing:0.5px;box-shadow:0 4px 14px rgba(46,125,50,0.4);">
+                    🚀 &nbsp; Click to Login
+                  </a>
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="padding-top:12px;">
+                  <p style="margin:0;color:#aaa;font-size:12px;">Or copy this link: <a href="https://app.sendzyy.com" style="color:#2E7D32;">https://app.sendzyy.com</a></p>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Warning -->
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="background:#fff8e1;border-left:4px solid #FFC107;border-radius:0 8px 8px 0;padding:14px 18px;">
+                  <p style="margin:0;color:#795548;font-size:13px;line-height:1.6;">
+                    ⚠️ <strong>Didn't request this?</strong> If you did not request a password reset, please ignore this email or contact our support team immediately. Your account may be at risk.
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f8f8f8;border-top:1px solid #eee;padding:28px 48px;text-align:center;">
+            <p style="margin:0 0 6px;color:#1B5E20;font-size:15px;font-weight:700;">Sendzyy</p>
+            <p style="margin:0 0 12px;color:#999;font-size:12px;">WhatsApp Business Messaging Platform</p>
+            <p style="margin:0;color:#bbb;font-size:11px;">
+              ©© ${new Date().getFullYear()} Sendzyy · All rights reserved<br/>
+              <a href="https://app.sendzyy.com" style="color:#4CAF50;text-decoration:none;">app.sendzyy.com</a>
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
+        });
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error(' Forgot password error:', err.message);
+        res.status(500).json({ error: 'Failed to send reset email' });
+    }
+});
+
+//  Clients 
+app.post('/api/clients', authenticate, async (req, res) => {
+    try {
+        const { name, mobileNumber, companyName, emailId, venue, remark } = req.body;
+        if (!name || !mobileNumber) return res.status(400).json({ error: 'Name and Mobile Number are required' });
+        const finalVenue = (venue && typeof venue === 'string' && venue.trim() !== '') ? venue.trim() : '-';
+        const existing = await Client.findOne({ tenantId: req.user.tenantId, mobileNumber });
+        if (existing) return res.status(400).json({ error: 'A client with this mobile number already exists.' });
+        const client = await Client.create({ tenantId: req.user.tenantId, name, mobileNumber, companyName, emailId, venue: finalVenue, remark });
+        setImmediate(() => evaluateClientTrigger(req.user.tenantId, client).catch(console.error));
+        res.status(201).json(client);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to create client' });
+    }
+});
+
+app.post('/api/clients/bulk', authenticate, async (req, res) => {
+    try {
+        const clients = req.body;
+        if (!Array.isArray(clients) || clients.length === 0)
+            return res.status(400).json({ error: 'Expected a non-empty array of clients' });
+
+        const tenantId = req.user.tenantId;
+        const results = { imported: [], skipped: [] };
+
+        for (const { name, mobileNumber, companyName, emailId, venue, remark } of clients) {
+            if (!name || !mobileNumber) { results.skipped.push({ mobileNumber, reason: 'Missing name or mobile' }); continue; }
+            const exists = await Client.findOne({ tenantId, mobileNumber });
+            if (exists) { results.skipped.push({ mobileNumber, reason: 'Duplicate' }); continue; }
+            const finalVenue = (venue && typeof venue === 'string' && venue.trim() !== '') ? venue.trim() : '-';
+            const created = await Client.create({ tenantId, name, mobileNumber, companyName, emailId, venue: finalVenue, remark });
+            setImmediate(() => evaluateClientTrigger(tenantId, created).catch(console.error));
+            results.imported.push(created);
+        }
+
+        res.status(201).json(results.imported);
+    } catch (error) {
+        res.status(500).json({ error: 'Bulk import failed' });
+    }
+});
+
+app.post('/api/clients/bulk-resolve', authenticate, async (req, res) => {
+    try {
+        const clients = req.body;
+        if (!Array.isArray(clients) || clients.length === 0)
+            return res.status(400).json({ error: 'Expected a non-empty array of clients' });
+
+        const tenantId = req.user.tenantId;
+        const resolvedClients = [];
+        const processedMobiles = new Set();
+
+        for (const { name, mobileNumber, companyName, emailId, venue, remark } of clients) {
+            if (!name || !mobileNumber) continue;
+            if (processedMobiles.has(mobileNumber)) continue;
+            processedMobiles.add(mobileNumber);
+
+            let client = await Client.findOne({ tenantId, mobileNumber });
+            if (!client) {
+                const finalVenue = (venue && typeof venue === 'string' && venue.trim() !== '') ? venue.trim() : '-';
+                client = await Client.create({
+                    tenantId,
+                    name,
+                    mobileNumber,
+                    companyName,
+                    emailId,
+                    venue: finalVenue,
+                    remark
+                });
+                setImmediate(() => evaluateClientTrigger(tenantId, client).catch(console.error));
+            }
+            resolvedClients.push(client);
+        }
+
+        res.status(200).json(resolvedClients);
+    } catch (error) {
+        console.error('[server] POST /api/clients/bulk-resolve error:', error);
+        res.status(500).json({ error: 'Bulk resolve failed' });
+    }
+});
+
+app.get('/api/clients', authenticate, async (req, res) => {
+    try {
+        const search = req.query.search?.trim() || '';
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 50;
+        const skip = (page - 1) * limit;
+
+        const filter = { tenantId: req.user.tenantId };
+        if (search) {
+            filter.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { mobileNumber: { $regex: search, $options: 'i' } },
+                { companyName: { $regex: search, $options: 'i' } },
+            ];
+        }
+
+        // Support filtering by groupId
+        if (req.query.groupId) {
+            const group = await Group.findOne({ _id: req.query.groupId, tenantId: req.user.tenantId });
+            if (group) {
+                filter._id = { $in: group.clientIds };
+            } else {
+                return res.json({ clients: [], total: 0, page: 1, totalPages: 0 });
+            }
+        }
+
+        // Support filtering by a list of ids
+        if (req.query.ids) {
+            const ids = req.query.ids.split(',').filter(id => id.trim() !== '');
+            filter._id = { $in: ids };
+        }
+
+        // If filtering by groupId or list of ids and no page is explicitly requested, skip pagination
+        const isTargetedQuery = req.query.groupId || req.query.ids;
+        const total = await Client.countDocuments(filter);
+
+        let clients;
+        if (isTargetedQuery && !req.query.page) {
+            clients = await Client.find(filter).sort({ name: 1 });
+        } else {
+            clients = await Client.find(filter)
+                .sort({ name: 1 })
+                .skip(skip)
+                .limit(limit);
+        }
+
+        res.json({
+            clients,
+            total,
+            page,
+            totalPages: Math.ceil(total / limit)
+        });
+    } catch (error) {
+        console.error('[server] GET /api/clients error:', error);
+        res.status(500).json({ error: 'Failed to fetch clients' });
+    }
+});
+
+// Client Trigger CRUD — must be before /api/clients/:id wildcard
+app.post('/api/clients/trigger', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const { templateName, templateLanguage, mediaId, mediaType, variableMapping, isActive } = req.body;
+        if (!templateName || !templateName.trim()) {
+            return res.status(400).json({ error: 'templateName is required' });
+        }
+        const trigger = await ClientTrigger.findOneAndUpdate(
+            { tenantId },
+            { tenantId, templateName: templateName.trim(), templateLanguage, mediaId: mediaId || '', mediaType: mediaType || '', variableMapping: variableMapping || {}, isActive },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        res.status(201).json(trigger);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to save client trigger' });
+    }
+});
+
+app.get('/api/clients/trigger', authenticate, async (req, res) => {
+    try {
+        const trigger = await ClientTrigger.findOne({ tenantId: req.user.tenantId });
+        if (!trigger) return res.status(404).json({ error: 'No client trigger found' });
+        res.json(trigger);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch client trigger' });
+    }
+});
+
+app.put('/api/clients/trigger', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const trigger = await ClientTrigger.findOne({ tenantId });
+        if (!trigger) return res.status(404).json({ error: 'No client trigger found' });
+        const { templateName, templateLanguage, mediaId, mediaType, variableMapping, isActive } = req.body;
+        if (templateName !== undefined && !templateName.trim()) {
+            return res.status(400).json({ error: 'templateName is required' });
+        }
+        if (templateName !== undefined) trigger.templateName = templateName.trim();
+        if (templateLanguage !== undefined) trigger.templateLanguage = templateLanguage;
+        if (mediaId !== undefined) trigger.mediaId = mediaId;
+        if (mediaType !== undefined) trigger.mediaType = mediaType;
+        if (variableMapping !== undefined) trigger.variableMapping = variableMapping;
+        if (isActive !== undefined) trigger.isActive = isActive;
+        await trigger.save();
+        res.json(trigger);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to update client trigger' });
+    }
+});
+
+app.delete('/api/clients/trigger', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const trigger = await ClientTrigger.findOne({ tenantId });
+        if (!trigger) return res.status(404).json({ error: 'No client trigger found' });
+        await trigger.deleteOne();
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete client trigger' });
+    }
+});
+
+app.post('/api/clients/bulk-delete', authenticate, async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!ids || !Array.isArray(ids)) {
+            return res.status(400).json({ error: 'Client IDs must be an array' });
+        }
+        await Client.deleteMany({ _id: { $in: ids }, tenantId: req.user.tenantId });
+        res.json({ success: true, message: 'Clients deleted successfully' });
+    } catch (error) {
+        console.error('[server] POST /api/clients/bulk-delete error:', error);
+        res.status(500).json({ error: 'Failed to delete clients' });
+    }
+});
+
+app.delete('/api/clients/:id', authenticate, async (req, res) => {
+    try {
+        const client = await Client.findOneAndDelete({ _id: req.params.id, tenantId: req.user.tenantId });
+        if (!client) return res.status(404).json({ error: 'Client not found' });
+        res.json({ success: true, message: 'Client deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to delete client' });
+    }
+});
+
+// Public client registration form (QR code landing page)
+app.get('/register-client', async (req, res) => {
+    const { tenantId, groupId } = req.query;
+    if (!tenantId) return res.status(400).send('Invalid link');
+    const tenant = await Tenant.findById(tenantId).catch(() => null);
+    if (!tenant) return res.status(404).send('Not found');
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Register - ${tenant.name}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+  .card{background:#fff;border-radius:16px;padding:32px 28px;width:100%;max-width:420px;box-shadow:0 4px 24px rgba(0,0,0,.1)}
+  h2{color:#1a5c4a;font-size:22px;margin-bottom:6px}
+  .sub{color:#666;font-size:14px;margin-bottom:24px}
+  label{display:block;font-size:13px;font-weight:600;color:#444;margin-bottom:6px}
+  input,textarea{width:100%;padding:12px 14px;border:1.5px solid #ddd;border-radius:10px;font-size:15px;outline:none;transition:border .2s;font-family:inherit;resize:vertical}
+  input:focus,textarea:focus{border-color:#25d366}
+  .field{margin-bottom:16px}
+  .req{color:#e53e3e}
+  button{width:100%;padding:14px;background:#25d366;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;margin-top:8px;transition:background .2s}
+  button:hover{background:#1ebe5d}
+  button:disabled{background:#aaa;cursor:not-allowed}
+  .msg{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;text-align:center;display:none}
+  .msg.success{background:#e6f9ee;color:#1a5c4a;display:block}
+  .msg.error{background:#fde8e8;color:#c53030;display:block}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>${tenant.name}</h2>
+  <p class="sub">Please fill in your details to register</p>
+  <form id="form">
+    <input type="hidden" id="groupId" value="${groupId || ''}"/>
+    <div class="field"><label>Name <span class="req">*</span></label><input id="name" placeholder="Your full name" required/></div>
+    <div class="field"><label>Mobile Number <span class="req">*</span></label><input id="mobile" placeholder="Your mobile number" required/></div>
+    <div class="field"><label>Company Name</label><input id="company" placeholder="Optional"/></div>
+    <div class="field"><label>Email ID</label><input id="email" type="email" placeholder="Optional"/></div>
+    <div class="field"><label>Venue <span class="req">*</span></label><input id="venue" placeholder="e.g. Main Street Store" required/></div>
+    <div class="field"><label>Remark</label><textarea id="remark" rows="2" placeholder="Optional"></textarea></div>
+    <button type="submit" id="btn">Submit</button>
+  </form>
+  <div class="msg" id="msg"></div>
+</div>
+<script>
+document.getElementById('form').addEventListener('submit',async function(e){
+  e.preventDefault();
+  const btn=document.getElementById('btn');
+  const msg=document.getElementById('msg');
+
+  // Get mobile number (no validation)
+  const mobile=document.getElementById('mobile').value.trim();
+  if(!mobile){
+    msg.className='msg error';msg.textContent='Mobile number is required';return;
+  }
+
+  // Get email (no validation)
+  const email=document.getElementById('email').value.trim();
+
+  btn.disabled=true; btn.textContent='Submitting...';
+  msg.className='msg'; msg.textContent='';
+  const body={name:document.getElementById('name').value.trim(),mobileNumber:mobile,companyName:document.getElementById('company').value.trim()||undefined,emailId:email||undefined,venue:document.getElementById('venue').value.trim()||undefined,remark:document.getElementById('remark').value.trim()||undefined,groupId:document.getElementById('groupId').value||undefined};
+  try{
+    const r=await fetch('/api/clients/public/${tenantId}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(r.ok){msg.className='msg success';msg.textContent='Registered successfully! Thank you.';document.getElementById('form').reset();}
+    else{msg.className='msg error';msg.textContent=d.error||'Something went wrong';}
+  }catch(err){msg.className='msg error';msg.textContent='Network error. Please try again.';}
+  btn.disabled=false; btn.textContent='Submit';
+});
+</script>
+</body>
+</html>`);
+});
+
+// Public client registration API (no auth — used by QR form)
+app.post('/api/clients/public/:tenantId', async (req, res) => {
+    try {
+        const { tenantId } = req.params;
+        const { name, mobileNumber, companyName, emailId, venue, remark, groupId } = req.body;
+        if (!name || !mobileNumber) return res.status(400).json({ error: 'Name and Mobile Number are required' });
+        if (!venue) return res.status(400).json({ error: 'Venue is required' });
+        const tenant = await Tenant.findById(tenantId).catch(() => null);
+        if (!tenant) return res.status(404).json({ error: 'Invalid registration link' });
+        const existing = await Client.findOne({ tenantId, mobileNumber });
+        if (existing) {
+            // If client exists and groupId provided, still add to group if not already a member
+            if (groupId) {
+                const group = await Group.findOne({ _id: groupId, tenantId }).catch(() => null);
+                if (group && !group.clientIds.includes(existing._id.toString())) {
+                    group.clientIds.push(existing._id.toString());
+                    await group.save();
+                }
+                return res.status(200).json(existing);
+            }
+            return res.status(400).json({ error: 'A client with this mobile number already exists.' });
+        }
+        const client = await Client.create({ tenantId, name, mobileNumber, companyName, emailId, venue, remark });
+        // Add to group if groupId was provided
+        if (groupId) {
+            const group = await Group.findOne({ _id: groupId, tenantId }).catch(() => null);
+            if (group) {
+                group.clientIds.push(client._id.toString());
+                await group.save();
+            }
+        }
+        setImmediate(() => evaluateClientTrigger(tenantId, client).catch(console.error));
+        res.status(201).json(client);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to register client' });
+    }
+});
+
+//  Chatbots 
+app.post('/api/chatbots', authenticate, async (req, res) => {
+    const { name, triggerKeywords, flow } = req.body;
+    if (!name || !flow) {
+        return res.status(400).json({ error: 'Missing required fields: name and flow are required' });
+    }
+    try {
+        const chatbot = await Chatbot.create({
+            tenantId: req.user.tenantId,
+            name,
+            triggerKeywords: triggerKeywords || [],
+            flow,
+        });
+        res.status(201).json(chatbot);
+    } catch (error) {
+        console.error(' Create Chatbot Error:', error);
+        res.status(500).json({ error: 'Failed to create chatbot' });
+    }
+});
+
+app.get('/api/chatbots', authenticate, async (req, res) => {
+    try {
+        const chatbots = await Chatbot.find({ tenantId: req.user.tenantId }).sort({ updatedAt: -1 });
+        res.json(chatbots);
+    } catch (error) {
+        console.error(' Get Chatbots Error:', error);
+        res.status(500).json({ error: 'Failed to fetch chatbots' });
+    }
+});
+
+app.get('/api/chatbots/:id', authenticate, async (req, res) => {
+    try {
+        const chatbot = await Chatbot.findById(req.params.id);
+        if (!chatbot) return res.status(404).json({ error: 'Chatbot not found' });
+        if (chatbot.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+        res.json(chatbot);
+    } catch (error) {
+        console.error(' Get Chatbot Error:', error);
+        res.status(500).json({ error: 'Failed to fetch chatbot' });
+    }
+});
+
+app.put('/api/chatbots/:id', authenticate, async (req, res) => {
+    try {
+        const chatbot = await Chatbot.findById(req.params.id);
+        if (!chatbot) return res.status(404).json({ error: 'Chatbot not found' });
+        if (chatbot.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+
+        const { name, triggerKeywords, flow, isActive } = req.body;
+
+        // 409 conflict check: activating and a duplicate trigger keyword exists across other active bots
+        if (isActive === true) {
+            const newKeywords = (triggerKeywords ?? chatbot.triggerKeywords).map(k => k.toLowerCase());
+            if (newKeywords.length > 0) {
+                const otherActiveBots = await Chatbot.find({
+                    tenantId: req.user.tenantId,
+                    isActive: true,
+                    _id: { $ne: chatbot._id },
+                });
+                const hasConflict = otherActiveBots.some(bot =>
+                    bot.triggerKeywords.some(k => newKeywords.includes(k.toLowerCase()))
+                );
+                if (hasConflict) {
+                    return res.status(409).json({ error: 'Trigger keyword conflict with another active chatbot' });
+                }
+            }
+        }
+
+        // When deactivating: delete all sessions for this chatbot (Req 10.3)
+        if (isActive === false && chatbot.isActive === true) {
+            await ChatbotSession.deleteMany({ chatbotId: chatbot._id.toString() });
+        }
+
+        // Apply allowed field updates
+        if (name !== undefined) chatbot.name = name;
+        if (triggerKeywords !== undefined) chatbot.triggerKeywords = triggerKeywords;
+        if (flow !== undefined) chatbot.flow = flow;
+        if (isActive !== undefined) chatbot.isActive = isActive;
+
+        await chatbot.save();
+        res.json(chatbot);
+    } catch (error) {
+        console.error(' Update Chatbot Error:', error);
+        res.status(500).json({ error: 'Failed to update chatbot' });
+    }
+});
+
+app.delete('/api/chatbots/sessions/:contactId', authenticate, async (req, res) => {
+    try {
+        await ChatbotSession.deleteOne({ tenantId: req.user.tenantId, contactId: req.params.contactId });
+        res.json({ message: 'Session reset successfully' });
+    } catch (error) {
+        console.error(' Reset Session Error:', error);
+        res.status(500).json({ error: 'Failed to reset session' });
+    }
+});
+
+// Task 9.1 — Analytics endpoint
+app.get('/api/chatbots/:id/analytics', authenticate, async (req, res) => {
+    try {
+        const chatbot = await Chatbot.findById(req.params.id);
+        if (!chatbot) return res.status(404).json({ error: 'Chatbot not found' });
+        if (chatbot.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+
+        const days = Math.min(parseInt(req.query.days) || 7, 90);
+        const since = new Date();
+        since.setHours(0, 0, 0, 0);
+        since.setDate(since.getDate() - (days - 1));
+
+        const records = await ChatbotAnalytics.find({
+            tenantId: req.user.tenantId,
+            chatbotId: req.params.id,
+            date: { $gte: since },
+        }).sort({ date: 1 });
+
+        res.json(records.map(r => ({
+            date: r.date,
+            totalSessions: r.totalSessions,
+            completedSessions: r.completedSessions,
+            droppedSessions: r.droppedSessions,
+            messagesSent: r.messagesSent,
+        })));
+    } catch (error) {
+        console.error(' Analytics Error:', error);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
+    }
+});
+
+app.delete('/api/chatbots/:id', authenticate, async (req, res) => {
+    try {
+        const chatbot = await Chatbot.findById(req.params.id);
+        if (!chatbot) return res.status(404).json({ error: 'Chatbot not found' });
+        if (chatbot.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+
+        await ChatbotSession.deleteMany({ chatbotId: chatbot._id.toString() });
+        await chatbot.deleteOne();
+
+        res.json({ message: 'Chatbot deleted successfully' });
+    } catch (error) {
+        console.error(' Delete Chatbot Error:', error);
+        res.status(500).json({ error: 'Failed to delete chatbot' });
+    }
+});
+
+//  Send Message 
+app.post('/send-message', authenticate, async (req, res) => {
+    const { to, type, template, text, mediaId, mediaType, campaignId, recipientName, replyToMessageId, replyToWamid } = req.body;
+    const tenantId = req.user.tenantId;
+    try {
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        const config = tenant.whatsappConfig;
+        if (!config.accessToken || !config.phoneNumberId)
+            return res.status(400).json({ error: 'WhatsApp not configured' });
+
+        // Build payload
+        const payload = { messaging_product: 'whatsapp', to, type: type || 'template' };
+        let targetWamid = (replyToWamid && typeof replyToWamid === 'string' && replyToWamid.startsWith('wamid.'))
+            ? replyToWamid
+            : ((replyToMessageId && typeof replyToMessageId === 'string' && replyToMessageId.startsWith('wamid.')) ? replyToMessageId : null);
+
+        let replyContextPreview = null;
+        if (replyToMessageId || targetWamid) {
+            try {
+                const query = targetWamid
+                    ? { wamid: targetWamid }
+                    : (mongoose.Types.ObjectId.isValid(replyToMessageId) ? { _id: replyToMessageId } : { wamid: replyToMessageId });
+                const parentMsg = await Message.findOne(query).lean();
+                if (parentMsg) {
+                    if (!targetWamid && parentMsg.wamid && typeof parentMsg.wamid === 'string' && parentMsg.wamid.startsWith('wamid.')) {
+                        targetWamid = parentMsg.wamid;
+                    }
+                    replyContextPreview = parentMsg.text || parentMsg.templateBody || (parentMsg.templateName ? `📋 ${parentMsg.templateName}` : null) || (parentMsg.messageType ? `[${parentMsg.messageType}]` : null);
+                }
+            } catch (err) {
+                console.error(' Error resolving reply context:', err.message);
+            }
+        }
+
+        if (targetWamid) {
+            payload.context = { message_id: targetWamid };
+        }
+        if (type === 'text') {
+            payload.text = { body: text };
+        } else if (type === 'template') {
+            payload.template = { name: template.name, language: template.language };
+            if (template.components?.length > 0) {
+                payload.template.components = template.components;
+            } else if (mediaId) {
+                payload.template.components = [{
+                    type: 'header',
+                    parameters: [{ type: (mediaType || 'image').toLowerCase(), [(mediaType || 'image').toLowerCase()]: { id: mediaId } }]
+                }];
+            }
+        } else if (['image', 'video', 'audio', 'document'].includes(type)) {
+            payload[type] = { id: mediaId };
+            if (type === 'document' && text) {
+                payload.document.filename = text; // optional filename
+            }
+        } else if (type === 'flow') {
+            payload.type = 'interactive';
+            payload.interactive = {
+                type: 'flow',
+                header: req.body.headerText ? { type: 'text', text: req.body.headerText } : undefined,
+                body: { text: text || req.body.bodyText || 'Please complete the form below:' },
+                footer: req.body.footerText ? { text: req.body.footerText } : undefined,
+                action: {
+                    name: 'flow',
+                    parameters: {
+                        flow_message_version: '3',
+                        flow_token: req.body.flowToken || `ft_${Date.now()}`,
+                        flow_id: req.body.flowId,
+                        flow_cta: req.body.ctaText || 'Open Form',
+                        flow_action: 'navigate',
+                        flow_action_payload: {
+                            screen: req.body.screenId || 'QUESTION_SCREEN'
+                        }
+                    }
+                }
+            };
+        } else if (type === 'interactive' && req.body.interactive) {
+            payload.type = 'interactive';
+            payload.interactive = req.body.interactive;
+        }
+
+        const response = await axios.post(
+            `${WHATSAPP_API_URL}/${config.phoneNumberId}/messages`,
+            payload,
+            { headers: { Authorization: `Bearer ${config.accessToken}` } }
+        );
+        const wamid = response.data.messages[0].id;
+
+        // Create StatusMapping for ALL messages (campaign or not) to track delivery status
+        try {
+            await StatusMapping.findOneAndUpdate(
+                { wamid },
+                { wamid, tenantId, campaignId: campaignId || null, to },
+                { upsert: true }
+            );
+        } catch (err) {
+            console.error(' StatusMapping creation failed:', err.message);
+        }
+
+        // Campaign tracking
+        if (campaignId) {
+            try {
+                // Check if this campaign document already exists
+                const existingCampaign = await Campaign.findOne({ tenantId, id: campaignId });
+
+                if (!existingCampaign) {
+                    // First message for this campaign — capture the active retry config snapshot.
+                    // Fall back to a zero-phase default if no config exists for this tenant yet,
+                    // so the campaign is always created even if retry config is not set up.
+                    let lifecycleFields;
+                    try {
+                        lifecycleFields = await campaignLifecycleManager.buildCampaignCreationFields(tenantId);
+                    } catch (configErr) {
+                        console.warn(` buildCampaignCreationFields failed, using default: ${configErr.message}`);
+                        lifecycleFields = {
+                            retryConfig: { version: 0, phases: [] },
+                            status: 'initial',
+                            currentPhase: 1,
+                            phaseStats: [{ phaseNumber: 1, successCount: 0, failureCount: 0, executedAt: new Date() }]
+                        };
+                    }
+                    await Campaign.create({
+                        tenantId,
+                        id: campaignId,
+                        template: type === 'template' ? template.name : 'Text Message',
+                        timestamp: new Date(),
+                        dispatchedAt: new Date(),
+                        totalCount: 1,
+                        successCount: 1,
+                        ...lifecycleFields
+                    });
+                } else {
+                    await Campaign.findOneAndUpdate(
+                        { tenantId, id: campaignId },
+                        {
+                            $set: { template: type === 'template' ? template.name : 'Text Message' },
+                            $inc: { totalCount: 1, successCount: 1 }
+                        }
+                    );
+                }
+
+                await Recipient.findOneAndUpdate(
+                    { wamid },
+                    {
+                        wamid,
+                        tenantId,
+                        campaignId,
+                        to,
+                        ...(recipientName ? { name: recipientName } : {}),
+                        status: 'sent',
+                        sentAt: new Date().toISOString(),
+                        phaseNumber: null,
+                        deliveryTimestamp: null,
+                        retryHistory: [{
+                            phaseNumber: 1,
+                            attemptedAt: new Date(),
+                            status: 'sent'
+                        }]
+                    },
+                    { upsert: true }
+                );
+                await broadcastCampaigns(tenantId);
+            } catch (err) {
+                console.error(' Campaign tracking failed:', err.message);
+            }
+        }
+
+        // Log outbound chat message
+        try {
+            let outboundMessageType = type || 'template';
+            let outboundTemplateName = null;
+            let outboundTemplateBody = null;
+
+            if (type === 'template') {
+                outboundTemplateName = template.name;
+                // Try to extract the resolved body text from the template components
+                try {
+                    const tplComponents = await fetchTemplateComponents(tenant, template.name);
+                    const bodyComponent = (tplComponents || []).find(c => c.type === 'BODY');
+                    outboundTemplateBody = bodyComponent?.text || null;
+                    if (outboundTemplateBody && template.components) {
+                        const bodyPart = template.components.find(c => c.type.toLowerCase() === 'body');
+                        if (bodyPart && Array.isArray(bodyPart.parameters)) {
+                            bodyPart.parameters.forEach((param, idx) => {
+                                outboundTemplateBody = outboundTemplateBody.replace(
+                                    new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'),
+                                    param.text || ''
+                                );
+                            });
+                        }
+                    }
+                } catch (_) {
+                    outboundTemplateBody = null;
+                }
+            }
+
+            const previewOpts = {
+                text: ['image', 'video', 'audio', 'document'].includes(type) ? (type === 'document' ? text : '') : (type === 'text' ? text : undefined),
+                templateName: outboundTemplateName,
+                templateBody: outboundTemplateBody,
+            };
+            const msgPreview = buildPreview(outboundMessageType, previewOpts);
+
+            await Conversation.findOneAndUpdate(
+                { tenantId, contactId: to },
+                { lastMessage: msgPreview, lastActive: new Date(), $setOnInsert: { hasReply: false } },
+                { upsert: true }
+            );
+            let outboundText = text || '';
+            if (['image', 'video', 'audio', 'document'].includes(type)) {
+                outboundText = type === 'document' ? (text || '') : '';
+            } else if (type === 'text') {
+                outboundText = text || '';
+            } else if (type === 'template') {
+                outboundText = outboundTemplateBody || '';
+            } else if (type === 'interactive') {
+                outboundText = req.body.interactive?.body?.text || 'Interactive Message';
+            }
+
+            await Message.create({
+                tenantId,
+                contactId: to,
+                text: outboundText,
+                isMe: true,
+                time: new Date().toISOString(),
+                messageType: outboundMessageType,
+                templateName: outboundTemplateName,
+                templateBody: outboundTemplateBody,
+                mediaUrl: ['image', 'video', 'audio', 'document'].includes(type) ? mediaId : null,
+                interactivePayload: (type === 'interactive' && req.body.interactive) ? req.body.interactive : (type === 'flow' ? payload.interactive : null),
+                wamid: wamid || null,
+                contextMessageId: targetWamid || replyToWamid || replyToMessageId || null,
+                replyContextPreview: replyContextPreview || null,
+                status: 'sent',
+            });
+            await broadcastConversations(tenantId);
+            await broadcastMessages(tenantId, to);
+        } catch (err) {
+            console.error(' Chat log failed:', err.message);
+        }
+
+        res.json({ success: true, wamid });
+    } catch (error) {
+        console.error(' Send Message Error:', error.response?.data || error.message);
+        const detailedError = error.response?.data?.error?.message || error.response?.data?.error || error.message || 'Failed to send message';
+        res.status(error.response?.status || 500).json({ error: detailedError });
+    }
+});
+
+//  Campaigns & Reports 
+app.get('/campaigns', authenticate, async (req, res) => {
+    try {
+        const page = parseInt(req.query.page, 10) || 1;
+        const limitParam = req.query.limit;
+        const isAll = req.query.all === 'true' || limitParam === 'all' || limitParam === '0';
+        const limit = isAll ? 0 : (limitParam !== undefined ? parseInt(limitParam, 10) : 20);
+        const isPaginated = limit > 0;
+        const skip = isPaginated ? (page - 1) * limit : 0;
+
+        // 1. Total count of campaigns for this tenant
+        const totalCampaigns = await Campaign.countDocuments({ tenantId: req.user.tenantId });
+
+        // 2. Compute accurate overall tenant stats across ALL campaigns (not affected by pagination)
+        const statsAgg = await Campaign.aggregate([
+            { $match: { tenantId: req.user.tenantId } },
+            {
+                $group: {
+                    _id: null,
+                    totalSent: { $sum: { $ifNull: ['$totalCount', { $ifNull: ['$successCount', 0] }] } },
+                    totalDelivered: { $sum: { $ifNull: ['$deliveredCount', 0] } },
+                    totalRead: { $sum: { $ifNull: ['$readCount', 0] } },
+                    totalFailed: { $sum: { $ifNull: ['$failureCount', 0] } }
+                }
+            }
+        ]);
+
+        const totalStats = statsAgg[0] ? {
+            totalSent: statsAgg[0].totalSent || 0,
+            totalDelivered: statsAgg[0].totalDelivered || 0,
+            totalRead: statsAgg[0].totalRead || 0,
+            totalFailed: statsAgg[0].totalFailed || 0,
+            totalCampaigns
+        } : {
+            totalSent: 0,
+            totalDelivered: 0,
+            totalRead: 0,
+            totalFailed: 0,
+            totalCampaigns
+        };
+
+        // 3. Fetch ONLY the requested page of campaigns
+        let campaignQuery = Campaign.find({ tenantId: req.user.tenantId })
+            .sort({ timestamp: -1 });
+
+        if (isPaginated) {
+            campaignQuery = campaignQuery.skip(skip).limit(limit);
+        }
+
+        const campaigns = await campaignQuery;
+
+        // 4. Attach hasPendingRetry flag & Recipient counts for the fetched campaigns
+        const campaignIds = campaigns.map(c => c.id);
+        const pendingPhases = await ScheduledRetryPhase.find({
+            campaignId: { $in: campaignIds },
+            status: { $in: ['pending', 'executing'] }
+        }).select('campaignId').lean();
+        const pendingSet = new Set(pendingPhases.map(p => p.campaignId));
+
+        const recipientAgg = await Recipient.aggregate([
+            { $match: { tenantId: req.user.tenantId, campaignId: { $in: campaignIds } } },
+            {
+                $group: {
+                    _id: { campaignId: '$campaignId', status: '$status' },
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        const recipientCounts = {};
+        for (const row of recipientAgg) {
+            const cid = row._id.campaignId;
+            const status = row._id.status;
+            if (!recipientCounts[cid]) {
+                recipientCounts[cid] = { sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
+            }
+            recipientCounts[cid].total += row.count;
+            if (status === 'sent')      recipientCounts[cid].sent      += row.count;
+            if (status === 'delivered') recipientCounts[cid].delivered += row.count;
+            if (status === 'read')      recipientCounts[cid].read      += row.count;
+            if (status === 'failed')    recipientCounts[cid].failed    += row.count;
+        }
+
+        const enriched = campaigns.map(c => {
+            const rc = recipientCounts[c.id];
+            const base = c.toObject();
+
+            if (rc && rc.total > 0) {
+                base.totalCount     = rc.total;
+                base.successCount   = rc.total - rc.failed;
+                base.failureCount   = rc.failed;
+                base.deliveredCount = rc.delivered + rc.read;
+                base.readCount      = rc.read;
+
+                // If 100% of recipients are delivered/read with 0 failures, campaign is completed
+                const isFullyDelivered = (rc.delivered + rc.read) >= rc.total && rc.failed === 0;
+                if (isFullyDelivered) {
+                    base.status = 'completed';
+                    if (c.status !== 'completed') {
+                        campaignLifecycleManager.completeCampaign(c.id, req.user.tenantId)
+                            .catch(err => console.warn('[campaigns] auto-complete error:', err.message));
+                    }
+                }
+            }
+
+            const isCompleted = base.status === 'completed';
+            return {
+                ...base,
+                hasPendingRetry: !isCompleted && pendingSet.has(c.id),
+            };
+        });
+
+        const hasMore = isPaginated ? (skip + campaigns.length < totalCampaigns) : false;
+
+        res.json({
+            campaigns: enriched,
+            totalStats,
+            totalCampaigns,
+            page,
+            limit: isPaginated ? limit : totalCampaigns,
+            hasMore
+        });
+    } catch (error) {
+        console.error('GET /campaigns error:', error);
+        res.status(500).json({ error: 'Failed to fetch campaigns' });
+    }
+});
+
+
+// ── Campaign Lifecycle Endpoints ──────────────────────────────────────────────
+
+/**
+ * POST /api/campaigns/execute
+ *
+ * Create a campaign document and immediately kick off the server-side send loop.
+ * The loop runs fire-and-forget — the HTTP response returns as soon as the Campaign
+ * document is created, so the client is never blocked waiting for all messages to send.
+ *
+ * Authorization: Bearer <jwt>
+ * Body: { template, language, recipients, mediaId?, mediaType? }
+ * Response 200: { campaignId }
+ *
+ * Requirements: 2.4
+ */
+app.post('/api/campaigns/execute', authenticate, async (req, res) => {
+    const tenantId = req.user.tenantId;
+    const { template, language, recipients, mediaId, mediaType } = req.body;
+
+    if (!template || !language || !recipients || !Array.isArray(recipients) || recipients.length === 0) {
+        return res.status(400).json({ error: 'Missing required fields: template, language, recipients' });
+    }
+
+    try {
+        // Build campaign creation fields (captures retry config snapshot)
+        const lifecycleFields = await campaignLifecycleManager.buildCampaignCreationFields(tenantId);
+
+        const campaignId = `campaign_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+        await Campaign.create({
+            tenantId,
+            id: campaignId,
+            template,
+            timestamp: new Date(),
+            dispatchedAt: new Date(),
+            totalCount: recipients.length,
+            successCount: 0,
+            failureCount: 0,
+            ...lifecycleFields
+        });
+
+        console.log(JSON.stringify({
+            service: 'POST /api/campaigns/execute',
+            event: 'campaign_created',
+            campaignId,
+            tenantId,
+            totalCount: recipients.length,
+            timestamp: new Date().toISOString()
+        }));
+
+        // Fire and forget — do NOT await; attach a .catch that logs only
+        campaignExecutor.executeCampaign(campaignId, tenantId, recipients, template, language, mediaId, mediaType)
+            .catch(err => console.error(JSON.stringify({
+                service: 'POST /api/campaigns/execute',
+                event: 'campaign_executor_error',
+                campaignId,
+                tenantId,
+                error: err.message,
+                timestamp: new Date().toISOString()
+            })));
+
+        // Immediately return the campaignId — loop is running on the server
+        res.json({ campaignId });
+    } catch (err) {
+        console.error(`POST /api/campaigns/execute error: ${err.message}`);
+        res.status(500).json({ error: 'Failed to start campaign execution' });
+    }
+});
+
+/**
+ * POST /api/campaigns/:campaignId/complete-phase1
+ *
+ * Schedule the phase 1 evaluation for a campaign.
+ * Rather than evaluating immediately (before delivery webhooks arrive),
+ * this schedules a ScheduledRetryPhase with phaseNumber=1 at
+ * now + phase1IntervalHours. The scheduler will then call handlePhase1Completion
+ * after the grace period, at which point any remaining 'sent' messages are
+ * genuinely undelivered and should be retried.
+ *
+ * Requirements: 2.4, 2.5, 3.1
+ */
+app.post('/api/campaigns/:campaignId/complete-phase1', authenticate, async (req, res) => {
+    const { campaignId } = req.params;
+    const tenantId = req.user.tenantId;
+    try {
+        // Check if the campaign exists — if all sends failed, it may not have been created
+        let campaign = await Campaign.findOne({ tenantId, id: campaignId });
+        if (!campaign) {
+            // All initial sends failed — no Campaign document was created (the document is
+            // only created on the first successful send). Create a minimal campaign document
+            // so that phase-1 evaluation can run and failed Recipient documents can be retried.
+            let lifecycleFields;
+            try {
+                lifecycleFields = await campaignLifecycleManager.buildCampaignCreationFields(tenantId);
+            } catch (configErr) {
+                console.warn(
+                    `[complete-phase1] buildCampaignCreationFields failed for tenant ${tenantId}: ` +
+                    configErr.message + ' — using zero-phase fallback'
+                );
+                lifecycleFields = {
+                    retryConfig: { version: 0, phases: [] },
+                    status: 'initial',
+                    currentPhase: 1,
+                    phaseStats: [{
+                        phaseNumber: 1,
+                        successCount: 0,
+                        failureCount: 0,
+                        executedAt: new Date()
+                    }]
+                };
+            }
+            campaign = await Campaign.create({
+                tenantId,
+                id: campaignId,
+                template: '',
+                timestamp: new Date(),
+                dispatchedAt: new Date(),
+                totalCount: 0,
+                successCount: 0,
+                failureCount: 0,
+                ...lifecycleFields
+            });
+            console.log(JSON.stringify({
+                service: 'complete-phase1',
+                event: 'minimal_campaign_created',
+                campaignId,
+                tenantId,
+                reason: 'all_initial_sends_failed',
+                timestamp: new Date().toISOString()
+            }));
+        }
+
+        // Schedule phase 1 evaluation after the grace period (first retry interval).
+        // schedulePhase returns null when no retry phases are configured (Bug 3 fix).
+        const scheduledPhase = await retryScheduler.schedulePhase(campaignId, 1, new Date());
+        if (!scheduledPhase) {
+            // No retry phases configured — campaign will complete without retries
+            return res.json({ status: 'skipped', reason: 'no_retry_phases_configured' });
+        }
+        await broadcastCampaigns(tenantId);
+        res.json({ status: 'scheduled', scheduledAt: scheduledPhase.scheduledAt });
+    } catch (err) {
+        console.error(`POST /api/campaigns/${campaignId}/complete-phase1 error:`, err.message);
+        if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+        res.status(500).json({ error: 'Failed to schedule phase 1 evaluation' });
+    }
+});
+
+/**
+ * POST /api/campaigns/:campaignId/complete
+ *
+ * Explicitly complete a campaign (e.g. after the final retry phase).
+ * Cancels pending phases, marks remaining failed messages, stores final stats.
+ *
+ * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+ */
+app.post('/api/campaigns/:campaignId/complete', authenticate, async (req, res) => {
+    const { campaignId } = req.params;
+    const tenantId = req.user.tenantId;
+    try {
+        const result = await campaignLifecycleManager.completeCampaign(campaignId, tenantId);
+        await broadcastCampaigns(tenantId);
+        res.json(result);
+    } catch (err) {
+        console.error(`POST /api/campaigns/${campaignId}/complete error:`, err.message);
+        if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+        res.status(500).json({ error: 'Failed to complete campaign' });
+    }
+});
+
+// ── Reporting Endpoints ────────────────────────────────────────────────────────
+
+/**
+ * GET /api/campaigns/:campaignId/report
+ *
+ * Retrieve phase-wise delivery report for a campaign.
+ * Returns phase statistics with success rates, cumulative metrics,
+ * and overall success rate. Includes scheduled phases with pending status.
+ *
+ * Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7
+ */
+app.get('/api/campaigns/:campaignId/report', authenticate, async (req, res) => {
+    const { campaignId } = req.params;
+    const tenantId = req.user.tenantId;
+    try {
+        const report = await reportGenerator.generatePhaseReport(campaignId, tenantId);
+        res.json(report);
+    } catch (err) {
+        console.error(`GET /api/campaigns/${campaignId}/report error:`, err.message);
+        if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+        res.status(500).json({ error: 'Failed to generate campaign report' });
+    }
+});
+
+/**
+ * GET /api/campaigns/:campaignId/messages
+ *
+ * Retrieve messages for a campaign, optionally filtered by phase number.
+ * Supports pagination via page and limit query parameters.
+ *
+ * Query params:
+ *   - phaseNumber (optional): Filter messages by delivery phase
+ *   - page (optional, default 1): Page number
+ *   - limit (optional, default 50): Items per page
+ *
+ * Requirements: 6.4
+ */
+app.get('/api/campaigns/:campaignId/messages', authenticate, async (req, res) => {
+    const { campaignId } = req.params;
+    const tenantId = req.user.tenantId;
+    try {
+        // Parse optional phaseNumber query param
+        let phaseNumber = null;
+        if (req.query.phaseNumber !== undefined) {
+            const parsed = parseInt(req.query.phaseNumber, 10);
+            if (isNaN(parsed) || parsed < 1) {
+                return res.status(400).json({ error: 'phaseNumber must be a positive integer' });
+            }
+            phaseNumber = parsed;
+        }
+
+        // Parse pagination params
+        const page = req.query.page ? parseInt(req.query.page, 10) : 1;
+        const limit = req.query.limit ? parseInt(req.query.limit, 10) : 50;
+
+        if (isNaN(page) || page < 1) {
+            return res.status(400).json({ error: 'page must be a positive integer' });
+        }
+        if (isNaN(limit) || limit < 1 || limit > 1000) {
+            return res.status(400).json({ error: 'limit must be between 1 and 1000' });
+        }
+
+        const result = await reportGenerator.getMessagesByPhase(
+            campaignId,
+            tenantId,
+            phaseNumber,
+            page,
+            limit
+        );
+
+        res.json(result);
+    } catch (err) {
+        console.error(`GET /api/campaigns/${campaignId}/messages error:`, err.message);
+        if (err.message.includes('not found')) return res.status(404).json({ error: err.message });
+        res.status(500).json({ error: 'Failed to fetch campaign messages' });
+    }
+});
+
+// ── Retry Configuration Endpoints ─────────────────────────────────────────────
+
+/**
+ * POST /api/retry-config
+ * Create a new retry configuration version.
+ * Requirements: 1.1, 1.2, 1.3, 1.5
+ */
+app.post('/api/retry-config', authenticate, async (req, res) => {
+    try {
+        const { phases } = req.body;
+        const tenantId = req.user.tenantId;
+        if (!phases || !Array.isArray(phases)) {
+            return res.status(400).json({ error: 'phases array is required' });
+        }
+
+        const newConfig = await configManager.createConfiguration({ phases }, tenantId);
+
+        const previousConfig = await RetryConfiguration.findOne({ tenantId, version: newConfig.version - 1 });
+        let affectedCampaigns = 0;
+        if (previousConfig) {
+            affectedCampaigns = await configManager.getActiveCampaignsCount(previousConfig.version, Campaign, tenantId);
+        }
+
+        res.status(201).json({
+            version: newConfig.version,
+            phases: newConfig.phases,
+            createdAt: newConfig.createdAt,
+            affectedCampaigns
+        });
+    } catch (err) {
+        console.error('POST /api/retry-config error:', err);
+        if (err.message === 'Configuration validation failed') {
+            return res.status(400).json({ error: 'Validation failed', details: err.validationErrors });
+        }
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+/**
+ * GET /api/retry-config/current
+ * Get the currently active retry configuration.
+ * Requirements: 8.5
+ */
+app.get('/api/retry-config/current', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const activeConfig = await configManager.getActiveConfiguration(tenantId);
+        if (!activeConfig) return res.status(404).json({ error: 'No active configuration found' });
+
+        const activeCampaignsCount = await configManager.getActiveCampaignsCount(activeConfig.version, Campaign, tenantId);
+        res.json({
+            version: activeConfig.version,
+            phases: activeConfig.phases,
+            isActive: activeConfig.isActive,
+            createdAt: activeConfig.createdAt,
+            activeCampaignsCount
+        });
+    } catch (err) {
+        console.error('GET /api/retry-config/current error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+/**
+ * GET /api/retry-config/history
+ * List all configuration versions with active campaign counts.
+ * Requirements: 8.5
+ */
+app.get('/api/retry-config/history', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const history = await configManager.getConfigurationHistory(Campaign, tenantId);
+        res.json({
+            configs: history.map(c => ({
+                version: c.version,
+                phases: c.phases,
+                createdAt: c.createdAt,
+                isActive: c.isActive,
+                activeCampaigns: c.activeCampaigns
+            }))
+        });
+    } catch (err) {
+        console.error('GET /api/retry-config/history error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+app.get('/campaign-analytics', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId).select('whatsappConfig');
+        if (!tenant?.whatsappConfig?.businessAccountId)
+            return res.status(400).json({ error: 'WABA ID not configured' });
+
+        const { start, end } = req.query;
+        const { businessAccountId, accessToken } = tenant.whatsappConfig;
+
+        // Use the Graph API base directly — analytics is a WABA-level endpoint
+        const url = `${WHATSAPP_API_URL}/${businessAccountId}/analytics`;
+
+        const response = await axios.get(url, {
+            params: {
+                start,
+                end,
+                granularity: 'DAILY',
+                // Meta expects repeated params: metric_types[]=SENT&metric_types[]=DELIVERED
+                // axios serializes arrays correctly when passed as an array
+                'metric_types[]': ['SENT', 'DELIVERED', 'READ'],
+                access_token: accessToken,
+            },
+            // Tell axios not to encode [] in param names
+            paramsSerializer: (params) => {
+                const parts = [];
+                for (const [key, val] of Object.entries(params)) {
+                    if (Array.isArray(val)) {
+                        val.forEach(v => parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(v)}`));
+                    } else {
+                        parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(val)}`);
+                    }
+                }
+                return parts.join('&');
+            },
+        });
+
+        const data = response.data?.data || [];
+        const totals = { sent: 0, delivered: 0, read: 0 };
+        for (const metric of data) {
+            const sum = (metric.data_points || []).reduce((acc, p) => acc + (p.value || 0), 0);
+            if (metric.type === 'SENT') totals.sent = sum;
+            if (metric.type === 'DELIVERED') totals.delivered = sum;
+            if (metric.type === 'READ') totals.read = sum;
+        }
+
+        res.json(totals);
+    } catch (error) {
+        const metaError = error.response?.data;
+        console.error('/campaign-analytics error:', error.message, metaError ? JSON.stringify(metaError) : '');
+        res.status(500).json({
+            error: 'Failed to fetch analytics',
+            detail: metaError || error.message,
+        });
+    }
+});
+
+
+
+//  Scheduled Campaigns 
+app.post('/scheduled-campaigns', authenticate, async (req, res) => {
+    try {
+        const { campaignName, template, language, recipients, mediaId, mediaType, scheduledAt } = req.body;
+        if (!template || !recipients?.length || !scheduledAt)
+            return res.status(400).json({ error: 'template, recipients and scheduledAt are required' });
+        const sc = await ScheduledCampaign.create({
+            tenantId: req.user.tenantId,
+            campaignName: campaignName || '',
+            template, language: language || 'en_US',
+            recipients, mediaId, mediaType,
+            scheduledAt: new Date(scheduledAt),
+        });
+        res.json({ id: sc._id.toString(), scheduledAt: sc.scheduledAt });
+    } catch (err) {
+        console.error(' Schedule campaign error:', err.message);
+        res.status(500).json({ error: 'Failed to schedule campaign' });
+    }
+});
+
+app.get('/scheduled-campaigns', authenticate, async (req, res) => {
+    try {
+        const list = await ScheduledCampaign.find({ tenantId: req.user.tenantId }).sort({ scheduledAt: -1 });
+        
+        // Compute accurate live counts from the Recipient collection (ground truth)
+        const campaignIds = list.map(s => s.resultCampaignId || `sched_${s._id}`);
+        const recipientAgg = await Recipient.aggregate([
+            { $match: { tenantId: req.user.tenantId, campaignId: { $in: campaignIds } } },
+            {
+                $group: {
+                    _id: { campaignId: '$campaignId', status: '$status' },
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        const recipientCounts = {};
+        for (const row of recipientAgg) {
+            const cid = row._id.campaignId;
+            const status = row._id.status;
+            if (!recipientCounts[cid]) {
+                recipientCounts[cid] = { sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
+            }
+            recipientCounts[cid].total += row.count;
+            if (status === 'sent')      recipientCounts[cid].sent      += row.count;
+            if (status === 'delivered') recipientCounts[cid].delivered += row.count;
+            if (status === 'read')      recipientCounts[cid].read      += row.count;
+            if (status === 'failed')    recipientCounts[cid].failed    += row.count;
+        }
+
+        const enriched = list.map(s => {
+            const cid = s.resultCampaignId || `sched_${s._id}`;
+            const rc = recipientCounts[cid];
+            const base = s.toObject();
+            base.id = s._id.toString();
+            if (rc && rc.total > 0) {
+                base.successCount = rc.total - rc.failed;
+                base.failureCount = rc.failed;
+                base.deliveredCount = rc.delivered + rc.read;
+                base.readCount = rc.read;
+                base.totalCount = rc.total;
+            } else {
+                base.deliveredCount = 0;
+                base.readCount = 0;
+                base.totalCount = s.recipients ? s.recipients.length : 0;
+            }
+            return base;
+        });
+
+        res.json(enriched);
+    } catch (err) {
+        console.error('Failed to fetch scheduled campaigns:', err.message);
+        res.status(500).json({ error: 'Failed to fetch scheduled campaigns' });
+    }
+});
+
+app.delete('/scheduled-campaigns/:id', authenticate, async (req, res) => {
+    try {
+        const sc = await ScheduledCampaign.findOneAndUpdate(
+            { _id: req.params.id, tenantId: req.user.tenantId, status: 'pending' },
+            { $set: { status: 'cancelled' } },
+            { new: true }
+        );
+        if (!sc) return res.status(404).json({ error: 'Not found or already processed' });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to cancel' });
+    }
+});
+
+//  Conversations & Messages REST
+app.get('/conversations', authenticate, async (req, res) => {
+    try {
+        // Include all conversations (both live-chat and chatbot-initiated) — no hasReply filter
+        const convs = await Conversation.find({ tenantId: req.user.tenantId })
+            .sort({ lastActive: -1 }).lean();
+        res.json(convs.map(c => ({
+            id: c.contactId,
+            name: c.name || c.contactId,
+            lastMessage: c.lastMessage || '',
+            lastActive: c.lastActive,
+            hasReply: c.hasReply || false,
+        })));
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch conversations' });
+    }
+});
+
+app.get('/conversations/:contactId/messages', authenticate, async (req, res) => {
+    try {
+        const messages = await Message.find({ tenantId: req.user.tenantId, contactId: req.params.contactId })
+            .sort({ timestamp: 1 }).lean();
+        res.json(messages.map(m => ({
+            id: m._id.toString(),
+            text: m.text || '',
+            isMe: m.isMe === true,
+            timestamp: m.timestamp,
+            time: formatTimeIST(m.time || m.timestamp),
+            messageType: m.messageType || null,
+            templateName: m.templateName || null,
+            templateBody: m.templateBody || null,
+            mediaUrl: m.mediaUrl || null,
+            interactivePayload: m.interactivePayload || null,
+            wamid: m.wamid || null,
+            contextMessageId: m.contextMessageId || null,
+            replyContextPreview: m.replyContextPreview || null,
+            status: m.status || 'sent',
+            errorDetails: m.errorDetails || null,
+            source: m.source || null,
+        })));
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch messages' });
+    }
+});
+
+// Media proxy — fetches a WhatsApp media file from Meta and streams it to the client.
+// Keeps the access token server-side so the Flutter client never needs it directly.
+app.get('/media/:mediaId', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant?.whatsappConfig?.accessToken) {
+            return res.status(400).json({ error: 'WhatsApp not configured' });
+        }
+        const { accessToken } = tenant.whatsappConfig;
+        const { mediaId } = req.params;
+
+        // Step 1: Retrieve the download URL from Meta
+        let downloadUrl;
+        try {
+            const metaResp = await axios.get(
+                `${WHATSAPP_API_URL}/${mediaId}`,
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            downloadUrl = metaResp.data?.url;
+            if (!downloadUrl) throw new Error('No URL in Meta response');
+        } catch (err) {
+            console.error(`[MediaProxy] Failed to get download URL for ${mediaId}:`, err.message);
+            return res.status(404).json({ error: 'Media not found' });
+        }
+
+        // Step 2: Stream the binary to the client
+        const mediaResp = await axios.get(downloadUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            responseType: 'stream',
+        });
+
+        res.setHeader('Content-Type', mediaResp.headers['content-type'] || 'application/octet-stream');
+        mediaResp.data.pipe(res);
+    } catch (error) {
+        console.error('[MediaProxy] Error:', error.message);
+        res.status(404).json({ error: 'Media not found' });
+    }
+});
+
+app.get('/campaigns/:campaignId/recipients', authenticate, async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+        const tenantId = req.user.tenantId;
+
+        // Fetch all recipients for this campaign
+        const recipients = await Recipient.find({ tenantId, campaignId }).lean();
+
+        // Look up the campaign template name so we can fetch its buttons
+        const campaign = await Campaign.findOne({ tenantId, id: campaignId }).select('template').lean();
+        let templateButtons = [];
+
+        if (campaign?.template) {
+            try {
+                const tenant = await Tenant.findById(tenantId).select('whatsappConfig').lean();
+                if (tenant?.whatsappConfig?.accessToken && tenant?.whatsappConfig?.businessAccountId) {
+                    const resp = await axios.get(
+                        `${WHATSAPP_API_URL}/${tenant.whatsappConfig.businessAccountId}/message_templates`,
+                        {
+                            headers: { Authorization: `Bearer ${tenant.whatsappConfig.accessToken}` },
+                            params: { name: campaign.template }
+                        }
+                    );
+                    const tpl = (resp.data?.data || []).find(t => t.name === campaign.template);
+                    const components = tpl?.components || [];
+                    const btnComp = components.find(c => c.type === 'BUTTONS');
+                    if (btnComp?.buttons) {
+                        templateButtons = btnComp.buttons
+                            .filter(b => b.type === 'QUICK_REPLY')
+                            .map(b => ({ text: b.text, type: b.type }));
+                    }
+                }
+            } catch (tplErr) {
+                console.warn(`[recipients] Failed to fetch template buttons for campaign ${campaignId}:`, tplErr.message);
+            }
+        }
+
+        // ── Infer button clicks from Messages collection ────────────────────────
+        // EC2 saves every incoming button reply as a Message with isMe:false.
+        // We cross-reference Messages against templateButtons to find clicks.
+        if (templateButtons.length > 0 && recipients.length > 0) {
+            try {
+                const phones = [...new Set(recipients.map(r => r.to).filter(Boolean))];
+                const earliestSentAt = recipients.reduce((min, r) => {
+                    const t = r.sentAt ? new Date(r.sentAt) : null;
+                    return t && (!min || t < min) ? t : min;
+                }, null);
+
+                // Fetch all incoming messages from these recipients around or after send time
+                const queryFilter = {
+                    tenantId,
+                    contactId: { $in: phones },
+                    isMe: false,
+                };
+                if (earliestSentAt) {
+                    const bufferTime = new Date(earliestSentAt.getTime() - 60 * 1000);
+                    queryFilter.$or = [
+                        { timestamp: { $gte: bufferTime } },
+                        { time: { $gte: bufferTime.toISOString() } },
+                    ];
+                }
+
+                const buttonMessages = await Message.find(queryFilter)
+                    .select('contactId text timestamp time messageType')
+                    .lean();
+
+                // Build a map: phone → Set of clicked button texts
+                const inferredClicks = {};
+                for (const msg of buttonMessages) {
+                    const rawText = (msg.text || '').trim();
+                    const cleanTextLower = rawText.replace(/^[↩️\s]+/, '').toLowerCase();
+
+                    const matchedBtn = templateButtons.find(b => {
+                        const btnText = (b.text || '').trim().toLowerCase();
+                        return btnText && cleanTextLower === btnText;
+                    });
+
+                    if (matchedBtn) {
+                        if (!inferredClicks[msg.contactId]) inferredClicks[msg.contactId] = new Set();
+                        inferredClicks[msg.contactId].add(matchedBtn.text.trim());
+                    }
+                }
+
+                // Merge inferred clicks into recipient records and persist
+                for (const r of recipients) {
+                    const inferred = inferredClicks[r.to];
+                    if (inferred && inferred.size > 0) {
+                        const existing = new Set((r.clickedButtons || []).map(b => b.trim().toLowerCase()));
+                        const merged = [...(r.clickedButtons || [])];
+                        for (const btn of inferred) {
+                            if (!existing.has(btn.toLowerCase())) merged.push(btn);
+                        }
+                        r.clickedButtons = merged;
+
+                        // Persist to MongoDB Recipient document
+                        Recipient.findByIdAndUpdate(r._id, {
+                            $set: { clickedButtons: merged },
+                            $addToSet: {
+                                buttonClicks: {
+                                    $each: Array.from(inferred).map(text => ({
+                                        buttonText: text,
+                                        clickedAt: new Date()
+                                    }))
+                                }
+                            }
+                        }).catch(e => console.warn('[recipients] click persist error:', e.message));
+                    }
+                }
+            } catch (inferErr) {
+                console.warn('[recipients] Button click inference error:', inferErr.message);
+            }
+        }
+        // ── End button click inference ──────────────────────────────────────────
+
+        res.json({ recipients, templateButtons });
+    } catch (error) {
+        console.error('[/campaigns/:campaignId/recipients] error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch recipients' });
+    }
+});
+
+app.post('/status-mappings', authenticate, async (req, res) => {
+    try {
+        const { wamid, campaignId } = req.body;
+        await StatusMapping.findOneAndUpdate({ wamid }, { wamid, campaignId, tenantId: req.user.tenantId }, { upsert: true });
+        res.sendStatus(200);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to save status mapping' });
+    }
+});
+
+
+/**
+ * Registers a phone number with Meta WhatsApp Cloud API via POST /{PHONE_NUMBER_ID}/register.
+ * This provisions the WhatsApp Cloud API container and transitions phone status from PENDING to CONNECTED.
+ * 
+ * @param {string} phoneNumberId - Meta Phone Number ID
+ * @param {string} accessToken   - System User or Valid Access Token
+ * @param {string} pin           - 6-digit registration PIN (default: '123456')
+ */
+async function registerPhoneNumber(phoneNumberId, accessToken, pin = '123456') {
+    const apiVersion = process.env.META_API_VERSION || 'v25.0';
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/register`;
+
+    console.log(`[registerPhoneNumber] Attempting Meta Cloud API registration for Phone ID: ${phoneNumberId}...`);
+
+    try {
+        const response = await axios.post(
+            url,
+            {
+                messaging_product: 'whatsapp',
+                pin: pin || '123456',
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        console.log(`[registerPhoneNumber] ✅ Phone ID ${phoneNumberId} successfully registered with Meta Cloud API:`, response.data);
+        return { success: true, data: response.data };
+    } catch (err) {
+        const errData = err.response?.data || err.message;
+        console.error(`[registerPhoneNumber] ❌ Registration failed for Phone ID ${phoneNumberId}:`, JSON.stringify(errData, null, 2));
+        return { success: false, error: errData };
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  META ONBOARDING HELPER — Steps 4 + 5 + 6
+//  Called from:
+//    1. POST /webhook when event === 'PARTNER_ADDED' (Step 3)
+//    2. POST /facebook-embedded-signup as a synchronous fallback when
+//       businessPortfolioId is available from the popup postMessage
+//
+//  @param {string} wabaId              - Customer WhatsApp Business Account ID
+//  @param {string} businessPortfolioId - Customer Business Portfolio ID
+//  @param {string|null} tenantId       - MongoDB _id of the tenant to update
+//                                        (null when called from webhook)
+// ─────────────────────────────────────────────────────────────────────────────
+async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionId = null) {
+    const tag = '[processOnboarding]';
+    const systemToken = process.env.META_SYSTEM_TOKEN;
+    const appSecret = process.env.META_APP_SECRET;
+    const apiVersion = process.env.META_API_VERSION || 'v25.0';
+
+    await saveOnboardingLog({
+        tenantId,
+        sessionId,
+        wabaId,
+        businessPortfolioId,
+        step: 'ONBOARDING_PROCESS_START',
+        status: 'info',
+        message: 'processOnboarding task started.'
+    });
+
+    if (!systemToken || systemToken === 'PASTE_YOUR_SYSTEM_USER_TOKEN_HERE') {
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            step: 'ONBOARDING_PROCESS_SKIPPED_NO_SYSTEM_TOKEN',
+            status: 'warning',
+            message: 'META_SYSTEM_TOKEN is not set on the server environment. Skipping Steps 4-6.'
+        });
+        return null;
+    }
+    if (!businessPortfolioId) {
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            step: 'ONBOARDING_PROCESS_SKIPPED_NO_PORTFOLIO',
+            status: 'warning',
+            message: 'businessPortfolioId is missing. Cannot fetch permanent system user access token.'
+        });
+        return null;
+    }
+
+    try {
+        // ── Step 4: Generate HMAC-SHA256 appsecret_proof ────────────────────
+        const appSecretProof = generateAppSecretProof(systemToken, appSecret);
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            step: 'ONBOARDING_PROCESS_HMAC_GEN',
+            status: 'info',
+            message: 'Step 4: HMAC-SHA256 appsecret_proof generated successfully.'
+        });
+
+        // ── Step 5: Get customer business token ─────────────────────────────
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            step: 'ONBOARDING_PROCESS_FETCH_TOKEN_START',
+            status: 'info',
+            message: `Step 5: Querying customer business system user token for portfolio: ${businessPortfolioId}`
+        });
+
+        let businessToken = null;
+        try {
+            const tokenRes = await axios.post(
+                `https://graph.facebook.com/${apiVersion}/${businessPortfolioId}/system_user_access_tokens`,
+                new URLSearchParams({
+                    appsecret_proof: appSecretProof,
+                    scope: 'whatsapp_business_management,whatsapp_business_messaging,catalog_management',
+                    set_token_expires_in_60_days: 'false',  // ← KEY: generates a NEVER-EXPIRING token
+                }),
+                {
+                    headers: {
+                        'Authorization': `Bearer ${systemToken}`,
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                }
+            );
+            businessToken = tokenRes.data.access_token;
+
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId,
+                businessPortfolioId,
+                step: 'ONBOARDING_PROCESS_FETCH_TOKEN_SUCCESS',
+                status: 'success',
+                message: 'Step 5: Permanent never-expiring system user access token generated successfully.',
+                details: { tokenType: 'system_user', expires: 'never' }
+            });
+        } catch (tokenErr) {
+            const tokenErrData = tokenErr.response?.data || tokenErr.message;
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId,
+                businessPortfolioId,
+                step: 'ONBOARDING_PROCESS_FETCH_TOKEN_FAIL',
+                status: 'error',
+                message: 'Step 5: Generating permanent system user access token failed. Falling back to temporary user token.',
+                details: tokenErrData
+            });
+        }
+
+        const tokenForPhoneQuery = businessToken || systemToken;
+
+        // ── Step 6: Get phone number ID from Phone Numbers API ──────────────
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            step: 'ONBOARDING_PROCESS_FETCH_PHONE_START',
+            status: 'info',
+            message: `Step 6: Querying authoritative phone numbers for WABA ID: ${wabaId}`
+        });
+
+        let phoneNumberId = null;
+        let displayPhone = null;
+        let verifiedName = null;
+        let qualityRating = null;
+        let throughputLevel = null;
+        let nameApprovalStatus = 'UNKNOWN';
+        let codeVerificationStatus = 'UNKNOWN';
+        let phoneStatus = 'PENDING';
+        let registrationError = null;
+
+        try {
+            const phoneRes = await axios.get(
+                `https://graph.facebook.com/${apiVersion}/${wabaId}/phone_numbers`,
+                {
+                    params: {
+                        fields: 'id,display_phone_number,verified_name,code_verification_status,name_approval_status,status,quality_rating,platform_type,throughput,last_onboarded_time,webhook_configuration',
+                        access_token: tokenForPhoneQuery,
+                    },
+                }
+            );
+            const phones = phoneRes.data?.data || [];
+
+            if (phones.length > 0) {
+                const phone = phones[0];
+                phoneNumberId = phone.id;
+                displayPhone = phone.display_phone_number;
+                verifiedName = phone.verified_name;
+                qualityRating = phone.quality_rating;
+                throughputLevel = phone.throughput?.level;
+                nameApprovalStatus = phone.name_approval_status || 'UNKNOWN';
+                codeVerificationStatus = phone.code_verification_status || 'UNKNOWN';
+                phoneStatus = phone.status || 'PENDING';
+
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    phoneNumberId,
+                    step: 'ONBOARDING_PROCESS_FETCH_PHONE_SUCCESS',
+                    status: 'success',
+                    message: `Step 6: Phone details fetched successfully: ${displayPhone} (CodeVerif: ${codeVerificationStatus}, NameApproval: ${nameApprovalStatus}, Status: ${phoneStatus})`,
+                    details: phone
+                });
+
+                // ── STEP 6.5: EXECUTE META PHONE NUMBER REGISTRATION API ──────────
+                // If code_verification_status is VERIFIED or name_approval_status is APPROVED,
+                // call POST /{PHONE_NUMBER_ID}/register to transition status from PENDING to CONNECTED.
+                const tokenForRegistration = businessToken || systemToken;
+                if (phoneNumberId && tokenForRegistration && (codeVerificationStatus === 'VERIFIED' || nameApprovalStatus === 'APPROVED')) {
+                    await saveOnboardingLog({
+                        tenantId,
+                        sessionId,
+                        wabaId,
+                        phoneNumberId,
+                        step: 'ONBOARDING_PROCESS_REGISTER_PHONE_START',
+                        status: 'info',
+                        message: `Triggering Meta Cloud API phone registration for Phone ID ${phoneNumberId}...`
+                    });
+
+                    const regResult = await registerPhoneNumber(phoneNumberId, tokenForRegistration, '123456');
+
+                    if (regResult.success) {
+                        phoneStatus = 'CONNECTED';
+                        await saveOnboardingLog({
+                            tenantId,
+                            sessionId,
+                            wabaId,
+                            phoneNumberId,
+                            step: 'ONBOARDING_PROCESS_REGISTER_PHONE_SUCCESS',
+                            status: 'success',
+                            message: `Meta Cloud API registration succeeded! Phone ID ${phoneNumberId} is now CONNECTED.`,
+                            details: regResult.data
+                        });
+                    } else {
+                        registrationError = regResult.error;
+                        await saveOnboardingLog({
+                            tenantId,
+                            sessionId,
+                            wabaId,
+                            phoneNumberId,
+                            step: 'ONBOARDING_PROCESS_REGISTER_PHONE_FAIL',
+                            status: 'error',
+                            message: `Meta Cloud API registration failed for Phone ID ${phoneNumberId}. Phone remains in PENDING state.`,
+                            details: regResult.error
+                        });
+                    }
+                } else {
+                    await saveOnboardingLog({
+                        tenantId,
+                        sessionId,
+                        wabaId,
+                        phoneNumberId,
+                        step: 'ONBOARDING_PROCESS_REGISTER_PHONE_SKIPPED',
+                        status: 'warning',
+                        message: `Skipped auto-registration: code_verification_status=${codeVerificationStatus}, name_approval_status=${nameApprovalStatus}.`
+                    });
+                }
+            } else {
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: 'ONBOARDING_PROCESS_FETCH_PHONE_EMPTY',
+                    status: 'warning',
+                    message: 'Step 6: No phone numbers found under the registered WABA ID.'
+                });
+            }
+        } catch (phoneErr) {
+            const phoneErrData = phoneErr.response?.data || phoneErr.message;
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId,
+                step: 'ONBOARDING_PROCESS_FETCH_PHONE_FAIL',
+                status: 'error',
+                message: 'Step 6: Querying phone numbers API failed.',
+                details: phoneErrData
+            });
+        }
+
+        // ── Step 6.8: Auto-discover Meta Product Catalogs ──────────────────
+        let discoveredCatalogs = [];
+        let activeCatalogId = null;
+        try {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId,
+                businessPortfolioId,
+                step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_START',
+                status: 'info',
+                message: `Step 6.8: Auto-discovering product catalogs for WABA ID: ${wabaId}`
+            });
+
+            // 1. Try querying catalogs linked to WABA
+            let catalogsRes = null;
+            try {
+                catalogsRes = await axios.get(
+                    `https://graph.facebook.com/${apiVersion}/${wabaId}/product_catalogs`,
+                    {
+                        params: {
+                            fields: 'id,name,vertical,product_count',
+                            access_token: tokenForPhoneQuery,
+                        },
+                    }
+                );
+            } catch (wabaCatErr) {
+                console.warn(`${tag} /product_catalogs query on WABA failed, trying portfolio...`, wabaCatErr.response?.data || wabaCatErr.message);
+            }
+
+            let rawCatalogs = catalogsRes?.data?.data || [];
+
+            // 2. If no catalogs found on WABA directly, check owned catalogs on Business Portfolio
+            if (rawCatalogs.length === 0 && businessPortfolioId) {
+                try {
+                    const portfolioCatRes = await axios.get(
+                        `https://graph.facebook.com/${apiVersion}/${businessPortfolioId}/owned_product_catalogs`,
+                        {
+                            params: {
+                                fields: 'id,name,vertical,product_count',
+                                access_token: tokenForPhoneQuery,
+                            },
+                        }
+                    );
+                    rawCatalogs = portfolioCatRes.data?.data || [];
+                } catch (portCatErr) {
+                    console.warn(`${tag} /owned_product_catalogs query on Portfolio failed:`, portCatErr.response?.data || portCatErr.message);
+                }
+            }
+
+            if (rawCatalogs.length > 0) {
+                discoveredCatalogs = rawCatalogs.map((c, index) => ({
+                    catalogId: c.id,
+                    name: c.name || `Catalog ${c.id}`,
+                    vertical: c.vertical || 'commerce',
+                    isDefault: index === 0,
+                    discoveredAt: new Date(),
+                    productCount: c.product_count || 0
+                }));
+                activeCatalogId = discoveredCatalogs[0].catalogId;
+
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_SUCCESS',
+                    status: 'success',
+                    message: `Step 6.8: Discovered ${discoveredCatalogs.length} catalog(s). Default active catalog: ${activeCatalogId}`,
+                    details: discoveredCatalogs
+                });
+
+                // Auto-enable commerce settings on the phone number if available
+                if (phoneNumberId) {
+                    try {
+                        await axios.post(
+                            `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/whatsapp_commerce_settings`,
+                            {
+                                is_cart_enabled: true,
+                                is_catalog_visible: true,
+                            },
+                            {
+                                headers: {
+                                    Authorization: `Bearer ${tokenForPhoneQuery}`,
+                                    'Content-Type': 'application/json',
+                                },
+                            }
+                        );
+                    } catch (commErr) {
+                        console.warn(`${tag} Auto-enabling commerce settings notice:`, commErr.response?.data || commErr.message);
+                    }
+                }
+            } else {
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_EMPTY',
+                    status: 'info',
+                    message: 'Step 6.8: No existing Meta product catalogs found for this business.'
+                });
+            }
+        } catch (catErr) {
+            console.warn(`${tag} Catalog auto-discovery failed:`, catErr.response?.data || catErr.message);
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId,
+                step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_FAIL',
+                status: 'warning',
+                message: 'Step 6.8: Catalog auto-discovery encountered an error (continuing onboarding).',
+                details: catErr.response?.data || catErr.message
+            });
+        }
+
+        // ── Step 7: Persist to MongoDB ──────────────────────────────────────
+        const isFullyVerified = !!(businessToken && phoneNumberId && phoneStatus === 'CONNECTED');
+        const updateFields = {
+            'whatsappConfig.businessAccountId': wabaId,
+            'whatsappConfig.businessPortfolioId': businessPortfolioId,
+            'whatsappConfig.onboardedAt': new Date(),
+            'whatsappConfig.verified': isFullyVerified,
+            'whatsappConfig.nameApprovalStatus': nameApprovalStatus,
+            'whatsappConfig.codeVerificationStatus': codeVerificationStatus,
+            'whatsappConfig.phoneStatus': phoneStatus,
+            'whatsappConfig.registrationError': registrationError,
+            // Token health: system user tokens from this step never expire
+            'whatsappConfig.tokenType': businessToken ? 'system_user' : 'user',
+            'whatsappConfig.tokenExpiry': null,   // null = never expires
+            'whatsappConfig.tokenStatus': 'active',
+        };
+        if (businessToken) updateFields['whatsappConfig.accessToken'] = businessToken;
+        if (phoneNumberId) updateFields['whatsappConfig.phoneNumberId'] = phoneNumberId;
+        if (displayPhone) updateFields['whatsappConfig.displayPhone'] = displayPhone;
+        if (verifiedName) updateFields['whatsappConfig.verifiedName'] = verifiedName;
+        if (qualityRating) updateFields['whatsappConfig.qualityRating'] = qualityRating;
+        if (throughputLevel) updateFields['whatsappConfig.throughputLevel'] = throughputLevel;
+        if (discoveredCatalogs.length > 0) {
+            updateFields['whatsappConfig.catalogs'] = discoveredCatalogs;
+            updateFields['whatsappConfig.catalogId'] = activeCatalogId;
+        }
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            phoneNumberId,
+            step: 'ONBOARDING_PROCESS_DB_SAVE_START',
+            status: 'info',
+            message: 'Step 7: Persisting finalized onboarding variables to MongoDB...',
+            details: updateFields
+        });
+
+        let updatedTenant = null;
+        if (tenantId) {
+            updatedTenant = await Tenant.findByIdAndUpdate(
+                tenantId,
+                { $set: updateFields },
+                { new: true }
+            );
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId,
+                step: 'ONBOARDING_PROCESS_DB_SAVE_SUCCESS',
+                status: 'success',
+                message: `Step 7: Successfully updated tenant config for tenant ID: ${tenantId}`,
+                details: updatedTenant?.whatsappConfig
+            });
+        } else {
+            updatedTenant = await Tenant.findOneAndUpdate(
+                { 'whatsappConfig.businessAccountId': wabaId },
+                { $set: updateFields },
+                { new: true }
+            );
+            if (updatedTenant) {
+                await saveOnboardingLog({
+                    tenantId: updatedTenant._id.toString(),
+                    sessionId,
+                    wabaId,
+                    step: 'ONBOARDING_PROCESS_DB_SAVE_SUCCESS',
+                    status: 'success',
+                    message: `Step 7: Found tenant by WABA ID and updated successfully.`,
+                    details: updatedTenant?.whatsappConfig
+                });
+            } else {
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: 'ONBOARDING_PROCESS_DB_SAVE_NOTFOUND',
+                    status: 'warning',
+                    message: `Step 7: No active tenant document found matching WABA ID: ${wabaId}`
+                });
+            }
+        }
+
+        return {
+            businessToken,
+            phoneNumberId,
+            displayPhone,
+            verifiedName,
+            qualityRating,
+            throughputLevel,
+            catalogs: discoveredCatalogs,
+            activeCatalogId,
+        };
+    } catch (err) {
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId,
+            businessPortfolioId,
+            step: 'ONBOARDING_PROCESS_FATAL',
+            status: 'error',
+            message: `Unexpected fatal error in processOnboarding: ${err.message}`,
+            details: err.stack
+        });
+        return null;
+    }
+}
+
+app.post('/log-signup-event', authenticate, async (req, res) => {
+    try {
+        const { eventName, sessionId, data } = req.body;
+        const tenantId = req.user.tenantId;
+
+        let status = 'info';
+        if (eventName.includes('ERROR') || eventName.includes('FAIL')) {
+            status = 'error';
+        } else if (eventName.includes('CANCEL')) {
+            status = 'warning';
+        } else if (eventName.includes('SUCCESS')) {
+            status = 'success';
+        }
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: eventName,
+            status,
+            message: `Frontend event: ${eventName}`,
+            details: data,
+            wabaId: data?.wabaId || null,
+            phoneNumberId: data?.phoneNumberId || null,
+            businessPortfolioId: data?.businessPortfolioId || null,
+        });
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error logging signup event:', err.message);
+        res.status(500).json({ error: 'Failed to write log' });
+    }
+});
+
+// POST /api/whatsapp/register-phone — Manual trigger to register phone number with Meta Cloud API
+app.post('/api/whatsapp/register-phone', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const tenant = await Tenant.findById(tenantId);
+
+        if (!tenant || !tenant.whatsappConfig?.phoneNumberId || !tenant.whatsappConfig?.accessToken) {
+            return res.status(400).json({ error: 'WhatsApp configuration (phoneNumberId or accessToken) is missing.' });
+        }
+
+        const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+        const pin = req.body.pin || tenant.whatsappConfig.registrationPin || '123456';
+
+        console.log(`[POST /api/whatsapp/register-phone] Triggering manual Meta registration for Tenant ${tenantId}, Phone ID ${phoneNumberId}...`);
+
+        const result = await registerPhoneNumber(phoneNumberId, accessToken, pin);
+
+        if (result.success) {
+            // After successful registration, fetch fresh phone metadata from Meta
+            // so quality_rating, status, display_phone_number and verified_name are
+            // persisted immediately and the dashboard badge stops showing UNKNOWN.
+            const metaFields = {};
+            try {
+                const apiVersion = process.env.META_API_VERSION || 'v25.0';
+                const phoneRes = await axios.get(
+                    `https://graph.facebook.com/${apiVersion}/${phoneNumberId}`,
+                    {
+                        params: {
+                            fields: 'quality_rating,display_phone_number,verified_name,code_verification_status,throughput',
+                            access_token: accessToken,
+                        },
+                    }
+                );
+                const pd = phoneRes.data || {};
+                if (pd.quality_rating)       metaFields['whatsappConfig.qualityRating']   = pd.quality_rating;
+                if (pd.display_phone_number) metaFields['whatsappConfig.displayPhone']    = pd.display_phone_number;
+                if (pd.verified_name)        metaFields['whatsappConfig.verifiedName']    = pd.verified_name;
+                if (pd.throughput?.level)    metaFields['whatsappConfig.throughputLevel'] = pd.throughput.level;
+                console.log(`[POST /api/whatsapp/register-phone] ✅ Fetched Meta phone metadata:`, pd);
+            } catch (metaErr) {
+                console.warn(`[POST /api/whatsapp/register-phone] ⚠️ Could not fetch phone metadata from Meta after registration:`, metaErr.response?.data || metaErr.message);
+            }
+
+            await Tenant.findByIdAndUpdate(tenantId, {
+                $set: {
+                    'whatsappConfig.phoneStatus': 'CONNECTED',
+                    'whatsappConfig.verified': true,
+                    'whatsappConfig.registrationPin': pin,
+                    'whatsappConfig.registrationError': null,
+                    ...metaFields,
+                }
+            });
+            return res.json({
+                success: true,
+                message: 'Phone number registered successfully with Meta Cloud API!',
+                data: result.data,
+                qualityRating: metaFields['whatsappConfig.qualityRating'] || null,
+            });
+        } else {
+            await Tenant.findByIdAndUpdate(tenantId, {
+                $set: {
+                    'whatsappConfig.phoneStatus': 'PENDING',
+                    'whatsappConfig.verified': false,
+                    'whatsappConfig.registrationError': result.error,
+                }
+            });
+            return res.status(500).json({
+                error: 'Meta Phone Registration Failed',
+                details: result.error,
+            });
+        }
+    } catch (err) {
+        console.error('[POST /api/whatsapp/register-phone] Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+//  Facebook Embedded Signup (Steps 3→7 of Meta Onboarding)
+app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
+    const {
+        code, appId, wabaId, phoneNumberId,
+        sessionId, sessionInfoResponse,
+        businessPortfolioId,  // ← NEW: Business Portfolio ID from popup postMessage (Step 3)
+    } = req.body;
+    const tenantId = req.user.tenantId;
+
+    await saveOnboardingLog({
+        tenantId,
+        sessionId,
+        wabaId,
+        businessPortfolioId,
+        phoneNumberId,
+        step: 'BACKEND_START',
+        status: 'info',
+        message: 'Backend onboarding flow started.',
+        details: { appId, hasCode: !!code, sessionId }
+    });
+
+    if (!appId) {
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_REJECTED_MISSING_APPID',
+            status: 'error',
+            message: 'Onboarding rejected: Missing appId'
+        });
+        return res.status(400).json({ error: 'Missing appId' });
+    }
+
+    const appSecret = process.env.META_APP_SECRET;
+    if (!appSecret) {
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_FATAL_MISSING_SECRET',
+            status: 'error',
+            message: 'META_APP_SECRET is not configured on the server environment.'
+        });
+        return res.status(500).json({ error: 'META_APP_SECRET not configured on server' });
+    }
+
+    try {
+        let accessToken = null;
+        let tokenExpiryInfo = {}; // Will be populated after /debug_token call
+
+        // Exchange code for access token only if a code was provided
+        if (code && code.trim() !== '') {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_EXCHANGE_CODE_START',
+                status: 'info',
+                message: 'Exchanging auth code for user access token...'
+            });
+
+            const apiVersion = process.env.META_API_VERSION || 'v25.0';
+            const tokenUrl = `https://graph.facebook.com/${apiVersion}/oauth/access_token`;
+
+            try {
+                const tokenResponse = await axios.get(tokenUrl, {
+                    params: { client_id: appId, client_secret: appSecret, code: code.trim() }
+                });
+                accessToken = tokenResponse.data.access_token;
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_EXCHANGE_CODE_SUCCESS',
+                    status: 'success',
+                    message: 'Successfully exchanged auth code for access token.'
+                });
+
+                // ── Inspect token expiry via /debug_token ─────────────────────
+                // User tokens from Embedded Signup code exchange are long-lived (~60 days).
+                // System User tokens (Step 5) can be set to never expire.
+                // We query /debug_token to get the actual expiry and store it.
+                try {
+                    const debugRes = await axios.get(
+                        `https://graph.facebook.com/debug_token`,
+                        { params: { input_token: accessToken, access_token: `${appId}|${appSecret}` } }
+                    );
+                    const tokenData = debugRes.data?.data || {};
+                    const expiresAt = tokenData.expires_at; // Unix timestamp, 0 = never expires
+                    const isNeverExpires = !expiresAt || expiresAt === 0;
+                    const tokenExpiryDate = isNeverExpires ? null : new Date(expiresAt * 1000);
+                    const resolvedTokenType = (tokenData.type === 'SYSTEM_USER' || isNeverExpires) ? 'system_user' : 'user';
+                    // Attach expiry info to tenant update fields (applied below at DB save)
+                    tokenExpiryInfo = { tokenExpiry: tokenExpiryDate, tokenType: resolvedTokenType, tokenStatus: 'active' };
+                    await saveOnboardingLog({
+                        tenantId, sessionId,
+                        step: 'BACKEND_TOKEN_EXPIRY_FETCHED',
+                        status: 'info',
+                        message: isNeverExpires
+                            ? 'Token never expires (system user token).'
+                            : `Token expires at: ${tokenExpiryDate.toISOString()} (type: ${resolvedTokenType})`,
+                        details: { expiresAt, resolvedTokenType }
+                    });
+                } catch (debugErr) {
+                    console.warn('[Embedded Signup] Could not fetch /debug_token:', debugErr.message);
+                    tokenExpiryInfo = { tokenExpiry: null, tokenType: 'user', tokenStatus: 'unknown' };
+                }
+            } catch (exErr) {
+                const exErrData = exErr.response?.data || exErr.message;
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_EXCHANGE_CODE_FAIL',
+                    status: 'error',
+                    message: 'Failed to exchange auth code for user token.',
+                    details: exErrData
+                });
+                throw exErr;
+            }
+        } else {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_EXCHANGE_CODE_SKIPPED',
+                status: 'warning',
+                message: 'No auth code provided in request body. Skipping exchange.'
+            });
+        }
+
+        // If no token obtained (no code), we cannot proceed — fall back to manual config
+        if (!accessToken) {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_FALLBACK_NO_TOKEN',
+                status: 'warning',
+                message: 'No access token was exchanged. Returning fallback redirect/status.'
+            });
+            return res.status(400).json({
+                error: 'No auth code received from Meta. Please configure manually.',
+                fallback: true,
+            });
+        }
+
+        // Legacy fallback: resolve WABA ID / phone number ID from the user token if not in postMessage
+        let resolvedWabaId = wabaId || null;
+        let resolvedPhoneNumberId = phoneNumberId || null;
+        let resolvedBusinessId = businessPortfolioId || null;
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId: resolvedWabaId,
+            businessPortfolioId: resolvedBusinessId,
+            phoneNumberId: resolvedPhoneNumberId,
+            step: 'BACKEND_CHECK_IDS',
+            status: 'info',
+            message: 'Checking for missing IDs from Meta postMessage.',
+            details: { resolvedWabaId, resolvedPhoneNumberId, resolvedBusinessId }
+        });
+
+        if (!resolvedWabaId || !resolvedPhoneNumberId) {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_AUTO_RESOLVE_START',
+                status: 'info',
+                message: 'Missing IDs. Querying Meta Graph API for WABA/business properties...'
+            });
+
+            try {
+                const wabaRes = await axios.get(`${WHATSAPP_API_URL}/me/whatsapp_business_accounts`, {
+                    params: { access_token: accessToken, fields: 'id,name,business' }
+                });
+                const wabaAccounts = wabaRes.data?.data || [];
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_AUTO_RESOLVE_WABA_COUNT',
+                    status: 'info',
+                    message: `Found ${wabaAccounts.length} WABA accounts associated with user token.`
+                });
+
+                if (wabaAccounts.length > 0) {
+                    resolvedWabaId = resolvedWabaId || wabaAccounts[0].id;
+                    resolvedBusinessId = resolvedBusinessId || wabaAccounts[0].business?.id || null;
+                    await saveOnboardingLog({
+                        tenantId,
+                        sessionId,
+                        wabaId: resolvedWabaId,
+                        businessPortfolioId: resolvedBusinessId,
+                        step: 'BACKEND_AUTO_RESOLVE_WABA_SUCCESS',
+                        status: 'success',
+                        message: `Resolved WABA ID: ${resolvedWabaId}, Business Portfolio ID: ${resolvedBusinessId}`
+                    });
+                }
+            } catch (e1) {
+                const e1Data = e1.response?.data || e1.message;
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_AUTO_RESOLVE_WABA_FAIL',
+                    status: 'warning',
+                    message: '/me/whatsapp_business_accounts query failed. Falling back to /me/businesses.',
+                    details: e1Data
+                });
+
+                // Fallback via /me/businesses
+                try {
+                    const bizRes = await axios.get(`${WHATSAPP_API_URL}/me/businesses`, {
+                        params: { access_token: accessToken, fields: 'id,name,owned_whatsapp_business_accounts' }
+                    });
+                    const businesses = bizRes.data?.data || [];
+                    for (const biz of businesses) {
+                        const owned = biz.owned_whatsapp_business_accounts?.data || [];
+                        if (owned.length > 0) {
+                            resolvedWabaId = resolvedWabaId || owned[0].id;
+                            resolvedBusinessId = resolvedBusinessId || biz.id;
+                            await saveOnboardingLog({
+                                tenantId,
+                                sessionId,
+                                wabaId: resolvedWabaId,
+                                businessPortfolioId: resolvedBusinessId,
+                                step: 'BACKEND_AUTO_RESOLVE_BIZ_SUCCESS',
+                                status: 'success',
+                                message: `Resolved WABA ID: ${resolvedWabaId} via Business: ${biz.id}`
+                            });
+                            break;
+                        }
+                    }
+                } catch (e2) {
+                    const e2Data = e2.response?.data || e2.message;
+                    await saveOnboardingLog({
+                        tenantId,
+                        sessionId,
+                        step: 'BACKEND_AUTO_RESOLVE_BIZ_FAIL',
+                        status: 'warning',
+                        message: '/me/businesses query failed.',
+                        details: e2Data
+                    });
+                }
+            }
+
+            // fetch phone numbers if we now have a WABA ID but no phone ID
+            if (resolvedWabaId && !resolvedPhoneNumberId) {
+                try {
+                    const phoneRes = await axios.get(`${WHATSAPP_API_URL}/${resolvedWabaId}/phone_numbers`, {
+                        params: { access_token: accessToken, fields: 'id,display_phone_number,verified_name' }
+                    });
+                    const phones = phoneRes.data?.data || [];
+                    if (phones.length > 0) {
+                        resolvedPhoneNumberId = phones[0].id;
+                        await saveOnboardingLog({
+                            tenantId,
+                            sessionId,
+                            wabaId: resolvedWabaId,
+                            phoneNumberId: resolvedPhoneNumberId,
+                            step: 'BACKEND_AUTO_RESOLVE_PHONE_SUCCESS',
+                            status: 'success',
+                            message: `Resolved Phone Number ID: ${resolvedPhoneNumberId} (${phones[0].display_phone_number})`
+                        });
+                    } else {
+                        await saveOnboardingLog({
+                            tenantId,
+                            sessionId,
+                            wabaId: resolvedWabaId,
+                            step: 'BACKEND_AUTO_RESOLVE_PHONE_EMPTY',
+                            status: 'warning',
+                            message: 'No phone numbers found in WABA account.'
+                        });
+                    }
+                } catch (e3) {
+                    const e3Data = e3.response?.data || e3.message;
+                    await saveOnboardingLog({
+                        tenantId,
+                        sessionId,
+                        wabaId: resolvedWabaId,
+                        step: 'BACKEND_AUTO_RESOLVE_PHONE_FAIL',
+                        status: 'warning',
+                        message: 'Phone number list fetch failed.',
+                        details: e3Data
+                    });
+                }
+            }
+        } else {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_AUTO_RESOLVE_SKIPPED',
+                status: 'info',
+                message: 'Skipping auto-resolution of IDs because both WABA ID and Phone ID are already provided.'
+            });
+        }
+
+        // Base update: store the user token and IDs resolved above
+        const baseUpdateFields = {
+            'whatsappConfig.accessToken': accessToken,
+            'whatsappConfig.metaAppId': appId,
+            'whatsappConfig.verified': !!(accessToken && resolvedWabaId && resolvedPhoneNumberId),
+            // Token health fields from /debug_token inspection
+            'whatsappConfig.tokenExpiry': tokenExpiryInfo.tokenExpiry ?? null,
+            'whatsappConfig.tokenType': tokenExpiryInfo.tokenType || 'user',
+            'whatsappConfig.tokenStatus': tokenExpiryInfo.tokenStatus || 'active',
+        };
+        if (resolvedWabaId) baseUpdateFields['whatsappConfig.businessAccountId'] = resolvedWabaId;
+        if (resolvedPhoneNumberId) baseUpdateFields['whatsappConfig.phoneNumberId'] = resolvedPhoneNumberId;
+        if (resolvedBusinessId) baseUpdateFields['whatsappConfig.businessPortfolioId'] = resolvedBusinessId;
+        if (resolvedBusinessId) baseUpdateFields['whatsappConfig.businessId'] = resolvedBusinessId;
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId: resolvedWabaId,
+            businessPortfolioId: resolvedBusinessId,
+            phoneNumberId: resolvedPhoneNumberId,
+            step: 'BACKEND_DB_UPDATE_START',
+            status: 'info',
+            message: 'Saving initial configuration parameters to MongoDB Tenant...',
+            details: baseUpdateFields
+        });
+
+        const updatedTenant = await Tenant.findByIdAndUpdate(tenantId, { $set: baseUpdateFields }, { new: true });
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_DB_UPDATE_SUCCESS',
+            status: 'success',
+            message: 'Tenant document updated successfully with Meta SDK parameters.',
+            details: updatedTenant?.whatsappConfig
+        });
+
+        // Auto-subscribe the WABA to receive webhook events from our app
+        // Helper to subscribe a WABA using the most capable token available
+        const subscribeWabaWebhooks = async (wabaId, token, label) => {
+            try {
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: `BACKEND_SUBSCRIBE_WEBHOOKS_START_${label}`,
+                    status: 'info',
+                    message: `Subscribing WABA ${wabaId} to our app webhooks using ${label} token...`
+                });
+
+                // Use Authorization header (more reliable than query param for business tokens)
+                await axios.post(
+                    `${WHATSAPP_API_URL}/${wabaId}/subscribed_apps`,
+                    null,
+                    { headers: { Authorization: `Bearer ${token}` } }
+                );
+
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: `BACKEND_SUBSCRIBE_WEBHOOKS_SUCCESS_${label}`,
+                    status: 'success',
+                    message: `Automatically subscribed WABA ${wabaId} to webhooks successfully using ${label} token.`
+                });
+                return true;
+            } catch (subErr) {
+                const subErrData = subErr.response?.data || subErr.message;
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId,
+                    step: `BACKEND_SUBSCRIBE_WEBHOOKS_FAIL_${label}`,
+                    status: 'error',
+                    message: `Failed to subscribe WABA to app webhooks using ${label} token.`,
+                    details: subErrData
+                });
+                return false;
+            }
+        };
+
+        if (resolvedWabaId && accessToken) {
+            await subscribeWabaWebhooks(resolvedWabaId, accessToken, 'USER');
+        } else {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_SUBSCRIBE_WEBHOOKS_SKIPPED',
+                status: 'warning',
+                message: 'Skipping webhook subscription because WABA ID or Access Token is missing.'
+            });
+        }
+
+        // ── Official Steps 4→5→6: If businessPortfolioId is known, run processOnboarding() ──
+        let onboardingResult = null;
+        if (resolvedWabaId && resolvedBusinessId) {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId: resolvedWabaId,
+                businessPortfolioId: resolvedBusinessId,
+                step: 'BACKEND_PROCESS_ONBOARDING_START',
+                status: 'info',
+                message: 'Triggering processOnboarding() to exchange user token for a permanent System User business token...'
+            });
+
+            onboardingResult = await processOnboarding(resolvedWabaId, resolvedBusinessId, tenantId, sessionId);
+
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId: resolvedWabaId,
+                businessPortfolioId: resolvedBusinessId,
+                step: 'BACKEND_PROCESS_ONBOARDING_FINISH',
+                status: onboardingResult ? 'success' : 'warning',
+                message: 'processOnboarding finished execution.',
+                details: onboardingResult
+            });
+
+            // Re-subscribe with permanent business token if processOnboarding got one
+            // This is more reliable than the earlier user token subscription
+            if (onboardingResult?.businessToken && resolvedWabaId) {
+                await subscribeWabaWebhooks(resolvedWabaId, onboardingResult.businessToken, 'PERMANENT_BUSINESS');
+            }
+        } else {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_PROCESS_ONBOARDING_SKIPPED',
+                status: 'warning',
+                message: `Skipping processOnboarding because resolvedWabaId (${resolvedWabaId}) or resolvedBusinessId (${resolvedBusinessId}) is missing.`
+            });
+        }
+
+        // Refresh tenant from DB to get the final merged state
+        const finalTenant = await Tenant.findById(tenantId);
+
+        // ── Auto-discover and connect WhatsApp Catalogs ──
+        if (finalTenant && finalTenant.whatsappConfig?.accessToken && finalTenant.whatsappConfig?.businessAccountId) {
+            try {
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_AUTO_SYNC_CATALOGS_START',
+                    status: 'info',
+                    message: 'Auto-discovering and syncing WhatsApp catalogs from Meta...'
+                });
+                const catSyncResult = await CatalogService.syncCatalogs(finalTenant);
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_AUTO_SYNC_CATALOGS_SUCCESS',
+                    status: 'success',
+                    message: `Auto-connected ${catSyncResult.count} catalog(s). Active catalog: ${catSyncResult.catalogId || 'none'}`,
+                    details: catSyncResult
+                });
+            } catch (catErr) {
+                console.warn('[Embedded Signup] Auto catalog sync notice:', catErr.message);
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    step: 'BACKEND_AUTO_SYNC_CATALOGS_NOTICE',
+                    status: 'info',
+                    message: `Auto catalog discovery notice: ${catErr.message}`,
+                });
+            }
+        }
+
+        const freshTenant = await Tenant.findById(tenantId);
+        const finalConfig = freshTenant?.whatsappConfig || {};
+
+        const successResp = {
+            success: true,
+            message: finalConfig.phoneNumberId && finalConfig.businessAccountId
+                ? 'WhatsApp Account connected successfully!'
+                : 'Token saved. IDs could not be auto-fetched — please verify in settings.',
+            partialConnect: !(finalConfig.phoneNumberId && finalConfig.businessAccountId),
+            config: {
+                accessToken: finalConfig.accessToken,
+                wabaId: finalConfig.businessAccountId,
+                phoneNumberId: finalConfig.phoneNumberId,
+                businessId: finalConfig.businessId,
+                businessPortfolioId: finalConfig.businessPortfolioId,
+                displayPhone: finalConfig.displayPhone,
+                verifiedName: finalConfig.verifiedName,
+                qualityRating: finalConfig.qualityRating,
+                throughputLevel: finalConfig.throughputLevel,
+                metaAppId: appId,
+                verified: finalConfig.verified,
+                catalogId: finalConfig.catalogId || null,
+                catalogs: finalConfig.catalogs || [],
+            }
+        };
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_ONBOARDING_COMPLETE',
+            status: 'success',
+            message: 'Meta onboarding backend workflow completed successfully.',
+            details: { partialConnect: successResp.partialConnect, verified: finalConfig.verified }
+        });
+
+        res.json(successResp);
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_ONBOARDING_FATAL',
+            status: 'error',
+            message: 'Fatal error occurred in backend onboarding execution.',
+            details: errorData
+        });
+        res.status(500).json({ error: 'Failed to exchange Meta code for token', details: errorData });
+    }
+});
+
+// Re-fetch WABA ID + Phone ID using the already-stored access token (no re-auth needed)
+// Re-fetch WABA ID + Phone ID + business token using stored credentials
+app.post('/refresh-meta-account', authenticate, async (req, res) => {
+    const tenantId = req.user.tenantId;
+    const { sessionId } = req.body; // Allow optional sessionId from client for tracking
+
+    await saveOnboardingLog({
+        tenantId,
+        sessionId,
+        step: 'BACKEND_REFRESH_START',
+        status: 'info',
+        message: 'Refresh Meta account credentials requested.'
+    });
+
+    try {
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_REFRESH_TENANT_NOT_FOUND',
+                status: 'error',
+                message: 'Refresh failed: Tenant not found in DB.'
+            });
+            return res.status(404).json({ error: 'Tenant not found' });
+        }
+
+        const accessToken = tenant.whatsappConfig?.accessToken;
+        if (!accessToken) {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                step: 'BACKEND_REFRESH_NO_TOKEN',
+                status: 'error',
+                message: 'Refresh failed: No access token stored. Connect Meta account first.'
+            });
+            return res.status(400).json({ error: 'No access token stored. Please reconnect.' });
+        }
+
+        let resolvedWabaId = tenant.whatsappConfig.businessAccountId || null;
+        let resolvedPhoneNumberId = tenant.whatsappConfig.phoneNumberId || null;
+        let resolvedBusinessId = tenant.whatsappConfig.businessPortfolioId || tenant.whatsappConfig.businessId || null;
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            wabaId: resolvedWabaId,
+            businessPortfolioId: resolvedBusinessId,
+            phoneNumberId: resolvedPhoneNumberId,
+            step: 'BACKEND_REFRESH_CHECK_PARAMS',
+            status: 'info',
+            message: 'Retrieved stored configs for refresh.',
+            details: { resolvedWabaId, resolvedPhoneNumberId, resolvedBusinessId }
+        });
+
+        // If we have a stored businessPortfolioId, run the official Steps 4→5→6
+        if (resolvedWabaId && resolvedBusinessId) {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId: resolvedWabaId,
+                businessPortfolioId: resolvedBusinessId,
+                step: 'BACKEND_REFRESH_TRIGGER_ONBOARDING',
+                status: 'info',
+                message: 'Triggering processOnboarding() for permanent token exchange...'
+            });
+            const onboardResult = await processOnboarding(resolvedWabaId, resolvedBusinessId, tenantId, sessionId);
+            if (onboardResult?.phoneNumberId) {
+                resolvedPhoneNumberId = onboardResult.phoneNumberId;
+            }
+        } else {
+            await saveOnboardingLog({
+                tenantId,
+                sessionId,
+                wabaId: resolvedWabaId,
+                businessPortfolioId: resolvedBusinessId,
+                step: 'BACKEND_REFRESH_ONBOARDING_SKIPPED',
+                status: 'warning',
+                message: 'Skipping processOnboarding exchange because resolvedWabaId or resolvedBusinessId is missing from config.'
+            });
+        }
+
+        // Auto-subscribe/re-subscribe the WABA to receive webhook events
+        if (resolvedWabaId && accessToken) {
+            try {
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId: resolvedWabaId,
+                    step: 'BACKEND_REFRESH_SUBSCRIBE_START',
+                    status: 'info',
+                    message: `Subscribing WABA ${resolvedWabaId} to app webhooks...`
+                });
+
+                const apiVer = process.env.META_API_VERSION || 'v25.0';
+                await axios.post(
+                    `https://graph.facebook.com/${apiVer}/${resolvedWabaId}/subscribed_apps`,
+                    null,
+                    { params: { access_token: accessToken } }
+                );
+
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId: resolvedWabaId,
+                    step: 'BACKEND_REFRESH_SUBSCRIBE_SUCCESS',
+                    status: 'success',
+                    message: `Subscribed WABA ${resolvedWabaId} to app webhooks successfully.`
+                });
+            } catch (subErr) {
+                const subErrData = subErr.response?.data || subErr.message;
+                await saveOnboardingLog({
+                    tenantId,
+                    sessionId,
+                    wabaId: resolvedWabaId,
+                    step: 'BACKEND_REFRESH_SUBSCRIBE_FAIL',
+                    status: 'error',
+                    message: 'Failed to subscribe WABA to app webhooks during refresh.',
+                    details: subErrData
+                });
+            }
+        }
+
+        // Read final state from DB and auto-sync catalogs
+        const finalTenant = await Tenant.findById(tenantId);
+        if (finalTenant && finalTenant.whatsappConfig?.accessToken && finalTenant.whatsappConfig?.businessAccountId) {
+            try {
+                await CatalogService.syncCatalogs(finalTenant);
+            } catch (catErr) {
+                console.warn('[Refresh Account] Auto catalog sync notice:', catErr.message);
+            }
+        }
+        const freshTenant = await Tenant.findById(tenantId);
+        const finalConfig = freshTenant?.whatsappConfig || {};
+
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_REFRESH_COMPLETE',
+            status: 'success',
+            message: 'Refresh Meta account credentials completed successfully.',
+            details: { verified: finalConfig.verified }
+        });
+
+        res.json({
+            success: true,
+            config: {
+                accessToken: finalConfig.accessToken,
+                wabaId: finalConfig.businessAccountId,
+                phoneNumberId: finalConfig.phoneNumberId,
+                businessId: finalConfig.businessId,
+                businessPortfolioId: finalConfig.businessPortfolioId,
+                displayPhone: finalConfig.displayPhone,
+                verifiedName: finalConfig.verifiedName,
+                qualityRating: finalConfig.qualityRating,
+                throughputLevel: finalConfig.throughputLevel,
+                verified: finalConfig.verified,
+                catalogId: finalConfig.catalogId || null,
+                catalogs: finalConfig.catalogs || [],
+            }
+        });
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        await saveOnboardingLog({
+            tenantId,
+            sessionId,
+            step: 'BACKEND_REFRESH_FATAL',
+            status: 'error',
+            message: 'Fatal error occurred in backend refresh execution.',
+            details: errorData
+        });
+        res.status(500).json({ error: 'Failed to refresh Meta account', details: errorData });
+    }
+});
+
+// GET Onboarding Logs for a Tenant
+app.get('/onboarding-logs', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const logs = await OnboardingLog.find({ tenantId }).sort({ timestamp: -1 }).limit(100);
+        res.json({ success: true, logs });
+    } catch (err) {
+        console.error('Error fetching onboarding logs:', err.message);
+        res.status(500).json({ error: 'Failed to fetch onboarding logs' });
+    }
+});
+
+// GET Onboarding Logs for a specific session ID
+app.get('/onboarding-logs/:sessionId', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const { sessionId } = req.params;
+        const logs = await OnboardingLog.find({ tenantId, sessionId }).sort({ timestamp: 1 });
+        res.json({ success: true, logs });
+    } catch (err) {
+        console.error(`Error fetching onboarding logs for session ${req.params.sessionId}:`, err.message);
+        res.status(500).json({ error: 'Failed to fetch onboarding logs' });
+    }
+});
+
+
+//  Media Upload Proxies 
+app.post('/upload-media', authenticate, async (req, res) => {
+    const { name, size, type, accessToken, appId } = req.query;
+    const fileData = req.body;
+    try {
+        if (!fileData || !Buffer.isBuffer(fileData)) {
+            console.error('[Upload Media Error]: req.body is not a buffer. Content-Type:', req.headers['content-type']);
+            return res.status(400).json({ error: { message: 'Invalid file data. Expected binary stream.' } });
+        }
+        let processedFileData = fileData;
+        const str = fileData.toString('utf8').trim();
+        if (str.startsWith('[') && str.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(str);
+                if (Array.isArray(parsed)) {
+                    processedFileData = Buffer.from(parsed);
+                }
+            } catch (_) {}
+        }
+
+        const initResponse = await axios.post(`${WHATSAPP_API_URL}/${appId}/uploads`, null, {
+            params: { file_name: name, file_length: parseInt(size), file_type: type, access_token: accessToken }
+        });
+        const sessionId = initResponse.data.id;
+        const uploadResponse = await axios.post(`${WHATSAPP_API_URL}/${sessionId}`, processedFileData, {
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/octet-stream', file_offset: '0' }
+        });
+        res.json({ h: uploadResponse.data.h });
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        res.status(error.response?.status || 500).json({ error: { message: 'Failed to proxy media upload', details: errorData } });
+    }
+});
+
+app.post('/media-upload', authenticate, async (req, res) => {
+    const { phoneNumberId, accessToken, fileName, fileType } = req.query;
+    const fileData = req.body;
+    try {
+        if (!fileData || !Buffer.isBuffer(fileData)) {
+            console.error('[Media Upload Error]: req.body is not a buffer. Content-Type:', req.headers['content-type']);
+            return res.status(400).json({ error: { message: 'Invalid file data. Expected binary stream.' } });
+        }
+        let processedFileData = fileData;
+        const str = fileData.toString('utf8').trim();
+        if (str.startsWith('[') && str.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(str);
+                if (Array.isArray(parsed)) {
+                    processedFileData = Buffer.from(parsed);
+                }
+            } catch (_) {}
+        }
+
+        const FormData = require('form-data');
+        const form = new FormData();
+        form.append('messaging_product', 'whatsapp');
+        form.append('file', processedFileData, { filename: fileName, contentType: fileType });
+        const response = await axios.post(
+            `${WHATSAPP_API_URL}/${phoneNumberId}/media`,
+            form,
+            { headers: { ...form.getHeaders(), Authorization: `Bearer ${accessToken}` } }
+        );
+        res.json({ id: response.data.id });
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        console.error('[Media Upload proxy error]:', JSON.stringify(errorData, null, 2));
+        res.status(error.response?.status || 500).json({ error: { message: 'Failed to proxy standard media upload', details: errorData } });
+    }
+});
+
+// ─── Chatbot Engine ───────────────────────────────────────────────────────────
+
+// Task 2.3 — per-contact in-memory processing lock (promise chain)
+const chatbotProcessingLocks = new Map();
+
+function withContactLock(lockKey, fn) {
+    const prev = chatbotProcessingLocks.get(lockKey) || Promise.resolve();
+    const next = prev.then(() => fn()).catch(err => {
+        console.error(` [ChatbotEngine] Lock error for ${lockKey}:`, err.message);
+    });
+    chatbotProcessingLocks.set(lockKey, next);
+    // Clean up after chain settles to avoid memory leak
+    next.finally(() => {
+        if (chatbotProcessingLocks.get(lockKey) === next) {
+            chatbotProcessingLocks.delete(lockKey);
+        }
+    });
+    return next;
+}
+
+// Task 2.14 — handle Meta API 401: deactivate all tenant chatbots, mark token expired, notify tenant
+async function handleMetaAuth401(tenantId) {
+    try {
+        // 1. Deactivate all chatbots for this tenant
+        await Chatbot.updateMany({ tenantId }, { $set: { isActive: false } });
+
+        // 2. Mark token as expired in DB so the UI can show a reconnect banner
+        await Tenant.findByIdAndUpdate(tenantId, {
+            'whatsappConfig.verified': false,
+            'whatsappConfig.tokenStatus': 'expired',
+        });
+
+        // 3. Emit socket events to live dashboard
+        io.to(tenantId).emit('chatbot_auth_error', { tenantId });
+        io.to(tenantId).emit('token_expired', {
+            tenantId,
+            message: 'Your WhatsApp access token has expired or been revoked. Please reconnect your account.',
+            action: 'reconnect'
+        });
+
+        // 4. Send email notification (best-effort, non-blocking)
+        Tenant.findById(tenantId).then(tenant => {
+            if (tenant?.email) {
+                transporter.sendMail({
+                    from: `"Sendzyy" <${process.env.EMAIL_USER}>`,
+                    to: tenant.email,
+                    subject: '⚠️ Action Required — Reconnect Your WhatsApp Account | Sendzyy',
+                    html: `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#fff8f0;font-family:'Segoe UI',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#fff8f0;padding:40px 0;">
+<tr><td align="center">
+<table width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+  <tr>
+    <td style="background:linear-gradient(135deg,#E65100 0%,#F57C00 60%,#FF9800 100%);padding:40px 48px;text-align:center;">
+      <span style="font-size:48px;">⚠️</span>
+      <h1 style="margin:16px 0 8px;color:#fff;font-size:26px;font-weight:700;">WhatsApp Token Expired</h1>
+      <p style="margin:0;color:rgba(255,255,255,0.85);font-size:14px;">Your WhatsApp connection needs to be refreshed</p>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:36px 48px;">
+      <p style="margin:0 0 16px;color:#555;font-size:15px;line-height:1.7;">
+        Hello <strong>${tenant.name}</strong>,<br><br>
+        Your WhatsApp Business access token has <strong>expired or been revoked</strong>. This means:
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+        <tr><td style="background:#fff3e0;border-left:4px solid #FF9800;border-radius:0 8px 8px 0;padding:12px 16px;color:#795548;font-size:14px;">
+          📵 Messages will not be sent or received until you reconnect
+        </td></tr>
+      </table>
+      <p style="margin:0 0 24px;color:#555;font-size:15px;line-height:1.7;">
+        To fix this, go to your Sendzyy dashboard and click <strong>"Connect WhatsApp"</strong> to re-run the connection flow. It only takes 2 minutes.
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+        <tr><td align="center">
+          <a href="https://app.sendzyy.com" target="_blank"
+             style="display:inline-block;background:linear-gradient(135deg,#E65100,#FF9800);color:#fff;text-decoration:none;font-size:16px;font-weight:700;padding:16px 48px;border-radius:50px;letter-spacing:0.5px;box-shadow:0 4px 14px rgba(230,81,0,0.4);">
+            🔗 &nbsp; Reconnect WhatsApp Now
+          </a>
+        </td></tr>
+      </table>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr><td style="background:#f9f9f9;border-radius:10px;padding:16px 20px;">
+          <p style="margin:0;color:#888;font-size:13px;line-height:1.6;">
+            💡 <strong>Why does this happen?</strong><br>
+            Meta WhatsApp access tokens expire after ~60 days. To avoid this in the future, 
+            contact Sendzyy support to upgrade to a permanent System User Token that never expires.
+          </p>
+        </td></tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td style="background:#f5f5f5;border-top:1px solid #eee;padding:24px 48px;text-align:center;">
+      <p style="margin:0;color:#1B5E20;font-size:14px;font-weight:700;">Sendzyy</p>
+      <p style="margin:4px 0 0;color:#aaa;font-size:12px;">© ${new Date().getFullYear()} Sendzyy · <a href="https://app.sendzyy.com" style="color:#4CAF50;text-decoration:none;">app.sendzyy.com</a></p>
+    </td>
+  </tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
+                }).catch(emailErr => {
+                    console.error(`[handleMetaAuth401] Email notification failed for tenant ${tenantId}:`, emailErr.message);
+                });
+            }
+        }).catch(() => {});
+
+        console.error(` [Auth401] Token expired for tenant ${tenantId} — chatbots deactivated, token marked expired, notification sent.`);
+    } catch (err) {
+        console.error(` [handleMetaAuth401] error:`, err.message);
+    }
+}
+
+// Helper — send a plain text message via Meta API (returns true on success)
+// chatbotId is optional; pass session.chatbotId when available for accurate analytics
+async function sendChatbotText(tenant, to, text, chatbotId) {
+    const tenantId = tenant._id.toString();
+    const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+    let wamid = null;
+
+    // ── Step 1: Send via WhatsApp API ────────────────────────────────────────
+    try {
+        const response = await axios.post(
+            `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+            {
+                messaging_product: 'whatsapp',
+                to,
+                type: 'text',
+                text: { body: text },
+            },
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        wamid = response.data?.messages?.[0]?.id || null;
+    } catch (err) {
+        if (err.response?.status === 401) await handleMetaAuth401(tenantId);
+        console.error(` [ChatbotEngine] sendChatbotText API error:`, err.response?.data || err.message);
+        const errorDetails = err.response?.data?.error?.message || err.message;
+        saveChatbotMessageToDB({
+            tenantId,
+            contactId: to,
+            text: `⚠️ Chatbot failed to send message: ${errorDetails}`,
+            isMe: true,
+            messageType: 'text',
+            source: 'chatbot',
+            previewText: '⚠️ Failed to send message',
+        }).catch(() => {});
+        return false; // WhatsApp send failed — do not advance the flow
+    }
+
+    // ── Step 2: Analytics (best-effort, non-blocking) ────────────────────────
+    if (chatbotId) {
+        const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0);
+        ChatbotAnalytics.findOneAndUpdate(
+            { tenantId, chatbotId, date: todayDate },
+            { $inc: { messagesSent: 1 } },
+            { upsert: true }
+        ).catch(() => { });
+    }
+
+    // ── Step 3: Persist to DB (best-effort, non-blocking to chatbot flow) ────
+    saveChatbotMessageToDB({
+        tenantId,
+        contactId: to,
+        text,
+        isMe: true,
+        messageType: 'text',
+        source: 'chatbot',
+        wamid,
+        previewText: text,
+    }).catch(e => console.error('[ChatbotEngine] saveChatbotMessageToDB (text) error:', e.message));
+
+    return true;
+}
+
+/**
+ * saveChatbotMessageToDB — persists a chatbot message (bot-sent or customer reply)
+ * to the Message collection, updates the Conversation preview, and broadcasts via socket.
+ *
+ * This function is intentionally fire-and-forget from callers (they .catch() on it).
+ * Any failure here must NOT affect the chatbot flow logic.
+ *
+ * @param {Object} opts
+ * @param {string}  opts.tenantId
+ * @param {string}  opts.contactId
+ * @param {string}  [opts.text]
+ * @param {boolean} opts.isMe
+ * @param {string}  opts.messageType   - 'text' | 'interactive' | 'template'
+ * @param {string}  opts.source        - 'chatbot' | 'chatbot_reply' | 'chatbot_trigger'
+ * @param {Object}  [opts.interactivePayload]
+ * @param {string}  [opts.templateName]
+ * @param {string}  [opts.wamid]
+ * @param {string}  opts.previewText   - text shown in conversation sidebar preview
+ * @param {string}  [opts.name]        - contact name (for Conversation upsert)
+ * @returns {Promise<void>}
+ */
+async function saveChatbotMessageToDB({
+    tenantId,
+    contactId,
+    text = '',
+    isMe,
+    messageType,
+    source,
+    interactivePayload = null,
+    templateName = null,
+    templateBody = null,
+    wamid = null,
+    previewText,
+    name = null,
+    contextMessageId = null,
+    replyContextPreview = null,
+}) {
+    const now = new Date();
+
+    // Truncate preview
+    const preview = (previewText || text || '').substring(0, 100);
+
+    // 1. Save message
+    await Message.create({
+        tenantId,
+        contactId,
+        text: text || '',
+        isMe,
+        time: now.toISOString(),
+        timestamp: now,
+        messageType,
+        source,
+        interactivePayload,
+        templateName,
+        templateBody,
+        wamid,
+        contextMessageId,
+        replyContextPreview,
+        status: isMe ? 'sent' : undefined,
+    });
+
+    // Create/update StatusMapping for delivery tracking
+    if (wamid && isMe) {
+        try {
+            await StatusMapping.findOneAndUpdate(
+                { wamid },
+                { wamid, tenantId, to: contactId },
+                { upsert: true }
+            );
+        } catch (err) {
+            console.error('[ChatbotEngine] StatusMapping creation failed:', err.message);
+        }
+    }
+
+    // 2. Update conversation preview
+    const convUpdate = {
+        lastMessage: preview,
+        lastActive: now,
+        hasReply: true, // Always mark visible — both bot-sent and customer replies
+    };
+    if (name) convUpdate.name = name;
+
+    await Conversation.findOneAndUpdate(
+        { tenantId, contactId },
+        convUpdate,
+        { upsert: true }
+    );
+
+    // 3. Broadcast to socket (non-blocking)
+    broadcastMessages(tenantId, contactId).catch(() => {});
+    broadcastConversations(tenantId).catch(() => {});
+}
+
+// Helper — re-send the prompt for the current node (used by media guard and condition fallback)
+async function resendNodePrompt(session, node, tenant, from) {
+    if (!node) return;
+    const type = node.type;
+    const data = node.data || {};
+    const tenantId = tenant._id.toString();
+    const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+
+    if (type === 'question') {
+        await sendChatbotText(tenant, from, data.text || data.question || '', session.chatbotId);
+    } else if (type === 'quickReply') {
+        const buttons = (data.buttons || []).slice(0, 3).map((b, i) => ({
+            type: 'reply',
+            reply: { id: `btn_${i}`, title: (b.label || b.title || '').substring(0, 20) },
+        }));
+        if (buttons.length === 0) return;
+        const promptText = data.text || data.body || 'Choose an option:';
+        let wamid = null;
+
+        // ── Send via WhatsApp API ────────────────────────────────────────────
+        try {
+            const resp = await axios.post(
+                `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+                {
+                    messaging_product: 'whatsapp',
+                    to: from,
+                    type: 'interactive',
+                    interactive: {
+                        type: 'button',
+                        body: { text: promptText },
+                        action: { buttons },
+                    },
+                },
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            wamid = resp.data?.messages?.[0]?.id || null;
+        } catch (err) {
+            if (err.response?.status === 401) await handleMetaAuth401(tenantId);
+            console.error(` [ChatbotEngine] resendNodePrompt quickReply error:`, err.response?.data || err.message);
+            return;
+        }
+
+        // ── Persist re-prompt to DB ──────────────────────────────────────────
+        saveChatbotMessageToDB({
+            tenantId,
+            contactId: from,
+            text: promptText,
+            isMe: true,
+            messageType: 'interactive',
+            source: 'chatbot',
+            wamid,
+            interactivePayload: {
+                type: 'button',
+                title: promptText,
+                buttons: (data.buttons || []).map(b => ({ label: b.label || b.title || '' })),
+            },
+            previewText: '🤖 ' + promptText,
+        }).catch(e => console.error('[ChatbotEngine] resendNodePrompt quickReply DB error:', e.message));
+
+    } else if (type === 'listMessage') {
+        const rows = (data.items || data.rows || []).slice(0, 10).map((item, i) => ({
+            id: `row_${i}`,
+            title: (item.title || '').substring(0, 24),
+            description: (item.description || '').substring(0, 72),
+        }));
+        if (rows.length === 0) return;
+        const promptText = data.text || data.body || 'Choose an option:';
+        let wamid = null;
+
+        // ── Send via WhatsApp API ────────────────────────────────────────────
+        try {
+            const resp = await axios.post(
+                `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+                {
+                    messaging_product: 'whatsapp',
+                    to: from,
+                    type: 'interactive',
+                    interactive: {
+                        type: 'list',
+                        body: { text: promptText },
+                        action: {
+                            button: data.buttonLabel || 'View Options',
+                            sections: [{ title: data.sectionTitle || 'Options', rows }],
+                        },
+                    },
+                },
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            wamid = resp.data?.messages?.[0]?.id || null;
+        } catch (err) {
+            if (err.response?.status === 401) await handleMetaAuth401(tenantId);
+            console.error(` [ChatbotEngine] resendNodePrompt listMessage error:`, err.response?.data || err.message);
+            return;
+        }
+
+        // ── Persist re-prompt to DB ──────────────────────────────────────────
+        saveChatbotMessageToDB({
+            tenantId,
+            contactId: from,
+            text: promptText,
+            isMe: true,
+            messageType: 'interactive',
+            source: 'chatbot',
+            wamid,
+            interactivePayload: {
+                type: 'list',
+                title: promptText,
+                buttonLabel: data.buttonLabel || 'View Options',
+                items: (data.items || data.rows || []).map(item => ({
+                    title: item.title || '',
+                    description: item.description || '',
+                })),
+            },
+            previewText: '🤖 ' + promptText,
+        }).catch(e => console.error('[ChatbotEngine] resendNodePrompt listMessage DB error:', e.message));
+
+    } else if (type === 'condition') {
+        if (data.prompt) await sendChatbotText(tenant, from, data.prompt, session.chatbotId);
+    }
+}
+
+// Helper — find a node by id in the flow
+function findNode(flow, nodeId) {
+    return (flow.nodes || []).find(n => n.id === nodeId) || null;
+}
+
+// Helper — find the next node id following an edge from sourceNodeId (optionally matching a port label)
+function findNextNodeId(flow, sourceNodeId, portLabel) {
+    const edges = flow.edges || [];
+    if (!portLabel) {
+        // No label — return first edge from source
+        const match = edges.find(e => e.sourceNodeId === sourceNodeId);
+        return match ? match.targetNodeId : null;
+    }
+    const label = portLabel.toLowerCase().trim();
+    // Match by edgeLabel first, then sourcePort as fallback
+    const match = edges.find(e =>
+        e.sourceNodeId === sourceNodeId &&
+        (
+            (e.edgeLabel || '').toLowerCase().trim() === label ||
+            (e.sourcePort || '').toLowerCase().trim() === label
+        )
+    );
+    return match ? match.targetNodeId : null;
+}
+
+// Helper — find fallback edge target from a node
+function findFallbackNodeId(flow, sourceNodeId) {
+    const edges = flow.edges || [];
+    const fallback = edges.find(e =>
+        e.sourceNodeId === sourceNodeId &&
+        (e.sourcePort || '').toLowerCase() === 'fallback'
+    );
+    return fallback ? fallback.targetNodeId : null;
+}
+
+// Task 2.4 — node executor dispatcher
+async function executeNode(session, node, tenant, from) {
+    if (!node) {
+        console.warn(` [ChatbotEngine] executeNode called with null node for session ${session._id}`);
+        return;
+    }
+    const type = node.type;
+    console.log(` [ChatbotEngine] Executing node type=${type} id=${node.id} for ${from}`);
+
+    if (type === 'message') return handleMessageNode(session, node, tenant, from);
+    if (type === 'question') return handleQuestionNode(session, node, tenant, from);
+    if (type === 'quickReply') return handleQuickReplyNode(session, node, tenant, from);
+    if (type === 'listMessage') return handleListMessageNode(session, node, tenant, from);
+    if (type === 'condition') return handleConditionNode(session, node, tenant, from);
+    if (type === 'action') return handleActionNode(session, node, tenant, from);
+    if (type === 'whatsappFlow' || type === 'flow') return handleWhatsAppFlowNode(session, node, tenant, from);
+    if (type === 'catalogMessage') return handleCatalogMessageNode(session, node, tenant, from);
+    if (type === 'singleProduct') return handleSingleProductNode(session, node, tenant, from);
+    if (type === 'multiProduct') return handleMultiProductNode(session, node, tenant, from);
+    if (type === 'productCarousel' || type === 'carousel') return handleCarouselNode(session, node, tenant, from);
+    if (type === 'end') return handleEndNode(session, node, tenant, from);
+    // Unknown node type — skip to next
+    const flow = session._flow;
+    const nextId = findNextNodeId(flow, node.id);
+    if (nextId) {
+        const nextNode = findNode(flow, nextId);
+        return executeNode(session, nextNode, tenant, from);
+    }
+}
+
+// Task 2.5 — Message Node: send text, advance, recurse
+async function handleMessageNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const text = data.text || data.body || '';
+    if (text) {
+        const ok = await sendChatbotText(tenant, from, text, session.chatbotId);
+        if (!ok) return; // Meta API error — do not advance
+    }
+    const flow = session._flow;
+    const nextId = findNextNodeId(flow, node.id);
+    if (!nextId) return; // No next node — stay put (shouldn't happen in valid flow)
+    // NOTE: do NOT set currentNodeId or save here — let the next node set it when it parks.
+    // Pre-saving causes interactive nodes (listMessage, quickReply, question) to think
+    // they are already parked and process the trigger text as a reply instead of sending the prompt.
+    const nextNode = findNode(flow, nextId);
+    return executeNode(session, nextNode, tenant, from);
+}
+
+// Task 2.6 — Question Node: send question, pause
+// Task 2.6 — Question Node: send question, pause OR process reply if already waiting
+async function handleQuestionNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+
+    // If we are already parked on this node, the user just replied — process it
+    // (currentNodeId matches AND this is not the first time we're executing this node,
+    //  i.e. the session was already saved pointing here before this message arrived)
+    const alreadyWaiting = session.currentNodeId === node.id && session.waitingForReply;
+
+    if (alreadyWaiting) {
+        const reply = (session.lastReply || '').toLowerCase().trim();
+        const keywords = data.keywords || [];
+
+        // Try to match a keyword route
+        for (const kw of keywords) {
+            const keyword = (kw.keyword || '').toLowerCase().trim();
+            if (keyword && reply.includes(keyword)) {
+                const nextId = findNextNodeId(flow, node.id, kw.edgeLabel || kw.keyword);
+                if (nextId) {
+                    session.currentNodeId = nextId;
+                    await session.save();
+                    return executeNode(session, findNode(flow, nextId), tenant, from);
+                }
+            }
+        }
+
+        // No keyword matched — try fallback edge
+        const fallbackId = findFallbackNodeId(flow, node.id);
+        if (fallbackId) {
+            session.currentNodeId = fallbackId;
+            await session.save();
+            return executeNode(session, findNode(flow, fallbackId), tenant, from);
+        }
+
+        // No fallback — re-prompt with the question
+        const text = data.text || data.question || '';
+        if (text) await sendChatbotText(tenant, from, text, session.chatbotId);
+        session.currentNodeId = node.id;
+        session.waitingForReply = true;
+        await session.save();
+        return;
+    }
+
+    // First visit — send the question and pause
+    const text = data.text || data.question || '';
+    if (text) await sendChatbotText(tenant, from, text, session.chatbotId);
+    session.currentNodeId = node.id;
+    session.waitingForReply = true;
+    await session.save();
+}
+
+// Task 2.7 — Quick Reply Node: send interactive button message, pause OR process reply
+async function handleQuickReplyNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+
+    // If already parked here, process the button reply
+    if (session.currentNodeId === node.id && session.waitingForReply) {
+        const reply = (session.lastReply || '').toLowerCase().trim();
+        const buttons = data.buttons || [];
+
+        for (const btn of buttons) {
+            const label = (btn.label || btn.title || '').toLowerCase().trim();
+            if (label && reply.includes(label)) {
+                const nextId = findNextNodeId(flow, node.id, btn.label || btn.title);
+                if (nextId) {
+                    session.currentNodeId = nextId;
+                    session.waitingForReply = false;
+                    await session.save();
+                    return executeNode(session, findNode(flow, nextId), tenant, from);
+                }
+            }
+        }
+
+        // No match — fallback or first available edge
+        const fallbackId = findFallbackNodeId(flow, node.id) || findNextNodeId(flow, node.id);
+        if (fallbackId) {
+            session.currentNodeId = fallbackId;
+            session.waitingForReply = false;
+            await session.save();
+            return executeNode(session, findNode(flow, fallbackId), tenant, from);
+        }
+        return;
+    }
+
+    // First visit — send the button message
+    const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+    const buttons = (data.buttons || []).slice(0, 3).map((b, i) => ({
+        type: 'reply',
+        reply: { id: `btn_${i}`, title: (b.label || b.title || '').substring(0, 20) },
+    }));
+    if (buttons.length === 0) {
+        const nextId = findNextNodeId(flow, node.id);
+        if (nextId) { session.currentNodeId = nextId; await session.save(); return executeNode(session, findNode(flow, nextId), tenant, from); }
+        return;
+    }
+    try {
+        // ── Step 1: Send via WhatsApp API ────────────────────────────────────
+        
+        const _qrResp = await axios.post(
+            `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+            {
+                messaging_product: 'whatsapp',
+                to: from,
+                type: 'interactive',
+                interactive: {
+                    type: 'button',
+                    body: { text: data.text || data.body || 'Choose an option:' },
+                    action: { buttons },
+                },
+            },
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const _qrWamid = _qrResp.data?.messages?.[0]?.id || null;
+
+        // ── Step 2: Session state ────────────────────────────────────────────
+        session.currentNodeId = node.id;
+        session.waitingForReply = true;
+        await session.save();
+
+        // ── Step 3: Persist to DB (best-effort, independent from flow) ───────
+        const _qrText = data.text || data.body || 'Choose an option:';
+        saveChatbotMessageToDB({
+            tenantId: tenant._id.toString(),
+            contactId: from,
+            text: _qrText,
+            isMe: true,
+            messageType: 'interactive',
+            source: 'chatbot',
+            wamid: _qrWamid,
+            interactivePayload: {
+                type: 'button',
+                title: _qrText,
+                buttons: (data.buttons || []).map(b => ({ label: b.label || b.title || '' })),
+            },
+            previewText: '🤖 ' + _qrText,
+        }).catch(e => console.error('[ChatbotEngine] handleQuickReplyNode DB error:', e.message));
+
+    } catch (err) {
+        if (err.response?.status === 401) await handleMetaAuth401(tenant._id.toString());
+        console.error(` [ChatbotEngine] quickReply send error:`, err.response?.data || err.message);
+        const errorDetails = getMetaErrorDetails(err);
+        saveChatbotMessageToDB({
+            tenantId: tenant._id.toString(),
+            contactId: from,
+            text: `⚠️ Chatbot failed to send interactive buttons: ${errorDetails}`,
+            isMe: true,
+            messageType: 'text',
+            source: 'chatbot',
+            previewText: '⚠️ Failed to send buttons',
+        }).catch(() => {});
+        return; // WhatsApp API failed — do not set session state
+    }
+}
+
+// Task 2.8 — List Message Node: send interactive list message, pause OR process reply
+async function handleListMessageNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+
+    // If already parked here AND waiting for a reply, process the list selection
+    if (session.currentNodeId === node.id && session.waitingForReply) {
+        const reply = (session.lastReply || '').toLowerCase().trim();
+        const items = data.items || data.rows || [];
+        console.log(`[ListMessage] Processing reply="${reply}" against ${items.length} items: ${items.map(i => i.title).join(', ')}`);
+        console.log(`[ListMessage] session.currentNodeId=${session.currentNodeId} node.id=${node.id} waitingForReply=${session.waitingForReply}`);
+
+        for (const item of items) {
+            const title = (item.title || '').toLowerCase().trim();
+            if (title && reply.includes(title)) {
+                const nextId = findNextNodeId(flow, node.id, item.title);
+                if (nextId) {
+                    session.currentNodeId = nextId;
+                    session.waitingForReply = false;
+                    await session.save();
+                    return executeNode(session, findNode(flow, nextId), tenant, from);
+                }
+            }
+        }
+
+        // No match — fallback or first available edge
+        const fallbackId = findFallbackNodeId(flow, node.id) || findNextNodeId(flow, node.id);
+        if (fallbackId) {
+            session.currentNodeId = fallbackId;
+            session.waitingForReply = false;
+            await session.save();
+            return executeNode(session, findNode(flow, fallbackId), tenant, from);
+        }
+        return;
+    }
+
+    // First visit — send the list message
+    console.log(`[ListMessage] First visit — sending prompt. currentNodeId=${session.currentNodeId} node.id=${node.id} waitingForReply=${session.waitingForReply}`);
+    const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+    const rows = (data.items || data.rows || []).slice(0, 10).map((item, i) => ({
+        id: `row_${i}`,
+        title: (item.title || '').substring(0, 24),
+        description: (item.description || '').substring(0, 72),
+    }));
+    if (rows.length === 0) {
+        const nextId = findNextNodeId(flow, node.id);
+        if (nextId) { session.currentNodeId = nextId; await session.save(); return executeNode(session, findNode(flow, nextId), tenant, from); }
+        return;
+    }
+    try {
+        // ── Step 1: Send via WhatsApp API ────────────────────────────────────
+        const _lmResp = await axios.post(
+            `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+            {
+                messaging_product: 'whatsapp',
+                to: from,
+                type: 'interactive',
+                interactive: {
+                    type: 'list',
+                    body: { text: data.text || data.body || 'Choose an option:' },
+                    action: {
+                        button: (data.buttonLabel || 'View Options').substring(0, 20),
+                        sections: [{ title: (data.sectionTitle || 'Options').substring(0, 24), rows }],
+                    },
+                },
+            },
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const _lmWamid = _lmResp.data?.messages?.[0]?.id || null;
+
+        // ── Step 2: Session state ────────────────────────────────────────────
+        session.currentNodeId = node.id;
+        session.waitingForReply = true;
+        await session.save();
+
+        // ── Step 3: Persist to DB (best-effort, independent from flow) ───────
+        const _lmText = data.text || data.body || 'Choose an option:';
+        saveChatbotMessageToDB({
+            tenantId: tenant._id.toString(),
+            contactId: from,
+            text: _lmText,
+            isMe: true,
+            messageType: 'interactive',
+            source: 'chatbot',
+            wamid: _lmWamid,
+            interactivePayload: {
+                type: 'list',
+                title: _lmText,
+                buttonLabel: data.buttonLabel || 'View Options',
+                items: (data.items || data.rows || []).map(item => ({
+                    title: item.title || '',
+                    description: item.description || '',
+                })),
+            },
+            previewText: '🤖 ' + _lmText,
+        }).catch(e => console.error('[ChatbotEngine] handleListMessageNode DB error:', e.message));
+
+    } catch (err) {
+        if (err.response?.status === 401) await handleMetaAuth401(tenant._id.toString());
+        console.error(` [ChatbotEngine] listMessage send error:`, JSON.stringify(err.response?.data || err.message));
+        const errorDetails = getMetaErrorDetails(err);
+        saveChatbotMessageToDB({
+            tenantId: tenant._id.toString(),
+            contactId: from,
+            text: `⚠️ Chatbot failed to send list menu: ${errorDetails}`,
+            isMe: true,
+            messageType: 'text',
+            source: 'chatbot',
+            previewText: '⚠️ Failed to send list menu',
+        }).catch(() => {});
+        return; // WhatsApp API failed — do not set session state
+    }
+}
+
+// Task 2.9 — Condition Node: case-insensitive keyword match, fallback or re-prompt
+async function handleConditionNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+    const reply = (session.lastReply || '').toLowerCase().trim();
+    const rules = data.rules || data.conditions || [];
+
+    // Try to match a rule
+    let matchedEdgeLabel = null;
+    for (const rule of rules) {
+        const keyword = (rule.keyword || rule.label || '').toLowerCase().trim();
+        if (keyword && reply.includes(keyword)) {
+            matchedEdgeLabel = rule.edgeLabel || rule.keyword || rule.label;
+            break;
+        }
+    }
+
+    if (matchedEdgeLabel) {
+        const nextId = findNextNodeId(flow, node.id, matchedEdgeLabel);
+        if (nextId) {
+            session.currentNodeId = nextId;
+            await session.save();
+            return executeNode(session, findNode(flow, nextId), tenant, from);
+        }
+    }
+
+    // No match — try fallback edge
+    const fallbackId = findFallbackNodeId(flow, node.id);
+    if (fallbackId) {
+        session.currentNodeId = fallbackId;
+        await session.save();
+        return executeNode(session, findNode(flow, fallbackId), tenant, from);
+    }
+
+    // No fallback — re-prompt
+    await sendChatbotText(tenant, from, data.noMatchMessage || "I didn't understand that. Please try again.", session.chatbotId);
+    await resendNodePrompt(session, node, tenant, from);
+    session.currentNodeId = node.id;
+    await session.save();
+}
+
+// Task 2.10 — Action Node handlers
+async function handleActionNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const subType = data.subType || data.action || data.type;
+    const tenantId = tenant._id.toString();
+    const flow = session._flow;
+
+    if (subType === 'assign_tag') {
+        const tag = data.tag || data.tagName || '';
+        if (tag) {
+            try {
+                await Client.findOneAndUpdate(
+                    { tenantId, mobileNumber: from },
+                    { $addToSet: { tags: tag } }
+                );
+            } catch (err) {
+                console.error(` [ChatbotEngine] assign_tag error:`, err.message);
+            }
+        }
+    } else if (subType === 'send_template') {
+        const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+        const templateName = data.templateName || data.template || '';
+        const language = data.language || 'en_US';
+        if (templateName) {
+            const components = [];
+            const mediaUrl = data.mediaUrl || data.mediaId || '';
+            const mediaType = data.mediaType || ''; // 'image' | 'video' | 'document'
+
+            if (mediaUrl && mediaType) {
+                const isUrl = mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://');
+                const mediaObject = isUrl ? { link: mediaUrl } : { id: mediaUrl };
+                const type = mediaType.toLowerCase();
+                components.push({
+                    type: 'header',
+                    parameters: [
+                        { type, [type]: mediaObject }
+                    ]
+                });
+            }
+
+            const variables = data.variables || [];
+            if (Array.isArray(variables) && variables.length > 0) {
+                components.push({
+                    type: 'body',
+                    parameters: variables.map(v => ({ type: 'text', text: String(v) }))
+                });
+            }
+
+            try {
+                const _tmResp = await axios.post(
+                    `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+                    {
+                        messaging_product: 'whatsapp',
+                        to: from,
+                        type: 'template',
+                        template: { 
+                            name: templateName, 
+                            language: { code: language },
+                            ...(components.length ? { components } : {})
+                        },
+                    },
+                    { headers: { Authorization: `Bearer ${accessToken}` } }
+                );
+                const _tmWamid = _tmResp.data?.messages?.[0]?.id || null;
+
+                let resolvedBody = null;
+                try {
+                    const tplComponents = await fetchTemplateComponents(tenant, templateName);
+                    const bodyComponent = (tplComponents || []).find(c => c.type === 'BODY');
+                    const templateBodyText = bodyComponent?.text || null;
+                    resolvedBody = templateBodyText;
+                    if (resolvedBody && Array.isArray(variables)) {
+                        variables.forEach((val, idx) => {
+                            resolvedBody = resolvedBody.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'), String(val));
+                        });
+                    }
+                } catch (e) {
+                    console.error('[ChatbotEngine] fetchTemplateComponents error in handleActionNode:', e.message);
+                }
+
+                // Persist the bot template message to DB so tenant can see it
+                saveChatbotMessageToDB({
+                    tenantId,
+                    contactId: from,
+                    text: resolvedBody || `📋 Template: ${templateName}`,
+                    isMe: true,
+                    messageType: 'template',
+                    source: 'chatbot',
+                    templateName,
+                    templateBody: resolvedBody,
+                    wamid: _tmWamid,
+                    previewText: resolvedBody ? `🤖 ${resolvedBody}` : `🤖 Template: ${templateName}`,
+                }).catch(e => console.error('[ChatbotEngine] handleActionNode send_template DB error:', e.message));
+
+            } catch (err) {
+                if (err.response?.status === 401) await handleMetaAuth401(tenantId);
+                console.error(` [ChatbotEngine] send_template error:`, err.response?.data || err.message);
+                const errorDetails = getMetaErrorDetails(err);
+                saveChatbotMessageToDB({
+                    tenantId,
+                    contactId: from,
+                    text: `⚠️ Chatbot failed to send template "${templateName}": ${errorDetails}`,
+                    isMe: true,
+                    messageType: 'text',
+                    source: 'chatbot',
+                    previewText: `⚠️ Failed to send template: ${templateName}`,
+                }).catch(() => {});
+                // Do not return — allow flow to advance so session doesn't get stuck
+            }
+        }
+    } else if (subType === 'end_session') {
+        await ChatbotSession.deleteOne({ _id: session._id });
+        // Fall through to live chat for this message
+        const message = session._originalMessage;
+        const profileName = session._profileName || 'Unknown';
+        if (message) await handleLiveChat(tenantId, message, profileName, from);
+        return;
+    }
+
+    // Advance to next node
+    const nextId = findNextNodeId(flow, node.id);
+    if (nextId) {
+        session.currentNodeId = nextId;
+        await session.save();
+        return executeNode(session, findNode(flow, nextId), tenant, from);
+    }
+}
+
+// Task 2.11 — End Node: delete session, increment completedSessions analytics
+async function handleEndNode(session, node, tenant, from) {
+    const tenantId = tenant._id.toString();
+    const chatbotId = session.chatbotId;
+    try {
+        await ChatbotSession.deleteOne({ _id: session._id });
+        const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0);
+        await ChatbotAnalytics.findOneAndUpdate(
+            { tenantId, chatbotId, date: todayDate },
+            { $inc: { completedSessions: 1 } },
+            { upsert: true }
+        );
+        console.log(` [ChatbotEngine] Session ended (End Node) for ${from}, tenant ${tenantId}`);
+    } catch (err) {
+        console.error(` [ChatbotEngine] handleEndNode error:`, err.message);
+    }
+}
+
+// WhatsApp Flow Node Handler
+async function handleWhatsAppFlowNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+    const tenantId = tenant._id.toString();
+
+    const alreadyWaiting = session.currentNodeId === node.id && session.waitingForReply;
+
+    if (alreadyWaiting) {
+        console.log(` [ChatbotEngine] Received Flow response for node ${node.id} from ${from}`);
+        session.waitingForReply = false;
+        const nextId = findNextNodeId(flow, node.id);
+        if (nextId) {
+            session.currentNodeId = nextId;
+            await session.save();
+            return executeNode(session, findNode(flow, nextId), tenant, from);
+        }
+        return;
+    }
+
+    const flowId = data.flowId;
+    if (!flowId) {
+        console.warn(` [ChatbotEngine] Flow node ${node.id} has no flowId configured! Advancing.`);
+        const nextId = findNextNodeId(flow, node.id);
+        if (nextId) {
+            session.currentNodeId = nextId;
+            await session.save();
+            return executeNode(session, findNode(flow, nextId), tenant, from);
+        }
+        return;
+    }
+
+    try {
+        const flowDoc = await WhatsAppFlow.findOne({ tenantId, flowId });
+        const flowName = flowDoc?.name || data.flowName || 'Form';
+        const bodyText = data.bodyText || flowDoc?.bodyText || 'Please complete the form below:';
+        const headerText = data.headerText || flowDoc?.headerText || '';
+        const footerText = data.footerText || flowDoc?.footerText || '';
+        const ctaText = data.ctaText || flowDoc?.ctaText || 'Open Form';
+        const screenId = data.screenId || 'QUESTION_SCREEN';
+
+        const { wamid, flowToken } = await WhatsAppFlowService.sendFlowMessage(tenant, {
+            to: from,
+            flowId,
+            headerText,
+            bodyText,
+            footerText,
+            ctaText,
+            screenId
+        });
+
+        await saveChatbotMessageToDB({
+            tenantId,
+            contactId: from,
+            text: bodyText,
+            isMe: true,
+            messageType: 'flow',
+            source: 'chatbot',
+            wamid: wamid || null,
+            interactivePayload: {
+                type: 'flow',
+                flowId,
+                flowName,
+                ctaText,
+                headerText,
+                bodyText,
+                footerText,
+                flowToken
+            },
+            previewText: `📋 Flow: ${flowName}`
+        });
+
+        session.currentNodeId = node.id;
+        session.waitingForReply = true;
+        await session.save();
+    } catch (flowErr) {
+        console.error(` [ChatbotEngine] Failed to send Flow for node ${node.id}:`, flowErr.response?.data || flowErr.message);
+        const nextId = findNextNodeId(flow, node.id);
+        if (nextId) {
+            session.currentNodeId = nextId;
+            await session.save();
+            return executeNode(session, findNode(flow, nextId), tenant, from);
+        }
+    }
+}
+
+// Catalog Message Node Handler
+async function handleCatalogMessageNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+    try {
+        await CatalogService.sendCatalogMessage(
+            { io, Message, Conversation },
+            tenant,
+            {
+                to: from,
+                catalogId: data.catalogId,
+                bodyText: data.text || data.bodyText || data.body || 'Browse our catalog',
+                footerText: data.footerText,
+            }
+        );
+    } catch (err) {
+        console.error('[ChatbotEngine] handleCatalogMessageNode error:', err.message);
+    }
+    const nextId = findNextNodeId(flow, node.id);
+    if (nextId) {
+        session.currentNodeId = nextId;
+        await session.save();
+        return executeNode(session, findNode(flow, nextId), tenant, from);
+    }
+}
+
+// Single Product Node Handler
+async function handleSingleProductNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+    try {
+        await CatalogService.sendSingleProduct(
+            { io, Message, Conversation },
+            tenant,
+            {
+                to: from,
+                catalogId: data.catalogId,
+                productRetailerId: data.productRetailerId || data.retailerId || data.sku,
+                bodyText: data.text || data.bodyText || data.body,
+                footerText: data.footerText,
+            }
+        );
+    } catch (err) {
+        console.error('[ChatbotEngine] handleSingleProductNode error:', err.message);
+    }
+    const nextId = findNextNodeId(flow, node.id);
+    if (nextId) {
+        session.currentNodeId = nextId;
+        await session.save();
+        return executeNode(session, findNode(flow, nextId), tenant, from);
+    }
+}
+
+// Multi Product Node Handler
+async function handleMultiProductNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+    try {
+        await CatalogService.sendMultiProduct(
+            { io, Message, Conversation },
+            tenant,
+            {
+                to: from,
+                catalogId: data.catalogId,
+                headerText: data.headerText,
+                bodyText: data.bodyText || data.text || data.body || 'Our Products',
+                footerText: data.footerText,
+                sections: data.sections || [],
+            }
+        );
+    } catch (err) {
+        console.error('[ChatbotEngine] handleMultiProductNode error:', err.message);
+    }
+    const nextId = findNextNodeId(flow, node.id);
+    if (nextId) {
+        session.currentNodeId = nextId;
+        await session.save();
+        return executeNode(session, findNode(flow, nextId), tenant, from);
+    }
+}
+
+// Carousel Node Handler
+async function handleCarouselNode(session, node, tenant, from) {
+    const data = node.data || {};
+    const flow = session._flow;
+    try {
+        await CatalogService.sendCarousel(
+            { io, Message, Conversation },
+            tenant,
+            {
+                to: from,
+                catalogId: data.catalogId,
+                bodyText: data.bodyText || data.text || data.body,
+                cards: data.cards || [],
+            }
+        );
+    } catch (err) {
+        console.error('[ChatbotEngine] handleCarouselNode error:', err.message);
+    }
+    const nextId = findNextNodeId(flow, node.id);
+    if (nextId) {
+        session.currentNodeId = nextId;
+        await session.save();
+        return executeNode(session, findNode(flow, nextId), tenant, from);
+    }
+}
+
+// Task 2.2 — main entry point
+async function chatbotEngineProcessMessage(tenantId, message, profileName, from, tenant) {
+    const lockKey = `${tenantId}:${from}`;
+    return withContactLock(lockKey, async () => {
+        const msgType = message.type || 'text';
+
+        // Extract text from plain text OR interactive replies (list/button selections)
+        let rawText = '';
+        if (msgType === 'text') {
+            rawText = message.text?.body || '';
+        } else if (msgType === 'interactive') {
+            const interactive = message.interactive || {};
+            if (interactive.type === 'list_reply') {
+                rawText = interactive.list_reply?.title || interactive.list_reply?.id || '';
+            } else if (interactive.type === 'button_reply') {
+                rawText = interactive.button_reply?.title || interactive.button_reply?.id || '';
+            } else if (interactive.type === 'nfm_reply') {
+                const nfm = interactive.nfm_reply || {};
+                let parsed = {};
+                try { parsed = JSON.parse(nfm.response_json || '{}'); } catch (_) {}
+                const entries = Object.entries(parsed);
+                rawText = entries.length > 0
+                    ? '📝 Flow Submitted:\n' + entries.map(([k, v]) => `• ${k}: ${v}`).join('\n')
+                    : (nfm.body || 'Flow Submitted');
+            }
+        } else if (msgType === 'button') {
+            rawText = message.button?.text || message.button?.payload || '';
+        } else if (msgType === 'order') {
+            const ord = message.order || {};
+            const items = ord.product_items || [];
+            let total = 0;
+            let currency = 'INR';
+            const lines = [];
+
+            items.forEach((item) => {
+                const qty = item.quantity || 1;
+                const price = typeof item.item_price === 'number' ? item.item_price : parseFloat(item.item_price || '0');
+                if (item.currency) currency = item.currency;
+                total += qty * price;
+                lines.push(`• SKU ${item.product_retailer_id} (x${qty}) - ${currency} ${price.toFixed(2)}`);
+            });
+
+            const formattedItems = items.map(i => ({
+                productRetailerId: i.product_retailer_id,
+                quantity: i.quantity || 1,
+                itemPrice: typeof i.item_price === 'number' ? i.item_price : parseFloat(i.item_price || '0'),
+                currency: i.currency || currency,
+            }));
+
+            rawText = `🛍️ Order Received (${items.length} item${items.length === 1 ? '' : 's'})\n` +
+                lines.join('\n') +
+                (total > 0 ? `\nTotal: ${currency} ${total.toFixed(2)}` : '') +
+                (ord.text ? `\nNote: "${ord.text}"` : '');
+
+            // Persist customer catalog order
+            try {
+                const savedOrder = await WhatsAppOrder.create({
+                    tenantId,
+                    contactId: from,
+                    contactName: profileName,
+                    catalogId: ord.catalog_id || '',
+                    wamid: message.id || '',
+                    customerNote: ord.text || '',
+                    items: formattedItems,
+                    totalAmount: total,
+                    currency,
+                    status: 'received',
+                    paymentStatus: 'pending',
+                    rawOrderPayload: ord,
+                });
+                if (typeof io !== 'undefined') {
+                    io.to(tenantId).emit('catalog_order_received', {
+                        contactId: from,
+                        contactName: profileName,
+                        totalAmount: total,
+                        currency,
+                        itemsCount: items.length,
+                        orderId: savedOrder._id.toString(),
+                    });
+                }
+
+                // ── Auto-generate & send payment link if enabled ──
+                if (savedOrder && total > 0) {
+                    const autoPay = tenant?.whatsappConfig?.commerceSettings?.autoSendPaymentLink !== false;
+                    if (autoPay) {
+                        CatalogService.sendPaymentLinkForOrder(
+                            { io, Message, Conversation, razorpay },
+                            tenant,
+                            savedOrder
+                        ).catch(e => console.warn('[ChatbotEngine] Auto payment link notice:', e.message));
+                    }
+                }
+            } catch (ordErr) {
+                console.error('[ChatbotEngine] WhatsAppOrder save error:', ordErr.message);
+            }
+        }
+
+        console.log(`[ChatbotEngine] Full message object:`, JSON.stringify(message, null, 2));
+        console.log(`[ChatbotEngine] msgType=${msgType} rawText="${rawText}" from=${from}`);
+
+        // Task 2.14 — truncate replies > 4096 chars
+        const msgText = rawText.length > 4096 ? rawText.substring(0, 4096) : rawText;
+
+        // Check for open session
+        let session = await ChatbotSession.findOne({ tenantId, contactId: from });
+
+        if (session) {
+            // Media guard: block non-text, non-interactive, non-button, non-order messages (images, audio, etc.)
+            if (msgType !== 'text' && msgType !== 'interactive' && msgType !== 'button' && msgType !== 'order') {
+                // Log the unsupported media message so tenant can see customer sent something
+                saveChatbotMessageToDB({
+                    tenantId,
+                    contactId: from,
+                    text: '',
+                    isMe: false,
+                    messageType: msgType || 'unsupported',
+                    source: 'chatbot_reply',
+                    previewText: `[${msgType || 'media'} — not supported in chatbot]`,
+                    name: profileName,
+                }).catch(() => {}); // Best-effort; never block the guard response
+
+                await sendChatbotText(tenant, from, 'Please reply with text.', session.chatbotId);
+                // Re-send current node prompt
+                const flow = await getChatbotFlow(session.chatbotId);
+                if (flow) {
+                    session._flow = flow;
+                    const currentNode = findNode(flow, session.currentNodeId);
+                    await resendNodePrompt(session, currentNode, tenant, from);
+                }
+                return;
+            }
+
+            // Update lastReply
+            session.lastReply = msgText;
+            session._originalMessage = message;
+            session._profileName = profileName;
+            await session.save();
+
+            // Persist the customer's reply so tenant can see it in the Chat Screen (best-effort)
+            let _crInteractivePayload = null;
+            let _crMsgType = msgType;
+            let _crText = msgText;
+            if (msgType === 'order') {
+                const ord = message.order || {};
+                _crInteractivePayload = {
+                    type: 'order',
+                    catalogId: ord.catalog_id || '',
+                    text: ord.text || '',
+                    productItems: ord.product_items || []
+                };
+            } else if (msgType === 'interactive') {
+                const _crInteractive = message.interactive || {};
+                if (_crInteractive.type === 'list_reply') {
+                    _crInteractivePayload = {
+                        type: 'list_reply',
+                        title: _crInteractive.list_reply?.title || '',
+                        id: _crInteractive.list_reply?.id || '',
+                    };
+                    _crText = _crInteractive.list_reply?.title || '';
+                } else if (_crInteractive.type === 'button_reply') {
+                    _crInteractivePayload = {
+                        type: 'button_reply',
+                        title: _crInteractive.button_reply?.title || '',
+                        id: _crInteractive.button_reply?.id || '',
+                    };
+                    _crText = _crInteractive.button_reply?.title || '';
+                } else if (_crInteractive.type === 'nfm_reply') {
+                    _crMsgType = 'nfm_reply';
+                    const nfm = _crInteractive.nfm_reply || {};
+                    let parsed = {};
+                    try { parsed = JSON.parse(nfm.response_json || '{}'); } catch (_) {}
+                    const flowToken = parsed.flow_token || nfm.flow_token || '';
+                    const cleanResponses = { ...parsed };
+                    delete cleanResponses.flow_token;
+
+                    let resolvedFlowId = '';
+                    let resolvedFlowName = '';
+
+                    try {
+                        const flow = await getChatbotFlow(session.chatbotId);
+                        const currNode = flow ? findNode(flow, session.currentNodeId) : null;
+                        if (currNode && (currNode.type === 'whatsappFlow' || currNode.type === 'flow')) {
+                            resolvedFlowId = currNode.data?.flowId || '';
+                            resolvedFlowName = currNode.data?.flowName || '';
+                        }
+                    } catch (_) {}
+
+                    if (!resolvedFlowId && flowToken) {
+                        try {
+                            const flowMsg = await Message.findOne({
+                                tenantId,
+                                'interactivePayload.flowToken': flowToken
+                            }).lean();
+                            if (flowMsg?.interactivePayload?.flowId) {
+                                resolvedFlowId = flowMsg.interactivePayload.flowId;
+                                resolvedFlowName = flowMsg.interactivePayload.flowName || '';
+                            }
+                        } catch (_) {}
+                    }
+
+                    if (!resolvedFlowId) {
+                        try {
+                            const lastFlowMsg = await Message.findOne({
+                                tenantId,
+                                contactId: from,
+                                messageType: 'flow'
+                            }).sort({ createdAt: -1 }).lean();
+                            if (lastFlowMsg?.interactivePayload?.flowId) {
+                                resolvedFlowId = lastFlowMsg.interactivePayload.flowId;
+                                resolvedFlowName = lastFlowMsg.interactivePayload.flowName || '';
+                            }
+                        } catch (_) {}
+                    }
+
+                    if (resolvedFlowId && !resolvedFlowName) {
+                        try {
+                            const fDoc = await WhatsAppFlow.findOne({ tenantId, flowId: resolvedFlowId }).lean();
+                            if (fDoc) resolvedFlowName = fDoc.name || '';
+                        } catch (_) {}
+                    }
+
+                    _crInteractivePayload = {
+                        type: 'flow_response',
+                        flowToken,
+                        flowId: resolvedFlowId,
+                        flowName: resolvedFlowName,
+                        name: nfm.name || 'flow',
+                        responses: cleanResponses
+                    };
+
+                    const entries = Object.entries(cleanResponses);
+                    _crText = entries.length > 0
+                        ? `📝 Flow Submitted (${resolvedFlowName || 'Form'}):\n` + entries.map(([k, v]) => `• ${k}: ${v}`).join('\n')
+                        : (nfm.body || 'Flow Submitted');
+
+                    session.lastReply = _crText;
+                    session.flowResponses = cleanResponses;
+                    session.save().catch(() => {});
+
+                    try {
+                        const savedResp = await WhatsAppFlowResponse.create({
+                            tenantId,
+                            flowId: resolvedFlowId || 'unknown',
+                            flowName: resolvedFlowName,
+                            contactId: from,
+                            contactName: profileName,
+                            wamid: message.id || '',
+                            flowToken,
+                            responseData: cleanResponses,
+                            source: 'chatbot'
+                        });
+
+                        if (resolvedFlowId) {
+                            await WhatsAppFlow.findOneAndUpdate(
+                                { tenantId, flowId: resolvedFlowId },
+                                { $inc: { responsesCount: 1 } }
+                            ).catch(() => {});
+                        }
+
+                        if (typeof io !== 'undefined') {
+                            io.to(tenantId).emit('flow_submission', savedResp);
+                        }
+                    } catch (e) {
+                        console.error('[ChatbotEngine] Flow response save error:', e.message);
+                    }
+                }
+            } else if (msgType === 'button') {
+                _crText = message.button?.text || message.button?.payload || '';
+            }
+            saveChatbotMessageToDB({
+                tenantId,
+                contactId: from,
+                text: _crText,
+                isMe: false,
+                messageType: _crMsgType,
+                source: 'chatbot_reply',
+                interactivePayload: _crInteractivePayload,
+                previewText: _crText || '\u21a9 Reply',
+                name: profileName,
+            }).catch(e => console.error('[ChatbotEngine] chatbot_reply DB save error:', e.message));
+
+            const flow = await getChatbotFlow(session.chatbotId);
+            if (!flow) {
+                // Chatbot deleted — clean up and fall through
+                await ChatbotSession.deleteOne({ _id: session._id });
+                return handleLiveChat(tenantId, message, profileName, from);
+            }
+            session._flow = flow;
+            const currentNode = findNode(flow, session.currentNodeId);
+            return executeNode(session, currentNode, tenant, from);
+        }
+
+        // No open session — check trigger keywords (text OR template button replies)
+        if (msgType !== 'text' && msgType !== 'button') {
+            return handleLiveChat(tenantId, message, profileName, from);
+        }
+
+        // For template button replies, extract button label
+        const buttonText = msgType === 'button'
+            ? (message.button?.text || message.button?.payload || '').trim()
+            : null;
+
+        const activeChatbots = await Chatbot.find({ tenantId, isActive: true });
+        let matchedChatbot = null;
+        for (const bot of activeChatbots) {
+            for (const kw of bot.triggerKeywords) {
+                if (msgType === 'button') {
+                    // Button reply: exact match only (case-insensitive)
+                    if (buttonText.toLowerCase() === kw.toLowerCase()) {
+                        matchedChatbot = bot;
+                        break;
+                    }
+                } else {
+                    // Plain text: existing includes-based matching
+                    if (msgText.toLowerCase().includes(kw.toLowerCase())) {
+                        matchedChatbot = bot;
+                        break;
+                    }
+                }
+            }
+            if (matchedChatbot) break;
+        }
+
+        if (!matchedChatbot) {
+            return handleLiveChat(tenantId, message, profileName, from);
+        }
+
+        // Trigger matched — create session and execute first node
+        const flow = matchedChatbot.flow;
+        if (!flow || !flow.nodes) {
+            return handleLiveChat(tenantId, message, profileName, from);
+        }
+
+        // Find start node's first child
+        const startNode = (flow.nodes || []).find(n => n.type === 'start');
+        const firstNodeId = startNode ? findNextNodeId(flow, startNode.id) : (flow.nodes[0]?.id || null);
+        if (!firstNodeId) {
+            return handleLiveChat(tenantId, message, profileName, from);
+        }
+
+        const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0);
+        try {
+            session = await ChatbotSession.create({
+                tenantId,
+                contactId: from,
+                chatbotId: matchedChatbot._id.toString(),
+                currentNodeId: null,
+                waitingForReply: false,
+                lastReply: msgText,
+            });
+            // Increment totalSessions analytics
+            await ChatbotAnalytics.findOneAndUpdate(
+                { tenantId, chatbotId: matchedChatbot._id.toString(), date: todayDate },
+                { $inc: { totalSessions: 1 } },
+                { upsert: true }
+            );
+        } catch (err) {
+            // Unique index violation — session already exists (race condition), re-fetch
+            session = await ChatbotSession.findOne({ tenantId, contactId: from });
+            if (!session) return handleLiveChat(tenantId, message, profileName, from);
+        }
+
+        // Persist the customer's trigger message so tenant can see it in the Chat Screen (best-effort)
+        const _trigText = msgType === 'button'
+            ? (message.button?.text || message.button?.payload || msgText)
+            : msgText;
+        saveChatbotMessageToDB({
+            tenantId,
+            contactId: from,
+            text: _trigText,
+            isMe: false,
+            messageType: msgType === 'button' ? 'button' : 'text',
+            source: 'chatbot_trigger',
+            previewText: _trigText || 'Started chatbot',
+            name: profileName,
+        }).catch(e => console.error('[ChatbotEngine] chatbot_trigger DB save error:', e.message));
+
+        session._flow = flow;
+        session._originalMessage = message;
+        session._profileName = profileName;
+        const firstNode = findNode(flow, firstNodeId);
+        return executeNode(session, firstNode, tenant, from);
+    });
+}
+
+// Helper — fetch chatbot flow by chatbotId
+async function getChatbotFlow(chatbotId) {
+    try {
+        const bot = await Chatbot.findById(chatbotId);
+        return bot ? bot.flow : null;
+    } catch { return null; }
+}
+
+// Task 2.13 — session auto-expiry (runs every minute)
+setInterval(async () => {
+    try {
+        const timeoutMinutes = parseInt(process.env.CHATBOT_SESSION_TIMEOUT_MINUTES || '5', 10);
+        const cutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+        const expiredSessions = await ChatbotSession.find({ updatedAt: { $lt: cutoff } });
+
+        for (const session of expiredSessions) {
+            const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0);
+            
+            // 1. Increment droppedSessions analytics
+            await ChatbotAnalytics.findOneAndUpdate(
+                { tenantId: session.tenantId, chatbotId: session.chatbotId, date: todayDate },
+                { $inc: { droppedSessions: 1 } },
+                { upsert: true }
+            );
+
+            // 2. Log "Chatbot session ended due to inactivity" in the Chat Screen
+            saveChatbotMessageToDB({
+                tenantId: session.tenantId,
+                contactId: session.contactId,
+                text: '🤖 Chatbot session ended due to inactivity.',
+                isMe: true,
+                messageType: 'text',
+                source: 'chatbot',
+                previewText: 'Chatbot session ended due to inactivity.',
+            }).catch(() => {});
+
+            // 3. Delete session
+            await ChatbotSession.deleteOne({ _id: session._id });
+        }
+
+        if (expiredSessions.length > 0) {
+            console.log(` [ChatbotEngine] Expired ${expiredSessions.length} stale chatbot session(s)`);
+        }
+    } catch (err) {
+        console.error(` [ChatbotEngine] Session expiry error:`, err.message);
+    }
+}, 60 * 1000);
+
+function getMetaErrorDetails(err) {
+    if (!err) return 'Unknown error';
+    if (err.response?.data) {
+        const data = err.response.data;
+        if (Array.isArray(data.errors) && data.errors.length > 0) {
+            const firstErr = data.errors[0];
+            return firstErr.error_data?.details || firstErr.message || firstErr.title || err.message;
+        }
+        if (data.error) {
+            return data.error.error_data?.details || data.error.message || err.message;
+        }
+    }
+    return err.message || 'Unknown error';
+}
+
+// ─── End Chatbot Engine ───────────────────────────────────────────────────────
+
+/**
+ * buildPreview — derives a human-readable lastMessage preview string from a structured message.
+ * Used by all three write paths (inbound, /send-message, dispatchTemplate) to keep preview logic centralised.
+ *
+ * @param {string} messageType  - The WhatsApp message type string
+ * @param {object} opts         - Options object
+ * @param {string} [opts.text]          - Plain text body (for 'text' type)
+ * @param {string} [opts.templateName]  - Template name (for 'template' type)
+ * @param {string} [opts.templateBody]  - Resolved template body (for 'template' type)
+ * @param {string} [opts.filename]      - Document filename (for 'document' type)
+ * @param {string} [opts.emoji]         - Reaction emoji (for 'reaction' type)
+ * @param {string} [opts.interactiveTitle] - Button/list reply title (for 'interactive' type)
+ * @returns {string}
+ */
+function formatTimeIST(dateVal) {
+    if (!dateVal) return '';
+    try {
+        const d = new Date(dateVal);
+        if (isNaN(d.getTime())) return '';
+        // Add 5.5 hours to convert UTC to IST (UTC+5:30)
+        const istDate = new Date(d.getTime() + (5.5 * 3600000));
+        const hours = String(istDate.getUTCHours()).padStart(2, '0');
+        const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+        return `${hours}:${minutes}`;
+    } catch (err) {
+        return '';
+    }
+}
+
+function buildPreview(messageType, opts = {}) {
+    const truncate = (str, max = 80) => (str && str.length > max ? str.substring(0, max) + '…' : str || '');
+
+    switch (messageType) {
+        case 'text':
+            return truncate(opts.text);
+        case 'template':
+            if (opts.templateBody) return truncate(opts.templateBody);
+            return `📋 Template: ${opts.templateName || 'unknown'}`;
+        case 'image':
+            return '📷 Image';
+        case 'video':
+            return '🎥 Video';
+        case 'audio':
+            return '🎵 Audio message';
+        case 'voice':
+            return '🎵 Audio message';
+        case 'document':
+            return opts.filename ? `📄 Document: ${opts.filename}` : '📄 Document';
+        case 'sticker':
+            return '😊 Sticker';
+        case 'location':
+            return '📍 Location';
+        case 'interactive':
+            return opts.interactiveTitle || '↩ Reply';
+        case 'order':
+            return truncate(opts.text) || '🛍️ Order Received';
+        case 'button':
+            return opts.text ? '↩ ' + opts.text : '↩ Reply';
+        case 'reaction':
+            return opts.emoji ? `${opts.emoji} Reaction` : '👍 Reaction';
+        case 'contacts':
+            return `👤 Contact: ${opts.text ? opts.text.split('|')[0] : ''}`;
+        default:
+            return '⚠️ Unsupported message type';
+    }
+}
+
+// Live Chat handler — processes an incoming message through the live chat pipeline
+async function handleLiveChat(tenantId, message, profileName, from) {
+    let msgType = message.type || 'unsupported';
+
+    // Extract structured fields per message type
+    let msgText = '';
+    let mediaUrl = null;
+    let interactivePayload = null;
+
+    const MEDIA_TYPES = ['image', 'video', 'audio', 'voice', 'document', 'sticker'];
+
+    if (msgType === 'text') {
+        msgText = message.text?.body || '';
+    } else if (MEDIA_TYPES.includes(msgType)) {
+        mediaUrl = message[msgType]?.id || null;
+        // For document, capture filename in text for display
+        if (msgType === 'document' && message.document?.filename) {
+            msgText = message.document.filename;
+        }
+    } else if (msgType === 'order') {
+        const ord = message.order || {};
+        const items = ord.product_items || [];
+        let total = 0;
+        let currency = 'INR';
+        const lines = [];
+
+        items.forEach((item) => {
+            const qty = item.quantity || 1;
+            const price = typeof item.item_price === 'number' ? item.item_price : parseFloat(item.item_price || '0');
+            if (item.currency) currency = item.currency;
+            total += qty * price;
+            lines.push(`• SKU ${item.product_retailer_id} (x${qty}) - ${currency} ${price.toFixed(2)}`);
+        });
+
+        const formattedItems = items.map(i => ({
+            productRetailerId: i.product_retailer_id,
+            quantity: i.quantity || 1,
+            itemPrice: typeof i.item_price === 'number' ? i.item_price : parseFloat(i.item_price || '0'),
+            currency: i.currency || currency,
+        }));
+
+        msgText = `🛍️ Order Received (${items.length} item${items.length === 1 ? '' : 's'})\n` +
+            lines.join('\n') +
+            (total > 0 ? `\nTotal: ${currency} ${total.toFixed(2)}` : '') +
+            (ord.text ? `\nNote: "${ord.text}"` : '');
+
+        interactivePayload = {
+            type: 'order',
+            catalogId: ord.catalog_id || '',
+            customerNote: ord.text || '',
+            items: formattedItems,
+            totalAmount: total,
+            currency,
+        };
+
+        // Persist to WhatsAppOrder if not already saved
+        try {
+            const savedOrder = await WhatsAppOrder.findOneAndUpdate(
+                { tenantId, wamid: message.id || '' },
+                {
+                    tenantId,
+                    contactId: from,
+                    contactName: profileName,
+                    catalogId: ord.catalog_id || '',
+                    wamid: message.id || '',
+                    customerNote: ord.text || '',
+                    items: formattedItems,
+                    totalAmount: total,
+                    currency,
+                    status: 'received',
+                    paymentStatus: 'pending',
+                    rawOrderPayload: ord,
+                },
+                { upsert: true, new: true }
+            );
+            if (typeof io !== 'undefined') {
+                io.to(tenantId).emit('catalog_order_received', {
+                    contactId: from,
+                    contactName: profileName,
+                    totalAmount: total,
+                    currency,
+                    itemsCount: items.length,
+                    orderId: savedOrder?._id?.toString(),
+                });
+            }
+
+            // ── Auto-generate & send payment link if enabled ──
+            if (savedOrder && total > 0) {
+                const autoPay = tenant?.whatsappConfig?.commerceSettings?.autoSendPaymentLink !== false;
+                if (autoPay) {
+                    CatalogService.sendPaymentLinkForOrder(
+                        { io, Message, Conversation, razorpay },
+                        tenant,
+                        savedOrder
+                    ).catch(e => console.warn('[LiveChat] Auto payment link notice:', e.message));
+                }
+            }
+        } catch (ordErr) {
+            console.error('[LiveChat] WhatsAppOrder error:', ordErr.message);
+        }
+    } else if (msgType === 'interactive') {
+        const interactive = message.interactive || {};
+        if (interactive.type === 'button_reply') {
+            interactivePayload = {
+                type: 'button_reply',
+                title: interactive.button_reply?.title || '',
+                id: interactive.button_reply?.id || '',
+            };
+        } else if (interactive.type === 'list_reply') {
+            interactivePayload = {
+                type: 'list_reply',
+                title: interactive.list_reply?.title || '',
+                id: interactive.list_reply?.id || '',
+            };
+        } else if (interactive.type === 'nfm_reply') {
+            msgType = 'nfm_reply';
+            const nfm = interactive.nfm_reply || {};
+            let parsedResponses = {};
+            try {
+                parsedResponses = JSON.parse(nfm.response_json || '{}');
+            } catch (_) {}
+
+            const flowToken = parsedResponses.flow_token || nfm.flow_token || '';
+            const cleanResponses = { ...parsedResponses };
+            delete cleanResponses.flow_token;
+
+            let resolvedFlowId = '';
+            let resolvedFlowName = '';
+
+            if (flowToken) {
+                try {
+                    const flowMsg = await Message.findOne({
+                        tenantId,
+                        'interactivePayload.flowToken': flowToken
+                    }).lean();
+                    if (flowMsg?.interactivePayload?.flowId) {
+                        resolvedFlowId = flowMsg.interactivePayload.flowId;
+                        resolvedFlowName = flowMsg.interactivePayload.flowName || '';
+                    }
+                } catch (_) {}
+            }
+
+            if (!resolvedFlowId && message.context?.id) {
+                try {
+                    const ctxMsg = await Message.findOne({
+                        tenantId,
+                        wamid: message.context.id
+                    }).lean();
+                    if (ctxMsg?.interactivePayload?.flowId) {
+                        resolvedFlowId = ctxMsg.interactivePayload.flowId;
+                        resolvedFlowName = ctxMsg.interactivePayload.flowName || '';
+                    }
+                } catch (_) {}
+            }
+
+            if (!resolvedFlowId) {
+                try {
+                    const lastFlowMsg = await Message.findOne({
+                        tenantId,
+                        contactId: from,
+                        messageType: 'flow'
+                    }).sort({ createdAt: -1 }).lean();
+                    if (lastFlowMsg?.interactivePayload?.flowId) {
+                        resolvedFlowId = lastFlowMsg.interactivePayload.flowId;
+                        resolvedFlowName = lastFlowMsg.interactivePayload.flowName || '';
+                    }
+                } catch (_) {}
+            }
+
+            if (resolvedFlowId && !resolvedFlowName) {
+                try {
+                    const fDoc = await WhatsAppFlow.findOne({ tenantId, flowId: resolvedFlowId }).lean();
+                    if (fDoc) resolvedFlowName = fDoc.name || '';
+                } catch (_) {}
+            }
+
+            interactivePayload = {
+                type: 'flow_response',
+                flowToken,
+                flowId: resolvedFlowId,
+                flowName: resolvedFlowName,
+                name: nfm.name || 'flow',
+                responses: cleanResponses
+            };
+
+            const entries = Object.entries(cleanResponses);
+            msgText = entries.length > 0
+                ? `📝 Flow Submitted (${resolvedFlowName || 'Form'}):\n` + entries.map(([k, v]) => `• ${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n')
+                : (nfm.body || 'Flow Submitted');
+
+            try {
+                const savedFlowResponse = await WhatsAppFlowResponse.create({
+                    tenantId,
+                    flowId: resolvedFlowId || 'unknown',
+                    flowName: resolvedFlowName,
+                    contactId: from,
+                    contactName: profileName,
+                    wamid: message.id || '',
+                    flowToken,
+                    responseData: cleanResponses,
+                    source: 'chat'
+                });
+
+                if (resolvedFlowId) {
+                    await WhatsAppFlow.findOneAndUpdate(
+                        { tenantId, flowId: resolvedFlowId },
+                        { $inc: { responsesCount: 1 } }
+                    ).catch(() => {});
+                }
+
+                if (typeof io !== 'undefined') {
+                    io.to(tenantId).emit('flow_submission', savedFlowResponse);
+                }
+            } catch (flowRespErr) {
+                console.error('[LiveChat] WhatsAppFlowResponse save error:', flowRespErr.message);
+            }
+        }
+    } else if (msgType === 'button') {
+        msgText = message.button?.text || message.button?.payload || '⚠️ Unsupported message type';
+    } else if (msgType === 'location') {
+        const lat = message.location?.latitude;
+        const lng = message.location?.longitude;
+        msgText = (lat != null && lng != null) ? `Lat: ${lat}, Lng: ${lng}` : '';
+    } else if (msgType === 'reaction') {
+        msgText = message.reaction?.emoji || '';
+    } else if (msgType === 'contacts') {
+        if (message.contacts && message.contacts.length > 0) {
+            const contact = message.contacts[0];
+            const name = contact.name?.formatted_name || contact.name?.first_name || 'Contact';
+            const phone = contact.phones?.[0]?.phone || contact.phones?.[0]?.wa_id || '';
+            msgText = `${name}|${phone}`;
+        } else {
+            msgText = 'Contact';
+        }
+    } else {
+        msgText = '⚠️ Unsupported message type';
+    }
+
+    // Build the lastMessage preview string
+    const previewOpts = {
+        text: msgText,
+        filename: msgType === 'document' ? message.document?.filename : undefined,
+        emoji: msgType === 'reaction' ? message.reaction?.emoji : undefined,
+        interactiveTitle: interactivePayload?.title,
+    };
+    const lastMessagePreview = buildPreview(msgType, previewOpts);
+
+    console.log(` [Tenant: ${tenantId}] Incoming from ${from} (${profileName}): ${lastMessagePreview}`);
+
+    // Lookup parent message preview if message is a reply
+    let replyContextPreview = null;
+    const contextWamid = message.context?.id || null;
+    if (contextWamid) {
+        try {
+            const parentMsg = await Message.findOne({
+                $or: [
+                    { wamid: contextWamid },
+                    ...(mongoose.Types.ObjectId.isValid(contextWamid) ? [{ _id: contextWamid }] : [])
+                ]
+            }).lean();
+            if (parentMsg) {
+                replyContextPreview = parentMsg.text || parentMsg.templateBody || (parentMsg.templateName ? `📋 ${parentMsg.templateName}` : null) || (parentMsg.messageType ? `[${parentMsg.messageType}]` : null);
+            }
+        } catch (err) {
+            console.error('[Webhook] Error finding parent message for context:', err.message);
+        }
+    }
+
+    await Conversation.findOneAndUpdate(
+        { tenantId, contactId: from },
+        { name: profileName, lastMessage: lastMessagePreview, lastActive: new Date(), hasReply: true },
+        { upsert: true }
+    );
+    await Message.create({
+        tenantId,
+        contactId: from,
+        text: msgText,
+        isMe: false,
+        time: new Date().toISOString(),
+        messageType: msgType,
+        mediaUrl,
+        interactivePayload,
+        wamid: message.id || null,
+        contextMessageId: contextWamid,
+        replyContextPreview: replyContextPreview || null,
+    });
+    await broadcastConversations(tenantId);
+    await broadcastMessages(tenantId, from);
+
+    // Trigger Notification for incoming WhatsApp message
+    try {
+        await NotificationService.create({
+            tenantId,
+            title: `💬 ${profileName || from}`,
+            body: lastMessagePreview || 'Sent you a message',
+            type: 'chat_message',
+            category: 'chat',
+            actionData: { contactId: from, screen: 'chats' }
+        });
+    } catch (notifErr) {
+        console.error('[Webhook] Failed to create chat notification:', notifErr.message);
+    }
+}
+
+// Register handlers in WebhookIngestionService
+webhookIngestionService.setHandler(async (body, ctx) => {
+    return processIncomingWebhookPayload(body, {
+        processStatusUpdateAtomic: (statusUpdate) => messageTracker.processStatusUpdateAtomic(statusUpdate, {
+            Recipient,
+            StatusMapping,
+            Campaign,
+            Message,
+            broadcastMessages,
+            broadcastCampaigns,
+            messageTracker
+        }),
+        handlePartnerAdded: async (wabaId, val) => {
+            const businessPortfolioId = val?.business_portfolio_id || null;
+            await saveOnboardingLog({
+                tenantId: null,
+                sessionId: null,
+                wabaId,
+                businessPortfolioId,
+                step: 'WEBHOOK_PARTNER_ADDED',
+                status: 'info',
+                message: `Received account_update PARTNER_ADDED webhook from Meta. Triggering background onboarding...`,
+                details: val
+            });
+            processOnboarding(wabaId, businessPortfolioId, null).catch(async (err) => {
+                await saveOnboardingLog({
+                    tenantId: null,
+                    sessionId: null,
+                    wabaId,
+                    businessPortfolioId,
+                    step: 'WEBHOOK_PROCESS_ONBOARDING_FAIL',
+                    status: 'error',
+                    message: `Background onboarding triggered by webhook failed: ${err.message}`,
+                    details: err.stack
+                });
+            });
+        },
+        handleTemplateStatusUpdate: async (wabaId, val) => {
+            const templateName = val?.message_template_name;
+            const eventStatus = val?.event;
+            const reason = val?.reason || null;
+            const lang = val?.message_template_language || null;
+            console.log(`[Webhook] Template Status Update for WABA ${wabaId}: ${templateName} -> ${eventStatus} (Reason: ${reason})`);
+
+            const tenant = await Tenant.findOne({ 'whatsappConfig.businessAccountId': wabaId });
+            if (tenant) {
+                const tenantId = tenant._id.toString();
+                if (eventStatus === 'REJECTED' && reason) {
+                    if (!tenant.whatsappConfig.templateRejections) tenant.whatsappConfig.templateRejections = new Map();
+                    tenant.whatsappConfig.templateRejections.set(templateName, reason);
+                    await tenant.save();
+                } else if (eventStatus === 'APPROVED') {
+                    if (tenant.whatsappConfig.templateRejections) {
+                        tenant.whatsappConfig.templateRejections.delete(templateName);
+                        await tenant.save();
+                    }
+                }
+                io.to(tenantId).emit('template_status_update', {
+                    name: templateName,
+                    status: eventStatus,
+                    reason: reason,
+                    language: lang
+                });
+                try {
+                    const isApproved = eventStatus === 'APPROVED';
+                    await NotificationService.create({
+                        tenantId,
+                        title: isApproved ? '✅ Template Approved' : '❌ Template Rejected',
+                        body: isApproved 
+                            ? `Template "${templateName}" was approved by Meta!`
+                            : `Template "${templateName}" was rejected by Meta. Reason: ${reason || 'Policy violation'}`,
+                        type: 'system',
+                        category: 'system',
+                        actionData: { screen: 'templates' }
+                    });
+                } catch (notifErr) {
+                    console.error('[Webhook] Failed to create template status notification:', notifErr.message);
+                }
+            }
+        },
+        handlePhoneNumberNameUpdate: async (val) => {
+            const phoneNumberId = val?.display_phone_number_id || val?.phone_number_id;
+            const decision = val?.decision;
+            const requestedName = val?.requested_verified_name;
+            console.log(`[Webhook] phone_number_name_update for Phone ID ${phoneNumberId}: decision=${decision}, name=${requestedName}`);
+
+            const tenant = await Tenant.findOne({ 'whatsappConfig.phoneNumberId': phoneNumberId });
+            if (tenant) {
+                const tenantId = tenant._id.toString();
+                const accessToken = tenant.whatsappConfig.accessToken;
+                await Tenant.findByIdAndUpdate(tenantId, {
+                    $set: {
+                        'whatsappConfig.nameApprovalStatus': decision,
+                        'whatsappConfig.verifiedName': requestedName || tenant.whatsappConfig.verifiedName,
+                    }
+                });
+                if (decision === 'APPROVED' && accessToken) {
+                    const regResult = await registerPhoneNumber(phoneNumberId, accessToken, tenant.whatsappConfig.registrationPin || '123456');
+                    if (regResult.success) {
+                        await Tenant.findByIdAndUpdate(tenantId, {
+                            $set: {
+                                'whatsappConfig.phoneStatus': 'CONNECTED',
+                                'whatsappConfig.verified': true,
+                                'whatsappConfig.registrationError': null,
+                            }
+                        });
+                        console.log(`[Webhook] ✅ Phone ID ${phoneNumberId} auto-registered and CONNECTED upon name approval.`);
+                    } else {
+                        await Tenant.findByIdAndUpdate(tenantId, {
+                            $set: {
+                                'whatsappConfig.registrationError': regResult.error,
+                            }
+                        });
+                        console.error(`[Webhook] ❌ Phone ID ${phoneNumberId} auto-registration failed:`, regResult.error);
+                    }
+                }
+            }
+        },
+        processIncomingMessage: async (message, contacts, receiverPhoneNumberId) => {
+            let tenantId = null;
+            let tenant = null;
+            if (receiverPhoneNumberId) {
+                tenant = await Tenant.findOne({ 'whatsappConfig.phoneNumberId': receiverPhoneNumberId });
+                if (tenant) tenantId = tenant._id.toString();
+            }
+            if (!tenantId) {
+                console.warn(` Could not map incoming message to a tenant (Phone: ${receiverPhoneNumberId})`);
+            } else {
+                const from = message.from;
+                const profileName = contacts?.[0]?.profile?.name || 'Unknown Sender';
+                await chatbotEngineProcessMessage(tenantId, message, profileName, from, tenant);
+            }
+        }
+    });
+});
+
+//  Incoming Webhook (Messages & Status Updates) 
+app.post('/webhook', verifyMetaWebhookSignature, async (req, res) => {
+    const body = req.body;
+    if (body.object !== 'whatsapp_business_account') return res.sendStatus(404);
+
+    let rawLogId = null;
+    try {
+        rawLogId = await webhookIngestionService.enqueueRawWebhook(body);
+    } catch (err) {
+        console.error('[Webhook] Failed to write-ahead enqueue raw webhook:', err.message);
+    }
+
+    // Immediate acknowledgment within SLA (< 50ms)
+    res.status(200).send('EVENT_RECEIVED');
+
+    // Process asynchronously in background
+    if (rawLogId) {
+        setImmediate(() => webhookIngestionService.processWebhookJob(rawLogId));
+    }
+});
+
+//  Socket.IO 
+io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Unauthorized'));
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) return next(new Error('Unauthorized'));
+        socket.user = user;
+        next();
+    });
+});
+
+io.on('connection', (socket) => {
+    console.log(` Socket connected: ${socket.id}`);
+
+    socket.on('join', async (tenantId) => {
+        socket.join(tenantId);
+        console.log(` Tenant ${tenantId} joined socket room`);
+
+        // Send initial conversations
+        try {
+            const convs = await Conversation.find({ tenantId, hasReply: true })
+                .sort({ lastActive: -1 }).lean();
+            const formattedConvs = convs.map(function (c) {
+                return { id: c.contactId, name: c.name || c.contactId, lastMessage: c.lastMessage || "", lastActive: c.lastActive, hasReply: c.hasReply || false };
+            });
+            socket.emit("conversations_update", formattedConvs);
+        } catch (e) { console.error("Socket init conversations error:", e); }
+
+        // Send initial campaigns
+        try {
+            const campaigns = await Campaign.find({ tenantId })
+                .sort({ timestamp: -1 }).lean();
+            const campaignIds = campaigns.map(c => c.id);
+            const pendingPhases = await ScheduledRetryPhase.find({
+                campaignId: { $in: campaignIds },
+                status: { $in: ['pending', 'executing'] }
+            }).select('campaignId').lean();
+            const pendingSet = new Set(pendingPhases.map(p => p.campaignId));
+            const enriched = campaigns.map(c => ({ ...c, hasPendingRetry: pendingSet.has(c.id) }));
+            socket.emit('campaigns_update', enriched);
+        } catch (e) { console.error('Socket init campaigns error:', e); }
+    });
+
+    socket.on('get_messages', async (contactId) => {
+        try {
+            const tenantId = socket.user && socket.user.tenantId;
+            if (!tenantId || !contactId) return;
+            const messages = await Message.find({ tenantId, contactId })
+                .sort({ timestamp: 1 }).lean();
+            const formatted = messages.map(function (m) {
+                return {
+                    id: m._id.toString(),
+                    text: m.text || "",
+                    isMe: m.isMe === true,
+                    timestamp: m.timestamp,
+                    time: formatTimeIST(m.time || m.timestamp),
+                    messageType: m.messageType || null,
+                    templateName: m.templateName || null,
+                    templateBody: m.templateBody || null,
+                    mediaUrl: m.mediaUrl || null,
+                    interactivePayload: m.interactivePayload || null,
+                    wamid: m.wamid || null,
+                    contextMessageId: m.contextMessageId || null,
+                    replyContextPreview: m.replyContextPreview || null,
+                };
+            });
+            socket.emit('messages_' + contactId, formatted);
+        } catch (e) { console.error('get_messages error:', e); }
+    });
+
+    socket.on('disconnect', () => {
+        console.log(` Socket disconnected: ${socket.id}`);
+    });
+});
+
+//  Broadcast Helpers 
+async function broadcastConversations(tenantId) {
+    try {
+        const convs = await Conversation.find({ tenantId })
+            .sort({ lastActive: -1 }).lean();
+        const formatted = convs.map(function (c) {
+            return {
+                id: c.contactId,
+                name: c.name || c.contactId,
+                lastMessage: c.lastMessage || "",
+                lastActive: c.lastActive,
+                hasReply: c.hasReply || false
+            };
+        });
+        io.to(tenantId).emit("conversations_update", formatted);
+    } catch (e) { console.error("broadcastConversations error:", e); }
+}
+
+async function broadcastMessages(tenantId, contactId) {
+    try {
+        const messages = await Message.find({ tenantId, contactId })
+            .sort({ timestamp: 1 }).lean();
+        const formatted = messages.map(function (m) {
+            return {
+                id: m._id.toString(),
+                text: m.text || "",
+                isMe: m.isMe === true,
+                timestamp: m.timestamp,
+                time: formatTimeIST(m.time || m.timestamp),
+                messageType: m.messageType || null,
+                templateName: m.templateName || null,
+                templateBody: m.templateBody || null,
+                mediaUrl: m.mediaUrl || null,
+                interactivePayload: m.interactivePayload || null,
+                wamid: m.wamid || null,
+                contextMessageId: m.contextMessageId || null,
+                replyContextPreview: m.replyContextPreview || null,
+                status: m.status || 'sent',
+                errorDetails: m.errorDetails || null,
+                source: m.source || null,
+            };
+        });
+        io.to(tenantId).emit("messages_" + contactId, formatted);
+    } catch (e) { console.error("broadcastMessages error:", e); }
+}
+
+async function broadcastCampaigns(tenantId) {
+    try {
+        const campaigns = await Campaign.find({ tenantId })
+            .sort({ timestamp: -1 }).lean();
+        const campaignIds = campaigns.map(c => c.id);
+        const pendingPhases = await ScheduledRetryPhase.find({
+            campaignId: { $in: campaignIds },
+            status: { $in: ['pending', 'executing'] }
+        }).select('campaignId').lean();
+        const pendingSet = new Set(pendingPhases.map(p => p.campaignId));
+        const enriched = campaigns.map(c => ({ ...c, hasPendingRetry: pendingSet.has(c.id) }));
+        io.to(tenantId).emit('campaigns_update', enriched);
+    } catch (e) { console.error('broadcastCampaigns error:', e); }
+}
+
+// ── WhatsApp Flows API Endpoints ───────────────────────────────────────────
+const flowController = createFlowController({
+    Tenant,
+    Message,
+    Conversation,
+    StatusMapping,
+    broadcastMessages,
+    broadcastConversations
+});
+
+app.get('/api/flows', authenticate, flowController.getFlows);
+app.post('/api/flows', authenticate, flowController.createFlow);
+app.get('/api/flows/:flowId', authenticate, flowController.getFlowById);
+app.post('/api/flows/:flowId/publish', authenticate, flowController.publishFlow);
+app.delete('/api/flows/:flowId', authenticate, flowController.deleteFlow);
+app.post('/api/flows/send', authenticate, flowController.sendFlow);
+app.get('/api/flows/:flowId/responses', authenticate, flowController.getFlowResponses);
+app.get('/api/flows/responses/all', authenticate, (req, res) => {
+    req.params.flowId = 'all';
+    flowController.getFlowResponses(req, res);
+});
+
+// ── WhatsApp Catalog API Endpoints ─────────────────────────────────────────
+const catalogController = createCatalogController({
+    Tenant,
+    Message,
+    Conversation,
+    StatusMapping,
+    broadcastMessages,
+    broadcastConversations,
+    io,
+    razorpay,
+});
+
+app.get('/api/catalog/catalogs', authenticate, catalogController.getCatalogs);
+app.post('/api/catalog/sync', authenticate, catalogController.syncCatalogs);
+app.post('/api/catalog/catalogs/select', authenticate, catalogController.selectCatalog);
+app.get('/api/catalog/commerce-settings', authenticate, catalogController.getCommerceSettings);
+app.post('/api/catalog/commerce-settings', authenticate, catalogController.updateCommerceSettings);
+app.get('/api/catalog/products', authenticate, catalogController.getProducts);
+app.post('/api/catalog/products', authenticate, catalogController.addProduct);
+app.post('/api/catalog/send-catalog-message', authenticate, catalogController.sendCatalogMessage);
+app.post('/api/catalog/send-single-product', authenticate, catalogController.sendSingleProduct);
+app.post('/api/catalog/send-multi-product', authenticate, catalogController.sendMultiProduct);
+app.post('/api/catalog/send-carousel', authenticate, catalogController.sendCarousel);
+app.get('/api/catalog/orders', authenticate, catalogController.getOrders);
+app.patch('/api/catalog/orders/:id/status', authenticate, catalogController.updateOrderStatus);
+app.post('/api/catalog/orders/:id/send-payment-link', authenticate, catalogController.sendPaymentLink);
+app.post('/api/catalog/orders/:id/mark-paid', authenticate, catalogController.markOrderPaid);
+app.post('/api/catalog/payment-webhook', catalogController.handlePaymentWebhook);
+
+//  Scheduled Campaign Runner (checks every minute) 
+async function runScheduledCampaigns() {
+    try {
+        const now = new Date();
+        const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
+        // Pick up pending due campaigns AND stalled running campaigns (no update in 5 mins due to server restart/crash)
+        const due = await ScheduledCampaign.find({
+            $or: [
+                { status: 'pending', scheduledAt: { $lte: now } },
+                { status: 'running', updatedAt: { $lt: fiveMinsAgo } }
+            ]
+        });
+
+        for (const sc of due) {
+            await ScheduledCampaign.updateOne({ _id: sc._id }, { $set: { status: 'running', updatedAt: new Date() } });
+            const tenant = await Tenant.findById(sc.tenantId);
+            if (!tenant) {
+                await ScheduledCampaign.updateOne({ _id: sc._id }, { $set: { status: 'failed', errorMessage: 'Tenant not found', updatedAt: new Date() } });
+                continue;
+            }
+            const config = tenant.whatsappConfig;
+            if (!config?.accessToken || !config?.phoneNumberId) {
+                await ScheduledCampaign.updateOne({ _id: sc._id }, { $set: { status: 'failed', errorMessage: 'WhatsApp not configured', updatedAt: new Date() } });
+                continue;
+            }
+            const campaignId = `sched_${sc._id}`;
+
+            // Build campaign creation fields (captures retry config snapshot)
+            let lifecycleFields = {};
+            try {
+                lifecycleFields = await campaignLifecycleManager.buildCampaignCreationFields(sc.tenantId);
+            } catch (err) {
+                console.warn(`[ScheduledCampaign] Failed to build lifecycle fields: ${err.message}`);
+                lifecycleFields = {
+                    retryConfig: { version: 0, phases: [] },
+                    status: 'initial',
+                    currentPhase: 1,
+                    phaseStats: [{ phaseNumber: 1, successCount: 0, failureCount: 0, executedAt: new Date() }]
+                };
+            }
+
+            // Fetch template components to resolve body text for message logging
+            let templateBodyText = '';
+            try {
+                const components = await fetchTemplateComponents(tenant, sc.template);
+                const bodyComponent = (components || []).find(c => c.type === 'BODY');
+                templateBodyText = bodyComponent?.text || '';
+            } catch (err) {
+                console.error(`[ScheduledCampaign] Failed to fetch template components: ${err.message}`);
+            }
+
+            // Ensure initial Campaign document exists
+            let campaignDoc = await Campaign.findOne({ id: campaignId, tenantId: sc.tenantId });
+            if (!campaignDoc) {
+                await Campaign.create({
+                    tenantId: sc.tenantId,
+                    id: campaignId,
+                    template: sc.template,
+                    timestamp: sc.scheduledAt || new Date(),
+                    dispatchedAt: new Date(),
+                    totalCount: sc.recipients.length,
+                    successCount: 0,
+                    failureCount: 0,
+                    ...lifecycleFields
+                });
+            }
+
+            // Check existing Recipient records for resumption/deduplication
+            const existingRecipients = await Recipient.find({ campaignId, tenantId: sc.tenantId }).select('to status').lean();
+            const processedNumbers = new Set(existingRecipients.map(r => r.to));
+            let success = existingRecipients.filter(r => r.status === 'sent' || r.status === 'delivered' || r.status === 'read').length;
+            let failure = existingRecipients.filter(r => r.status === 'failed').length;
+
+            const remainingRecipients = sc.recipients.filter(r => {
+                const to = r.mobileNumber || r.to;
+                return to && !processedNumbers.has(to);
+            });
+
+            console.log(`[ScheduledCampaign] Starting/Resuming ${sc._id}: ${processedNumbers.size} already processed, ${remainingRecipients.length} remaining.`);
+
+            // Process remaining recipients in batches of 10 concurrent HTTP requests with bulk DB writes
+            const BATCH_SIZE = 10;
+            for (let i = 0; i < remainingRecipients.length; i += BATCH_SIZE) {
+                const chunk = remainingRecipients.slice(i, i + BATCH_SIZE);
+                const recipientDocs = [];
+                const statusMappingOps = [];
+                const conversationOps = [];
+                const messageDocs = [];
+
+                await Promise.all(chunk.map(async (recipient) => {
+                    const to = recipient.mobileNumber || recipient.to;
+                    if (!to) {
+                        failure++;
+                        return;
+                    }
+                    try {
+                        const components = [];
+                        if (sc.mediaId && sc.mediaType) {
+                            components.push({ type: 'header', parameters: [{ type: sc.mediaType.toLowerCase(), [sc.mediaType.toLowerCase()]: { id: sc.mediaId } }] });
+                        } else if (recipient.headerVariables && typeof recipient.headerVariables === 'object') {
+                            const headerVars = recipient.headerVariables;
+                            const sortedHeaderKeys = Object.keys(headerVars).sort((a, b) => Number(a) - Number(b));
+                            const headerParams = sortedHeaderKeys.map(k => ({ type: 'text', text: String(headerVars[k]) }));
+                            if (headerParams.length) components.push({ type: 'header', parameters: headerParams });
+                        }
+
+                        const vars = recipient.variables || {};
+                        const bodyParams = Object.keys(vars).sort((a, b) => Number(a) - Number(b)).map(k => ({ type: 'text', text: String(vars[k]) }));
+                        if (bodyParams.length) components.push({ type: 'body', parameters: bodyParams });
+
+                        const payload = {
+                            messaging_product: 'whatsapp', to, type: 'template',
+                            template: { name: sc.template, language: { code: sc.language || 'en_US' }, ...(components.length ? { components } : {}) }
+                        };
+                        const resp = await axios.post(`${WHATSAPP_API_URL}/${config.phoneNumberId}/messages`, payload, {
+                            headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' }
+                        });
+                        const wamid = resp.data?.messages?.[0]?.id;
+                        if (wamid) {
+                            success++;
+                            recipientDocs.push({
+                                tenantId: sc.tenantId,
+                                campaignId,
+                                wamid,
+                                to,
+                                name: recipient.name || null,
+                                status: 'sent',
+                                sentAt: new Date().toISOString(),
+                                phaseNumber: null,
+                                retryHistory: []
+                            });
+                            statusMappingOps.push({
+                                updateOne: {
+                                    filter: { wamid },
+                                    update: { $set: { wamid, tenantId: sc.tenantId, campaignId, to } },
+                                    upsert: true
+                                }
+                            });
+
+                            try {
+                                const previewText = buildPreview('template', {
+                                    templateName: sc.template,
+                                    templateBody: templateBodyText,
+                                });
+
+                                conversationOps.push({
+                                    updateOne: {
+                                        filter: { tenantId: sc.tenantId, contactId: to },
+                                        update: {
+                                            $set: { name: to, lastMessage: previewText, lastActive: new Date() },
+                                            $setOnInsert: { hasReply: false }
+                                        },
+                                        upsert: true
+                                    }
+                                });
+
+                                messageDocs.push({
+                                    tenantId: sc.tenantId,
+                                    contactId: to,
+                                    text: templateBodyText || `📋 Template: ${sc.template}`,
+                                    isMe: true,
+                                    time: new Date().toISOString(),
+                                    messageType: 'template',
+                                    templateName: sc.template,
+                                    templateBody: templateBodyText,
+                                    wamid: wamid,
+                                    status: 'sent',
+                                });
+                            } catch (msgErr) {
+                                console.error(`[ScheduledCampaign] Failed to prepare Message/Conversation log for ${to}:`, msgErr.message);
+                            }
+                        } else {
+                            failure++;
+                            recipientDocs.push({
+                                tenantId: sc.tenantId,
+                                campaignId,
+                                wamid: `failed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                                to,
+                                name: recipient.name || null,
+                                status: 'failed',
+                                failedAt: new Date().toISOString(),
+                                phaseNumber: null,
+                                retryHistory: []
+                            });
+                        }
+                    } catch (sendErr) {
+                        failure++;
+                        recipientDocs.push({
+                            tenantId: sc.tenantId,
+                            campaignId,
+                            wamid: `failed_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                            to,
+                            name: recipient.name || null,
+                            status: 'failed',
+                            failedAt: new Date().toISOString(),
+                            phaseNumber: null,
+                            retryHistory: []
+                        });
+                    }
+                }));
+
+                // Execute bulk database operations for maximum throughput
+                const dbPromises = [];
+                if (recipientDocs.length > 0) dbPromises.push(Recipient.insertMany(recipientDocs, { ordered: false }).catch(err => console.error('[ScheduledCampaign] Bulk Recipient insert error:', err.message)));
+                if (statusMappingOps.length > 0) dbPromises.push(StatusMapping.bulkWrite(statusMappingOps, { ordered: false }).catch(err => console.error('[ScheduledCampaign] Bulk StatusMapping write error:', err.message)));
+                if (conversationOps.length > 0) dbPromises.push(Conversation.bulkWrite(conversationOps, { ordered: false }).catch(err => console.error('[ScheduledCampaign] Bulk Conversation write error:', err.message)));
+                if (messageDocs.length > 0) dbPromises.push(Message.insertMany(messageDocs, { ordered: false }).catch(err => console.error('[ScheduledCampaign] Bulk Message insert error:', err.message)));
+                await Promise.all(dbPromises);
+
+                // Periodically update DB progress & timestamp so stalled recovery won't re-trigger and dashboard updates live
+                await ScheduledCampaign.updateOne(
+                    { _id: sc._id },
+                    { $set: { updatedAt: new Date(), successCount: success, failureCount: failure } }
+                );
+                await Campaign.updateOne(
+                    { id: campaignId },
+                    { $set: { successCount: success, failureCount: failure } }
+                );
+                await broadcastCampaigns(sc.tenantId);
+            }
+
+            // Update Campaign final counts
+            await Campaign.updateOne(
+                { id: campaignId },
+                { $set: { successCount: success, failureCount: failure } }
+            );
+
+            // ── Trigger retry system (mirrors normal campaign behaviour) ────────────
+            try {
+                const scheduledPhase = await retryScheduler.schedulePhase(
+                    campaignId,
+                    1,           // phase 1 = grace-period evaluation
+                    new Date()   // completion time = now
+                );
+                if (scheduledPhase) {
+                    console.log(JSON.stringify({
+                        service: 'ScheduledCampaign',
+                        event: 'retry_phase1_scheduled',
+                        campaignId,
+                        scheduledAt: scheduledPhase.scheduledAt.toISOString(),
+                        message: 'Phase 1 grace-period evaluation scheduled for retry system',
+                        timestamp: new Date().toISOString()
+                    }));
+                } else {
+                    console.log(JSON.stringify({
+                        service: 'ScheduledCampaign',
+                        event: 'retry_phase1_skipped',
+                        campaignId,
+                        message: 'No retry phases configured — skipping retry scheduling',
+                        timestamp: new Date().toISOString()
+                    }));
+                }
+            } catch (retryErr) {
+                console.error(JSON.stringify({
+                    service: 'ScheduledCampaign',
+                    event: 'retry_phase1_schedule_error',
+                    campaignId,
+                    error: retryErr.message,
+                    message: 'Failed to schedule retry phase 1 — campaign will not be retried',
+                    timestamp: new Date().toISOString()
+                }));
+            }
+
+            await broadcastCampaigns(sc.tenantId);
+            await ScheduledCampaign.updateOne({ _id: sc._id }, { $set: { status: 'completed', resultCampaignId: campaignId, successCount: success, failureCount: failure, updatedAt: new Date() } });
+            console.log(` Scheduled campaign ${sc._id} completed: ${success} sent, ${failure} failed`);
+        }
+    } catch (err) {
+        console.error(' Scheduled campaign runner error:', err.message);
+    }
+}
+setInterval(runScheduledCampaigns, 60 * 1000);
+
+
+// ── Lead Trigger CRUD Routes ──────────────────────────────────────────────────────
+
+// 9.1 — POST /api/leads/triggers — create trigger
+app.post('/api/leads/triggers', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const { source, formName, action, templateName, templateLanguage, mediaId, mediaType, variableMapping, chatbotId, isActive } = req.body;
+        if (!action) return res.status(400).json({ error: 'action is required' });
+        const trigger = await LeadTrigger.create({
+            tenantId,
+            source: source || 'any',
+            formName: formName || '',
+            action,
+            templateName: templateName || '',
+            templateLanguage: templateLanguage || 'en_US',
+            mediaId: mediaId || '',
+            mediaType: mediaType || '',
+            variableMapping: variableMapping || {},
+            chatbotId: chatbotId || '',
+            isActive: isActive !== undefined ? isActive : true,
+        });
+        res.status(201).json(trigger);
+    } catch (err) {
+        console.error('POST /api/leads/triggers error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 9.2 — GET /api/leads/triggers — list triggers for tenant
+// NOTE: Must be placed BEFORE /api/leads/:id
+app.get('/api/leads/triggers', authenticate, async (req, res) => {
+    try {
+        const triggers = await LeadTrigger.find({ tenantId: req.user.tenantId }).sort({ createdAt: -1 });
+        res.json(triggers);
+    } catch (err) {
+        console.error('GET /api/leads/triggers error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 9.3 — PUT /api/leads/triggers/:id — update trigger with ownership check
+app.put('/api/leads/triggers/:id', authenticate, async (req, res) => {
+    try {
+        const trigger = await LeadTrigger.findById(req.params.id);
+        if (!trigger) return res.status(404).json({ error: 'Not found' });
+        if (trigger.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+        const { source, formName, action, templateName, templateLanguage, mediaId, mediaType, variableMapping, chatbotId, isActive } = req.body;
+        if (source !== undefined) trigger.source = source;
+        if (formName !== undefined) trigger.formName = formName;
+        if (action !== undefined) trigger.action = action;
+        if (templateName !== undefined) trigger.templateName = templateName;
+        if (templateLanguage !== undefined) trigger.templateLanguage = templateLanguage;
+        if (mediaId !== undefined) trigger.mediaId = mediaId;
+        if (mediaType !== undefined) trigger.mediaType = mediaType;
+        if (variableMapping !== undefined) trigger.variableMapping = variableMapping;
+        if (chatbotId !== undefined) trigger.chatbotId = chatbotId;
+        if (isActive !== undefined) trigger.isActive = isActive;
+        await trigger.save();
+        res.json(trigger);
+    } catch (err) {
+        console.error('PUT /api/leads/triggers/:id error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 9.4 — DELETE /api/leads/triggers/:id — delete trigger with ownership check
+app.delete('/api/leads/triggers/:id', authenticate, async (req, res) => {
+    try {
+        const trigger = await LeadTrigger.findById(req.params.id);
+        if (!trigger) return res.status(404).json({ error: 'Not found' });
+        if (trigger.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+        await trigger.deleteOne();
+        res.json({ success: true });
+    } catch (err) {
+        console.error('DELETE /api/leads/triggers/:id error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ── Lead Management Routes ──────────────────────────────────────────────────────
+
+// 8.1 — GET /api/leads — full list with filters, tenant-scoped (no pagination)
+app.get('/api/leads', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const { source, status, startDate, endDate, search } = req.query;
+
+        const query = { tenantId };
+        if (source) query.source = source;
+        if (status) query.status = status;
+        if (startDate || endDate) {
+            query.createdAt = {};
+            if (startDate) query.createdAt.$gte = new Date(startDate);
+            if (endDate) query.createdAt.$lte = new Date(endDate);
+        }
+        if (search) {
+            query.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { mobileNumber: { $regex: search, $options: 'i' } },
+            ];
+        }
+
+        const leads = await Lead.find(query).sort({ createdAt: -1 }).lean();
+
+        res.json({ leads, total: leads.length });
+    } catch (err) {
+        console.error('GET /api/leads error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 8.2 — GET /api/leads/analytics — aggregate counts by source, status, and daily buckets
+// NOTE: Must be placed BEFORE /api/leads/:id to avoid Express matching 'analytics' as :id
+app.get('/api/leads/analytics', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const days = parseInt(req.query.days) || 30;
+        const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+        const [bySource, byStatus, byDay] = await Promise.all([
+            Lead.aggregate([
+                { $match: { tenantId, createdAt: { $gte: since } } },
+                { $group: { _id: '$source', count: { $sum: 1 } } },
+            ]),
+            Lead.aggregate([
+                { $match: { tenantId, createdAt: { $gte: since } } },
+                { $group: { _id: '$status', count: { $sum: 1 } } },
+            ]),
+            Lead.aggregate([
+                { $match: { tenantId, createdAt: { $gte: since } } },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+                        shopify: { $sum: { $cond: [{ $eq: ['$source', 'shopify'] }, 1, 0] } },
+                        wordpress: { $sum: { $cond: [{ $eq: ['$source', 'wordpress'] }, 1, 0] } },
+                        total: { $sum: 1 },
+                    },
+                },
+                { $sort: { _id: 1 } },
+            ]),
+        ]);
+
+        res.json({ bySource, byStatus, byDay });
+    } catch (err) {
+        console.error('GET /api/leads/analytics error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 8.3 — GET /api/leads/:id — single lead with tenant ownership check
+app.get('/api/leads/:id', authenticate, async (req, res) => {
+    try {
+        const lead = await Lead.findById(req.params.id).lean();
+        if (!lead) return res.status(404).json({ error: 'Not found' });
+        if (lead.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Not found' });
+        res.json(lead);
+    } catch (err) {
+        console.error('GET /api/leads/:id error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 8.4 — PATCH /api/leads/:id/status — update status with enum validation and tenant ownership check
+const VALID_LEAD_STATUSES = ['new', 'contacted', 'converted', 'failed'];
+
+app.patch('/api/leads/:id/status', authenticate, async (req, res) => {
+    try {
+        const { status } = req.body;
+        if (!VALID_LEAD_STATUSES.includes(status)) {
+            return res.status(400).json({ error: 'Invalid status value' });
+        }
+        const lead = await Lead.findById(req.params.id);
+        if (!lead) return res.status(404).json({ error: 'Not found' });
+        if (lead.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Not found' });
+        lead.status = status;
+        await lead.save();
+        res.json(lead);
+    } catch (err) {
+        console.error('PATCH /api/leads/:id/status error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 8.4b — DELETE /api/leads/:id — delete a lead (tenant-scoped)
+app.delete('/api/leads/:id', authenticate, async (req, res) => {
+    try {
+        const lead = await Lead.findById(req.params.id);
+        if (!lead) return res.status(404).json({ error: 'Not found' });
+        if (lead.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+        await Lead.findByIdAndDelete(req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('DELETE /api/leads/:id error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// 8.5 — POST /api/leads/:id/merge — merge duplicate lead into linked Client
+app.post('/api/leads/:id/merge', authenticate, async (req, res) => {
+    try {
+        const lead = await Lead.findById(req.params.id);
+        if (!lead) return res.status(404).json({ error: 'Not found' });
+        if (lead.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Not found' });
+        if (!lead.isDuplicate) return res.status(400).json({ error: 'Lead is not a duplicate' });
+
+        const updateFields = {};
+        if (lead.name) updateFields.name = lead.name;
+        if (lead.email) updateFields.emailId = lead.email;
+        if (lead.companyName) updateFields.companyName = lead.companyName;
+
+        await Client.findByIdAndUpdate(lead.clientId, { $set: updateFields });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('POST /api/leads/:id/merge error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ── Auto-Trigger Service ──────────────────────────────────────────────────────
+
+/**
+ * Evaluates active LeadTriggers for a tenant and dispatches actions.
+ * Called asynchronously after lead ingestion.
+ * Requirements: 7.1-7.8
+ */
+async function evaluateTriggers(tenantId, lead) {
+    // 7.5 — Skip for duplicate leads
+    if (lead.isDuplicate) return;
+
+    // 7.1 — Query matching active triggers
+    const triggers = await LeadTrigger.find({
+        tenantId,
+        isActive: true,
+        $or: [
+            { source: 'any' },
+            { source: lead.source },
+        ],
+    });
+
+    const matchingTriggers = triggers.filter(trigger => {
+        // formName filter: if trigger has formName set, it must match lead's formName
+        if (trigger.formName && trigger.formName !== lead.formName) return false;
+        return true;
+    });
+
+    for (const trigger of matchingTriggers) {
+        try {
+            if (trigger.action === 'send_template') {
+                await dispatchTemplate(tenantId, lead, trigger);
+            } else if (trigger.action === 'start_chatbot') {
+                await dispatchChatbot(tenantId, lead, trigger);
+            }
+        } catch (err) {
+            console.error(`[AutoTrigger] Error executing trigger ${trigger._id}:`, err.message);
+        }
+    }
+}
+
+/**
+ * Extracts {{N}} variable count from a template's BODY component text.
+ */
+function extractVariableCount(components) {
+    const body = (components || []).find(c => c.type === 'BODY');
+    if (!body || !body.text) return 0;
+    const matches = body.text.match(/\{\{\d+\}\}/g) || [];
+    // unique indices
+    const indices = new Set(matches.map(m => parseInt(m.replace(/\D/g, ''))));
+    return indices.size;
+}
+
+/**
+ * Resolves variable values from a data object using a variableMapping.
+ * variableMapping: {"1": "name", "2": "mobileNumber", "3": "companyName"}
+ * Returns array of {type:'text', text:'value'} sorted by key index.
+ */
+function resolveVariables(variableMapping, dataObj) {
+    if (!variableMapping || !Object.keys(variableMapping).length) return [];
+    return Object.keys(variableMapping)
+        .sort((a, b) => parseInt(a) - parseInt(b))
+        .map(k => {
+            const field = variableMapping[k];
+            const value = dataObj[field] ?? '';
+            return { type: 'text', text: String(value) };
+        });
+}
+
+/**
+ * Fetches template components from Meta for a given tenant + template name.
+ * Returns the components array or [] on failure.
+ */
+async function fetchTemplateComponents(tenant, templateName) {
+    try {
+        const { accessToken, businessAccountId } = tenant.whatsappConfig;
+        const resp = await axios.get(
+            `${WHATSAPP_API_URL}/${businessAccountId}/message_templates`,
+            { headers: { Authorization: `Bearer ${accessToken}` }, params: { name: templateName } }
+        );
+        const tpl = (resp.data?.data || []).find(t => t.name === templateName);
+        return tpl?.components || [];
+    } catch (_) {
+        return [];
+    }
+}
+
+/**
+ * 7.2 — Send WhatsApp template via Meta Cloud API v25.0
+ */
+async function dispatchTemplate(tenantId, lead, trigger) {
+    // 7.6 — Skip if whatsappConfig is incomplete
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant || !tenant.whatsappConfig || !tenant.whatsappConfig.phoneNumberId || !tenant.whatsappConfig.accessToken) {
+        console.warn(`[AutoTrigger] Tenant ${tenantId} has incomplete whatsappConfig — skipping dispatch`);
+        return;
+    }
+
+    const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+    const url = `${WHATSAPP_API_URL}/${phoneNumberId}/messages`;
+
+    // Resolve body variables
+    const components = await fetchTemplateComponents(tenant, trigger.templateName);
+    const varCount = extractVariableCount(components);
+    const mapping = trigger.variableMapping || {};
+
+    // Auto-fill any unmapped positions with lead fields in order
+    const autoFields = ['name', 'mobileNumber', 'email', 'companyName', 'formName'];
+    const resolvedMapping = { ...mapping };
+    if (varCount > 0) {
+        let autoIdx = 0;
+        for (let i = 1; i <= varCount; i++) {
+            if (!resolvedMapping[String(i)]) {
+                resolvedMapping[String(i)] = autoFields[autoIdx] || 'name';
+                autoIdx++;
+            }
+        }
+    }
+
+    const bodyParams = resolveVariables(resolvedMapping, {
+        name: lead.name || '',
+        mobileNumber: lead.mobileNumber || '',
+        email: lead.email || '',
+        companyName: lead.companyName || '',
+        formName: lead.formName || '',
+        source: lead.source || '',
+        ...Object.fromEntries(
+            Object.entries(lead.metadata || {}).map(([k, v]) => [`metadata.${k}`, v])
+        ),
+    });
+
+    const body = {
+        messaging_product: 'whatsapp',
+        to: lead.mobileNumber,
+        type: 'template',
+        template: {
+            name: trigger.templateName,
+            language: { code: trigger.templateLanguage || 'en_US' },
+        },
+    };
+
+    const templateComponents = [];
+    if (trigger.mediaId) {
+        const mediaType = (trigger.mediaType || 'image').toLowerCase();
+        templateComponents.push({
+            type: 'header',
+            parameters: [{ type: mediaType, [mediaType]: { id: trigger.mediaId } }],
+        });
+    }
+    if (bodyParams.length) {
+        templateComponents.push({ type: 'body', parameters: bodyParams });
+    }
+    if (templateComponents.length) {
+        body.template.components = templateComponents;
+    }
+
+    try {
+        const response = await axios.post(url, body, {
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        });
+        const wamid = response.data.messages?.[0]?.id || null;
+
+        if (wamid) {
+            try {
+                await StatusMapping.findOneAndUpdate(
+                    { wamid },
+                    { wamid, tenantId, to: lead.mobileNumber },
+                    { upsert: true }
+                );
+            } catch (err) {
+                console.error('AutoTrigger StatusMapping creation failed:', err.message);
+            }
+        }
+
+        // 7.4 — Update status to contacted on success
+        await Lead.findByIdAndUpdate(lead._id, { status: 'contacted' });
+
+        // Store outbound template message so it appears in the conversation/chat screen
+        // Extract template body text from the already-fetched components
+        const bodyComponent = (components || []).find(c => c.type === 'BODY');
+        let templateBodyText = bodyComponent?.text || null;
+        if (templateBodyText && bodyParams && bodyParams.length) {
+            bodyParams.forEach((param, idx) => {
+                templateBodyText = templateBodyText.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'), param.text || '');
+            });
+        }
+        const contactName = lead.name || lead.mobileNumber;
+        const previewText = buildPreview('template', { templateName: trigger.templateName, templateBody: templateBodyText });
+
+        await Conversation.findOneAndUpdate(
+            { tenantId, contactId: lead.mobileNumber },
+            { name: contactName, lastMessage: previewText, lastActive: new Date() },
+            { upsert: true }
+        );
+        await Message.create({
+            tenantId,
+            contactId: lead.mobileNumber,
+            text: templateBodyText || `📋 Template: ${trigger.templateName}`,
+            isMe: true,
+            time: new Date().toISOString(),
+            messageType: 'template',
+            templateName: trigger.templateName,
+            templateBody: templateBodyText,
+            wamid: wamid,
+            status: 'sent',
+        });
+        await broadcastConversations(tenantId);
+        await broadcastMessages(tenantId, lead.mobileNumber);
+    } catch (err) {
+        const metaCode = err.response?.data?.error?.code || 'unknown';
+        console.error(`[AutoTrigger] Meta API error for lead ${lead._id}: code=${metaCode}`, err.response?.data);
+        // 7.4 — Update status to failed on Meta API error
+        await Lead.findByIdAndUpdate(lead._id, { status: 'failed' });
+    }
+}
+
+/**
+ * 7.3 — Start chatbot session via existing ChatbotSession model
+ */
+async function dispatchChatbot(tenantId, lead, trigger) {
+    if (!trigger.chatbotId) {
+        console.warn(`[AutoTrigger] Trigger ${trigger._id} has no chatbotId — skipping`);
+        return;
+    }
+
+    try {
+        // Create or reuse ChatbotSession (unique index on tenantId+contactId)
+        await ChatbotSession.findOneAndUpdate(
+            { tenantId, contactId: lead.mobileNumber },
+            {
+                tenantId,
+                contactId: lead.mobileNumber,
+                chatbotId: trigger.chatbotId,
+                currentNodeId: 'start',
+            },
+            { upsert: true, new: true }
+        );
+        // 7.4 — Update status to contacted
+        await Lead.findByIdAndUpdate(lead._id, { status: 'contacted' });
+
+        // Store chatbot session start so it appears in the conversation/chat screen
+        const chatbotLabel = '🤖 Chatbot session started';
+        const contactName = lead.name || lead.mobileNumber;
+        await Conversation.findOneAndUpdate(
+            { tenantId, contactId: lead.mobileNumber },
+            { name: contactName, lastMessage: chatbotLabel, lastActive: new Date() },
+            { upsert: true }
+        );
+        await Message.create({
+            tenantId,
+            contactId: lead.mobileNumber,
+            text: chatbotLabel,
+            isMe: true,
+            time: new Date().toISOString(),
+        });
+        await broadcastConversations(tenantId);
+        await broadcastMessages(tenantId, lead.mobileNumber);
+    } catch (err) {
+        console.error(`[AutoTrigger] Chatbot dispatch error for lead ${lead._id}:`, err.message);
+        await Lead.findByIdAndUpdate(lead._id, { status: 'failed' });
+    }
+}
+
+// ── Client Auto-Trigger Service ──────────────────────────────────────────────
+
+/**
+ * Evaluates the active ClientTrigger for a tenant and dispatches a WhatsApp
+ * template message to the newly created client.
+ * Called asynchronously (via setImmediate) after client creation.
+ * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.1, 6.2
+ */
+async function evaluateClientTrigger(tenantId, client) {
+    try {
+        // Step 1: Query active ClientTrigger for tenant; return early if none found
+        const trigger = await ClientTrigger.findOne({ tenantId, isActive: true });
+        if (!trigger) return;
+
+        // Step 2: Load tenant; return early if whatsappConfig is incomplete
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant || !tenant.whatsappConfig || !tenant.whatsappConfig.phoneNumberId || !tenant.whatsappConfig.accessToken) {
+            console.warn(`[ClientAutoTrigger] Tenant ${tenantId} has incomplete whatsappConfig — skipping dispatch`);
+            return;
+        }
+
+        const { phoneNumberId, accessToken } = tenant.whatsappConfig;
+        const url = `${WHATSAPP_API_URL}/${phoneNumberId}/messages`;
+
+        // Step 3: POST to Meta Cloud API v25.0
+        const tplComponents = await fetchTemplateComponents(tenant, trigger.templateName);
+        const varCount = extractVariableCount(tplComponents);
+        const mapping = trigger.variableMapping || {};
+
+        // Auto-fill unmapped positions with client fields in order
+        const autoFields = ['name', 'mobileNumber', 'companyName', 'emailId', 'venue', 'remark'];
+        const resolvedMapping = { ...mapping };
+        if (varCount > 0) {
+            let autoIdx = 0;
+            for (let i = 1; i <= varCount; i++) {
+                if (!resolvedMapping[String(i)]) {
+                    resolvedMapping[String(i)] = autoFields[autoIdx] || 'name';
+                    autoIdx++;
+                }
+            }
+        }
+
+        const bodyParams = resolveVariables(resolvedMapping, {
+            name: client.name || '',
+            mobileNumber: client.mobileNumber || '',
+            companyName: client.companyName || '',
+            emailId: client.emailId || '',
+            venue: client.venue || '',
+            remark: client.remark || '',
+        });
+
+        const templatePayload = {
+            name: trigger.templateName,
+            language: { code: trigger.templateLanguage || 'en_US' },
+        };
+
+        const tplComponentsOut = [];
+        if (trigger.mediaId) {
+            const mediaType = (trigger.mediaType || 'image').toLowerCase();
+            tplComponentsOut.push({
+                type: 'header',
+                parameters: [{ type: mediaType, [mediaType]: { id: trigger.mediaId } }],
+            });
+        }
+        if (bodyParams.length) {
+            tplComponentsOut.push({ type: 'body', parameters: bodyParams });
+        }
+        if (tplComponentsOut.length) {
+            templatePayload.components = tplComponentsOut;
+        }
+
+        const response = await axios.post(
+            url,
+            {
+                messaging_product: 'whatsapp',
+                to: client.mobileNumber,
+                type: 'template',
+                template: templatePayload,
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        const wamid = response.data.messages[0].id;
+
+        // Step 5: Create StatusMapping record for tracking message delivery status
+        try {
+            await StatusMapping.findOneAndUpdate(
+                { wamid },
+                { wamid, tenantId, campaignId: null, to: client.mobileNumber },
+                { upsert: true }
+            );
+        } catch (err) {
+            console.error(`[ClientAutoTrigger] StatusMapping creation failed:`, err.message);
+        }
+
+        // Step 6: Upsert Conversation and create Message document
+        const bodyComponent = (tplComponents || []).find(c => c.type === 'BODY');
+        let templateBodyText = bodyComponent?.text || null;
+        if (templateBodyText && bodyParams && bodyParams.length) {
+            bodyParams.forEach((param, idx) => {
+                templateBodyText = templateBodyText.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'), param.text || '');
+            });
+        }
+        const templateLabel = templateBodyText || `📋 Template: ${trigger.templateName}`;
+        const contactName = client.name || client.mobileNumber;
+        await Conversation.findOneAndUpdate(
+            { tenantId, contactId: client.mobileNumber },
+            { name: contactName, lastMessage: templateLabel, lastActive: new Date() },
+            { upsert: true }
+        );
+        await Message.create({
+            tenantId,
+            contactId: client.mobileNumber,
+            text: templateLabel,
+            isMe: true,
+            messageType: 'template',
+            templateName: trigger.templateName,
+            templateBody: templateBodyText,
+            time: new Date().toISOString(),
+            wamid: wamid || null,
+            status: 'sent',
+        });
+        await broadcastConversations(tenantId);
+        await broadcastMessages(tenantId, client.mobileNumber);
+
+    } catch (err) {
+        // Step 7: Catch all errors, log them, never rethrow
+        const metaCode = err.response?.data?.error?.code || 'unknown';
+        console.error(`[ClientAutoTrigger] Error for tenant ${tenantId}, client ${client.mobileNumber}: code=${metaCode}`, err.response?.data || err.message);
+    }
+}
+
+// ── Lead Webhook Route ────────────────────────────────────────────────────────
+const rateLimit = require('express-rate-limit');
+const { encryptSecret, decryptSecret, maskSecret } = require('./cryptoUtils');
+const { parseLeadPayload } = require('./leadPayloadParser');
+const { normaliseMobileNumber, validateMobileNumber } = require('./mobileUtils');
+const { sanitiseLeadFields } = require('./fieldSanitiser');
+
+// 6.1 — Per-tenant rate limiter: 100 req/min keyed on :tenantId
+const webhookRateLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    keyGenerator: (req) => req.params.tenantId || req.ip,
+    handler: (req, res) => {
+        res.status(429).set('Retry-After', '60').json({ error: 'Too many requests' });
+    },
+    standardHeaders: false,
+    legacyHeaders: false,
+});
+
+// POST /api/leads/webhook/:tenantId (public — no JWT auth)
+// 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8
+app.post('/api/leads/webhook/:tenantId', webhookRateLimiter, async (req, res) => {
+    const { tenantId } = req.params;
+    const sourceIp = req.ip || req.connection.remoteAddress;
+    let httpStatus = 200;
+
+    try {
+        // 6.2 — Tenant lookup
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) {
+            httpStatus = 404;
+            await WebhookLog.create({ tenantId, sourceIp, httpStatus });
+            return res.status(404).json({ error: 'Tenant not found' });
+        }
+
+        // 6.2 — Decrypt secret and constant-time HMAC comparison
+        if (!tenant.webhookSecret) {
+            httpStatus = 401;
+            await WebhookLog.create({ tenantId, sourceIp, httpStatus });
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        const plainSecret = decryptSecret(tenant.webhookSecret);
+        const providedSecret = req.headers['x-webhook-secret'] || '';
+        const secretBuf = Buffer.from(plainSecret);
+        const providedBuf = Buffer.from(providedSecret);
+        let secretValid = false;
+        if (secretBuf.length === providedBuf.length) {
+            try { secretValid = crypto.timingSafeEqual(secretBuf, providedBuf); } catch (e) { secretValid = false; }
+        }
+
+        // 6.3 — Shopify HMAC verification (Shopify cannot send custom headers)
+        const shopifyHmac = req.headers['x-shopify-hmac-sha256'];
+        if (shopifyHmac) {
+            const rawBody = JSON.stringify(req.body);
+            const expectedHmac = crypto.createHmac('sha256', plainSecret).update(rawBody).digest('base64');
+            if (shopifyHmac === expectedHmac) secretValid = true;
+        }
+
+        if (!secretValid) {
+            httpStatus = 401;
+            await WebhookLog.create({ tenantId, sourceIp, httpStatus });
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // 6.4 — Parse, normalise, validate, sanitise
+        const rawPayload = req.body;
+        const shopifyTopic = req.headers['x-shopify-topic'];
+        const source = rawPayload.source
+            || (shopifyTopic ? 'shopify' : null)
+            || (rawPayload.billing_address || rawPayload.default_address ? 'shopify' : 'wordpress');
+        const parsed = parseLeadPayload(rawPayload, source);
+        const normalisedMobile = normaliseMobileNumber(parsed.mobileNumber);
+
+        if (!normalisedMobile) {
+            httpStatus = 400;
+            await WebhookLog.create({ tenantId, sourceIp, httpStatus });
+            return res.status(400).json({ error: 'mobileNumber is required' });
+        }
+        if (!validateMobileNumber(normalisedMobile)) {
+            httpStatus = 422;
+            await WebhookLog.create({ tenantId, sourceIp, httpStatus });
+            return res.status(422).json({ error: 'Invalid mobile number format' });
+        }
+
+        const sanitised = sanitiseLeadFields({
+            name: parsed.name,
+            email: parsed.email,
+            companyName: parsed.companyName,
+            formName: parsed.formName,
+        });
+
+        // 6.5 — Deduplication check against Clients collection
+        const existingClient = await Client.findOne({ tenantId, mobileNumber: normalisedMobile });
+        const isDuplicate = !!existingClient;
+
+        // 6.6 — Persist Lead_Record and upsert/create Client document
+        let clientId;
+        if (isDuplicate) {
+            clientId = existingClient._id;
+        } else {
+            const newClient = await Client.create({
+                tenantId,
+                name: sanitised.name || '',
+                mobileNumber: normalisedMobile,
+                emailId: sanitised.email || '',
+                companyName: sanitised.companyName || '',
+                venue: rawPayload.venue || '-',
+            });
+            clientId = newClient._id;
+        }
+
+        const lead = await Lead.create({
+            tenantId,
+            name: sanitised.name || '',
+            mobileNumber: normalisedMobile,
+            email: sanitised.email || '',
+            companyName: sanitised.companyName || '',
+            source: parsed.source,
+            formName: sanitised.formName || '',
+            metadata: rawPayload,
+            isDuplicate,
+            clientId,
+        });
+
+        // 6.7 — Return HTTP 200 immediately before async processing
+        res.status(200).json({ status: 'received', leadId: lead._id.toString() });
+
+        // 6.8 — Log webhook request to WebhookLogs (async, after response)
+        WebhookLog.create({ tenantId, sourceIp, httpStatus: 200 }).catch(console.error);
+
+        // 7.7 — Evaluate triggers asynchronously after returning HTTP 200
+        evaluateTriggers(tenantId, lead).catch(console.error);
+
+    } catch (err) {
+        console.error('Webhook error:', err);
+        if (!res.headersSent) {
+            httpStatus = 500;
+            WebhookLog.create({ tenantId, sourceIp, httpStatus }).catch(console.error);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    }
+});
+
+// ── Webhook Secret Routes ─────────────────────────────────────────────────────
+
+// POST /api/leads/webhook-secret/generate (authenticated)
+app.post('/api/leads/webhook-secret/generate', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const plainSecret = require('crypto').randomBytes(32).toString('hex');
+        const encrypted = encryptSecret(plainSecret);
+        await Tenant.findByIdAndUpdate(tenantId, { webhookSecret: encrypted });
+        res.json({ secret: plainSecret });
+    } catch (err) {
+        console.error('Error generating webhook secret:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/leads/webhook-secret/reveal (authenticated) — returns plain secret for copying
+app.get('/api/leads/webhook-secret/reveal', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant || !tenant.webhookSecret) {
+            return res.status(404).json({ error: 'No secret configured' });
+        }
+        const plainSecret = decryptSecret(tenant.webhookSecret);
+        res.json({ secret: plainSecret });
+    } catch (err) {
+        console.error('Error revealing webhook secret:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/leads/webhook-secret (authenticated)
+app.get('/api/leads/webhook-secret', authenticate, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant || !tenant.webhookSecret) {
+            return res.json({ maskedSecret: null });
+        }
+        const plainSecret = decryptSecret(tenant.webhookSecret);
+        res.json({ maskedSecret: maskSecret(plainSecret) });
+    } catch (err) {
+        console.error('Error fetching webhook secret:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Helper function to pull and persist IndiaMART leads
+async function syncIndiaMartLeads(tenantId, config, startDate = null, endDate = null) {
+    const { glusrCrmKey } = config;
+    let url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?glusr_crm_key=${glusrCrmKey}`;
+    
+    if (startDate && endDate) {
+        // Format ISO dates (e.g. YYYY-MM-DD) to DD-MON-YYYY
+        const formatIndiaMartDate = (dateStr) => {
+            const d = new Date(dateStr);
+            if (isNaN(d.getTime())) return null;
+            const day = String(d.getDate()).padStart(2, '0');
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const month = months[d.getMonth()];
+            const year = d.getFullYear();
+            return `${day}-${month}-${year}`;
+        };
+        const startFormatted = formatIndiaMartDate(startDate);
+        const endFormatted = formatIndiaMartDate(endDate);
+        if (startFormatted && endFormatted) {
+            url += `&start_time=${startFormatted}&end_time=${endFormatted}`;
+        }
+    }
+
+    const response = await axios.get(url, { timeout: 15000 });
+    const data = response.data;
+
+    // Check IndiaMART API status
+    if (data.CODE !== 200 || data.STATUS !== 'SUCCESS') {
+        const errMsg = data.MESSAGE || 'IndiaMART API returned failure status';
+        const error = new Error(errMsg);
+        error.code = data.CODE;
+        error.status = data.STATUS;
+        throw error;
+    }
+
+    const records = data.RESPONSE || [];
+    let newLeadsCount = 0;
+
+    for (const rec of records) {
+        // Parse and validate sender mobile
+        const normalisedMobile = normaliseMobileNumber(rec.SENDER_MOBILE);
+        if (!normalisedMobile || !validateMobileNumber(normalisedMobile)) {
+            continue;
+        }
+
+        // Deduplication using UNIQUE_QUERY_ID
+        const queryId = rec.UNIQUE_QUERY_ID;
+        if (!queryId) continue;
+
+        const queryExists = await Lead.findOne({
+            tenantId,
+            'metadata.UNIQUE_QUERY_ID': queryId
+        });
+        if (queryExists) {
+            continue;
+        }
+
+        // Check deduplication against Clients collection
+        const existingClient = await Client.findOne({ tenantId, mobileNumber: normalisedMobile });
+        const isDuplicate = !!existingClient;
+
+        let clientId;
+        if (isDuplicate) {
+            clientId = existingClient._id;
+        } else {
+            const newClient = await Client.create({
+                tenantId,
+                name: rec.SENDER_NAME || '',
+                mobileNumber: normalisedMobile,
+                emailId: rec.SENDER_EMAIL || '',
+                companyName: rec.SENDER_COMPANY || '',
+                venue: rec.SENDER_ADDRESS || '-',
+            });
+            clientId = newClient._id;
+        }
+
+        // Parse QUERY_TIME: "2021-12-08 12:47:25"
+        let parsedCreatedAt = new Date();
+        if (rec.QUERY_TIME) {
+            const t = new Date(rec.QUERY_TIME.replace(' ', 'T'));
+            if (!isNaN(t.getTime())) {
+                parsedCreatedAt = t;
+            }
+        }
+
+        const lead = await Lead.create({
+            tenantId,
+            name: rec.SENDER_NAME || '',
+            mobileNumber: normalisedMobile,
+            email: rec.SENDER_EMAIL || '',
+            companyName: rec.SENDER_COMPANY || '',
+            source: 'indiamart',
+            metadata: rec,
+            isDuplicate,
+            clientId,
+            createdAt: parsedCreatedAt,
+        });
+
+        newLeadsCount++;
+
+        // Trigger welcome messages or chatbot flows
+        evaluateTriggers(tenantId, lead).catch(err => {
+            console.error(`[IndiaMartSync] evaluateTriggers error for lead ${lead._id}:`, err.message);
+        });
+    }
+
+    // Update lastSyncedAt only if it was a recent pull (not a custom historical pull)
+    if (!startDate && !endDate) {
+        config.lastSyncedAt = new Date();
+        await config.save();
+    }
+
+    return { totalRecords: records.length, newLeadsCount };
+}
+
+// ── IndiaMART Integration Routes ──────────────────────────────────────────────────
+
+// GET /api/integrations/indiamart
+app.get('/api/integrations/indiamart', authenticate, async (req, res) => {
+    const tenantId = req.user.tenantId;
+    try {
+        const config = await IndiaMartConfig.findOne({ tenantId });
+        if (!config) {
+            return res.json({ connected: false });
+        }
+        res.json({
+            connected: true,
+            glusrMobile: config.glusrMobile,
+            lastSyncedAt: config.lastSyncedAt
+        });
+    } catch (err) {
+        console.error('Error fetching IndiaMART config:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /api/integrations/indiamart
+app.post('/api/integrations/indiamart', authenticate, async (req, res) => {
+    const tenantId = req.user.tenantId;
+    const { glusrMobile, glusrCrmKey } = req.body;
+
+    if (!glusrMobile || !glusrCrmKey) {
+        return res.status(400).json({ error: 'glusrMobile and glusrCrmKey are required' });
+    }
+
+    try {
+        // Create a temporary configuration to dry-run/validate the credentials
+        const tempConfig = new IndiaMartConfig({
+            tenantId,
+            glusrMobile,
+            glusrCrmKey
+        });
+
+        // Try syncing leads to validate credentials
+        const syncResult = await syncIndiaMartLeads(tenantId, tempConfig);
+
+        // If sync succeeds, save/upsert configuration to database
+        const config = await IndiaMartConfig.findOneAndUpdate(
+            { tenantId },
+            { glusrMobile, glusrCrmKey, lastSyncedAt: tempConfig.lastSyncedAt },
+            { new: true, upsert: true }
+        );
+
+        res.json({
+            message: 'IndiaMART integration connected successfully',
+            config: {
+                glusrMobile: config.glusrMobile,
+                lastSyncedAt: config.lastSyncedAt
+            },
+            syncResult
+        });
+    } catch (err) {
+        console.error('Error connecting IndiaMART:', err);
+        
+        // Check if error is an authentication/invalid key error from IndiaMART API
+        const isAuthError = err.code === 400 || (err.status && err.status.toUpperCase() === 'FAILURE') || err.message.includes('Key');
+        if (isAuthError) {
+            return res.status(401).json({
+                error: err.message || 'Invalid IndiaMART CRM API Key',
+                code: 'KEY_EXPIRED'
+            });
+        }
+        res.status(500).json({ error: 'Failed to connect IndiaMART: ' + err.message });
+    }
+});
+
+// POST /api/integrations/indiamart/sync
+app.post('/api/integrations/indiamart/sync', authenticate, async (req, res) => {
+    const tenantId = req.user.tenantId;
+    const { startDate, endDate } = req.body;
+
+    try {
+        const config = await IndiaMartConfig.findOne({ tenantId });
+        if (!config) {
+            return res.status(400).json({ error: 'IndiaMART integration not connected' });
+        }
+
+        const syncResult = await syncIndiaMartLeads(tenantId, config, startDate, endDate);
+        res.json({
+            message: 'Sync completed successfully',
+            lastSyncedAt: config.lastSyncedAt,
+            syncResult
+        });
+    } catch (err) {
+        console.error('Error syncing IndiaMART leads:', err);
+        const isAuthError = err.code === 400 || (err.status && err.status.toUpperCase() === 'FAILURE') || err.message.includes('Key');
+        if (isAuthError) {
+            return res.status(401).json({
+                error: 'IndiaMART CRM key has expired or is invalid. Please update the key.',
+                code: 'KEY_EXPIRED'
+            });
+        }
+        res.status(500).json({ error: 'Sync failed: ' + err.message });
+    }
+});
+
+// DELETE /api/integrations/indiamart
+app.delete('/api/integrations/indiamart', authenticate, async (req, res) => {
+    const tenantId = req.user.tenantId;
+    try {
+        await IndiaMartConfig.deleteOne({ tenantId });
+        res.json({ success: true, message: 'IndiaMART integration disconnected' });
+    } catch (err) {
+        console.error('Error disconnecting IndiaMART:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ── OpenAI Key Routes ─────────────────────────────────────────────────────────
+
+// GET /api/tenant/openai-key-status (authenticated)
+app.get('/api/tenant/openai-key-status', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        const key = tenant.openaiApiKey;
+        if (!key || key.trim() === '') {
+            return res.json({ configured: false, maskedKey: null });
+        }
+        const maskedKey = '*'.repeat(Math.max(0, key.length - 4)) + key.slice(-4);
+        res.json({ configured: true, maskedKey });
+    } catch (err) {
+        console.error('Error fetching OpenAI key status:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/tenant/openai-key/reveal (authenticated)
+app.get('/api/tenant/openai-key/reveal', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        res.json({ key: tenant.openaiApiKey || '' });
+    } catch (err) {
+        console.error('Error revealing OpenAI key:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// PUT /api/tenant/openai-key (authenticated)
+app.put('/api/tenant/openai-key', authenticate, async (req, res) => {
+    const { apiKey } = req.body;
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
+        return res.status(400).json({ error: 'apiKey must be a non-empty string' });
+    }
+    try {
+        await Tenant.findByIdAndUpdate(req.user.tenantId, { openaiApiKey: apiKey });
+        res.json({ message: 'Saved' });
+    } catch (err) {
+        console.error('Error saving OpenAI key:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ── AI Template Generation ────────────────────────────────────────────────────
+
+// POST /api/ai/generate-template (authenticated)
+app.post('/api/ai/generate-template', authenticate, async (req, res) => {
+    const { prompt, category } = req.body;
+
+    // Validate prompt
+    if (!prompt || typeof prompt !== 'string' || prompt.trim() === '') {
+        return res.status(400).json({ error: 'prompt must be a non-empty string' });
+    }
+    if (prompt.length > 500) {
+        return res.status(400).json({ error: 'prompt must not exceed 500 characters' });
+    }
+
+    // Look up tenant and check OpenAI key
+    let tenant;
+    try {
+        tenant = await Tenant.findById(req.user.tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        if (!tenant.openaiApiKey || tenant.openaiApiKey.trim() === '') {
+            return res.status(422).json({ error: 'OpenAI API key is not configured. Please add your key in Integration Settings.' });
+        }
+    } catch (err) {
+        console.error('Error looking up tenant for generate-template:', err);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+
+    // Build category-specific rule
+    let categoryRule = '';
+    if (category === 'UTILITY') {
+        categoryRule = `4. Category Rule (UTILITY):
+   - The message MUST be strictly transactional, informational, and direct (e.g., appointment updates, order tracking, receipts, alerts).
+   - Meta policy strictly FORBIDS promotional/sales language, discount offers, or upselling in Utility templates.`;
+    } else if (category === 'MARKETING') {
+        categoryRule = `4. Category Rule (MARKETING):
+   - The message should be engaging, promotional, and persuasive (e.g., announcements, sales, offers, product launches).
+   - Feel free to include special offers, clear calls to action, brand enthusiasm, and relevant emojis while remaining professional.`;
+    }
+
+    // Call OpenAI Chat Completions API
+    const systemPrompt = `You are an expert WhatsApp Business Meta API template content generator.
+Your task is to produce compliant WhatsApp template content based on the user's description.
+
+STRICT META COMPLIANCE RULES:
+1. Variable Rules:
+   - Preserve all variables like {{1}}, {{2}}, {{3}} exactly as given in the input. Do not remove, rename, renumber, or alter variables.
+   - All variables MUST use sequential numeric format like {{1}}, {{2}}, {{3}} (never use named variables like {{name}} or non-sequential numbers).
+   - Do NOT place variables in the Header or Footer text. Variables belong ONLY in the Body.
+   - Do NOT start or end the body text directly with a variable. Ensure natural text surrounds variables.
+2. Character Limits:
+   - Body: maximum 1024 characters.
+   - Header (optional): plain text only, maximum 60 characters.
+   - Footer (optional): plain text only, maximum 60 characters.
+3. Content & Formatting:
+   - Use WhatsApp formatting where appropriate (*bold*, _italics_).
+   - Avoid ALL CAPS spammy words or excessive punctuation (e.g. "BUY NOW!!!").
+   - No hardcoded URLs, phone numbers, or email addresses in plain text.
+${categoryRule ? `${categoryRule}\n` : ''}
+Respond with ONLY a valid JSON object in this exact format (no markdown, no extra text):
+{
+  "body": "<required: the main message body>",
+  "header": "<optional: short plain-text header, max 60 chars — omit key if not needed>",
+  "footer": "<optional: short footer text, max 60 chars — omit key if not needed>"
+}`;
+
+    try {
+        const openaiResponse = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                model: 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: prompt },
+                ],
+                temperature: 0.7,
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${tenant.openaiApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        const rawContent = openaiResponse.data.choices[0].message.content.trim();
+        let parsed;
+        try {
+            parsed = JSON.parse(rawContent);
+        } catch (parseErr) {
+            console.error('Failed to parse OpenAI response as JSON:', rawContent);
+            return res.status(502).json({ error: 'OpenAI returned an unexpected response format.' });
+        }
+
+        if (!parsed.body || typeof parsed.body !== 'string' || parsed.body.trim() === '') {
+            return res.status(502).json({ error: 'OpenAI response is missing the required body field.' });
+        }
+
+        const result = { body: parsed.body };
+        if (parsed.header && typeof parsed.header === 'string' && parsed.header.trim() !== '') {
+            result.header = parsed.header;
+        }
+        if (parsed.footer && typeof parsed.footer === 'string' && parsed.footer.trim() !== '') {
+            result.footer = parsed.footer;
+        }
+
+        return res.status(200).json(result);
+    } catch (err) {
+        const status = err.response?.status;
+        const message = err.response?.data?.error?.message || err.message || 'Unknown OpenAI error';
+        console.error(`OpenAI API error (HTTP ${status}):`, message);
+        return res.status(502).json({ error: `OpenAI API error: ${message}` });
+    }
+});
+
+// ── Admin: Retry System Monitoring Endpoints ──────────────────────────────────
+
+/**
+ * GET /api/admin/retry-system/health
+ *
+ * Returns health metrics for the retry system:
+ *   - pendingRetries: count of ScheduledRetryPhase documents with status 'pending'
+ *   - executingRetries: count of ScheduledRetryPhase documents with status 'executing'
+ *   - averageDelaySeconds: average (executedAt - scheduledAt) for completed phases
+ *   - failedExecutions: count of phases with status 'failed' updated in the last hour
+ *   - lastExecutionTime: most recent executedAt from completed phases
+ *
+ * Requires tenant authentication (same JWT middleware used throughout the app).
+ *
+ * Requirements: 10.3, 10.4
+ */
+// ── TEMP DEBUG: check button click state for a phone number ──────────────────
+// Usage: GET /api/debug/button-clicks/PHONE_NUMBER  (no auth for quick debugging)
+app.get('/api/debug/campaign-recipients/:campaignId', async (req, res) => {
+    try {
+        const { campaignId } = req.params;
+        const recipients = await Recipient.find({ campaignId }).lean();
+        const campaign = await Campaign.findOne({ id: campaignId }).select('template tenantId').lean();
+        const tenantId = campaign?.tenantId || recipients[0]?.tenantId;
+
+        let templateButtons = [];
+        if (campaign?.template) {
+            try {
+                const tenant = await Tenant.findById(tenantId).select('whatsappConfig').lean();
+                if (tenant?.whatsappConfig?.accessToken && tenant?.whatsappConfig?.businessAccountId) {
+                    const resp = await axios.get(
+                        `${WHATSAPP_API_URL}/${tenant.whatsappConfig.businessAccountId}/message_templates`,
+                        {
+                            headers: { Authorization: `Bearer ${tenant.whatsappConfig.accessToken}` },
+                            params: { name: campaign.template }
+                        }
+                    );
+                    const tpl = (resp.data?.data || []).find(t => t.name === campaign.template);
+                    const components = tpl?.components || [];
+                    const btnComp = components.find(c => c.type === 'BUTTONS');
+                    if (btnComp?.buttons) {
+                        templateButtons = btnComp.buttons
+                            .filter(b => b.type === 'QUICK_REPLY')
+                            .map(b => ({ text: b.text, type: b.type }));
+                    }
+                }
+            } catch (tplErr) {
+                console.warn('[debug] template fetch error:', tplErr.message);
+            }
+        }
+
+        // Run inference
+        if (templateButtons.length > 0 && recipients.length > 0) {
+            const phones = [...new Set(recipients.map(r => r.to).filter(Boolean))];
+            const buttonMessages = await Message.find({
+                contactId: { $in: phones },
+                isMe: false,
+            }).select('contactId text timestamp time messageType').lean();
+
+            const inferredClicks = {};
+            for (const msg of buttonMessages) {
+                const rawText = (msg.text || '').trim();
+                const cleanTextLower = rawText.replace(/^[↩️\s]+/, '').toLowerCase();
+                const matchedBtn = templateButtons.find(b => {
+                    const btnText = (b.text || '').trim().toLowerCase();
+                    return btnText && cleanTextLower === btnText;
+                });
+                if (matchedBtn) {
+                    if (!inferredClicks[msg.contactId]) inferredClicks[msg.contactId] = new Set();
+                    inferredClicks[msg.contactId].add(matchedBtn.text.trim());
+                }
+            }
+
+            for (const r of recipients) {
+                const inferred = inferredClicks[r.to];
+                if (inferred && inferred.size > 0) {
+                    const existing = new Set((r.clickedButtons || []).map(b => b.trim().toLowerCase()));
+                    const merged = [...(r.clickedButtons || [])];
+                    for (const btn of inferred) {
+                        if (!existing.has(btn.toLowerCase())) merged.push(btn);
+                    }
+                    r.clickedButtons = merged;
+                }
+            }
+        }
+
+        res.json({ campaign, templateButtons, recipients });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/debug/button-clicks/:phone', async (req, res) => {
+    try {
+        const { phone } = req.params;
+        const recipients = await Recipient.find({ to: phone })
+            .sort({ _id: -1 }).limit(5)
+            .select('to status campaignId tenantId wamid clickedButtons buttonClicks sentAt')
+            .lean();
+        const messages = await Message.find({ contactId: phone })
+            .sort({ _id: -1 }).limit(10)
+            .select('contactId text isMe messageType source timestamp time')
+            .lean();
+        res.json({ phone, recipients, messages });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/admin/retry-system/health', authenticate, async (req, res) => {
+    try {
+        const now = new Date();
+        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+        const tenantId = req.user.tenantId;
+
+        // Run all queries in parallel for efficiency
+        const [
+            pendingRetries,
+            executingRetries,
+            failedExecutions,
+            delayAgg,
+            lastExecAgg
+        ] = await Promise.all([
+            // Count pending phases
+            ScheduledRetryPhase.countDocuments({ tenantId, status: 'pending' }),
+
+            // Count executing phases
+            ScheduledRetryPhase.countDocuments({ tenantId, status: 'executing' }),
+
+            // Count failed phases in the last hour
+            ScheduledRetryPhase.countDocuments({
+                tenantId,
+                status: 'failed',
+                updatedAt: { $gte: oneHourAgo }
+            }),
+
+            // Average execution delay (executedAt - scheduledAt) for completed phases
+            ScheduledRetryPhase.aggregate([
+                { $match: { tenantId, status: 'completed', executedAt: { $exists: true } } },
+                {
+                    $project: {
+                        delayMs: { $subtract: ['$executedAt', '$scheduledAt'] }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        avgDelayMs: { $avg: '$delayMs' }
+                    }
+                }
+            ]),
+
+            // Most recent executedAt from completed phases
+            ScheduledRetryPhase.findOne(
+                { tenantId, status: 'completed', executedAt: { $exists: true } },
+                { executedAt: 1 },
+                { sort: { executedAt: -1 } }
+            )
+        ]);
+
+        const averageDelaySeconds = delayAgg.length > 0 && delayAgg[0].avgDelayMs != null
+            ? parseFloat((delayAgg[0].avgDelayMs / 1000).toFixed(2))
+            : null;
+
+        const lastExecutionTime = lastExecAgg ? lastExecAgg.executedAt : null;
+
+        console.log(
+            `[admin] GET /api/admin/retry-system/health — pending=${pendingRetries}, ` +
+            `executing=${executingRetries}, failed1h=${failedExecutions}, ` +
+            `avgDelay=${averageDelaySeconds}s, lastExec=${lastExecutionTime}`
+        );
+
+        res.json({
+            pendingRetries,
+            executingRetries,
+            averageDelaySeconds,
+            failedExecutions,
+            lastExecutionTime
+        });
+    } catch (err) {
+        console.error('[admin] GET /api/admin/retry-system/health error:', err.message, err.stack);
+        res.status(500).json({ error: 'Failed to fetch retry system health' });
+    }
+});
+
+/**
+ * GET /api/admin/retry-system/logs
+ *
+ * Returns paginated execution log entries sourced from the ScheduledRetryPhase
+ * collection. Each document represents a scheduled/executed retry phase and
+ * serves as a structured log entry.
+ *
+ * Query params:
+ *   - campaignId (optional): filter logs to a specific campaign
+ *   - page (optional, default 1): page number (1-indexed)
+ *   - limit (optional, default 20): items per page (max 100)
+ *
+ * Requires tenant authentication.
+ *
+ * Requirements: 10.1, 10.2
+ */
+app.get('/api/admin/retry-system/logs', authenticate, async (req, res) => {
+    try {
+        const { campaignId } = req.query;
+
+        // Parse pagination params
+        const page = req.query.page ? parseInt(req.query.page, 10) : 1;
+        const limit = Math.min(req.query.limit ? parseInt(req.query.limit, 10) : 20, 100);
+
+        if (isNaN(page) || page < 1) {
+            return res.status(400).json({ error: 'page must be a positive integer' });
+        }
+        if (isNaN(limit) || limit < 1) {
+            return res.status(400).json({ error: 'limit must be a positive integer' });
+        }
+
+        // Build filter — always scope to the authenticated tenant
+        // Exclude phaseNumber=1 — that's the internal grace-period evaluation, not a user-visible retry phase
+        const filter = { tenantId: req.user.tenantId, phaseNumber: { $gt: 1 } };
+        if (campaignId && typeof campaignId === 'string' && campaignId.trim()) {
+            filter.campaignId = campaignId.trim();
+        }
+
+        const skip = (page - 1) * limit;
+
+        const [phases, total] = await Promise.all([
+            ScheduledRetryPhase.find(filter)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            ScheduledRetryPhase.countDocuments(filter)
+        ]);
+
+        // Map ScheduledRetryPhase documents to log entry shape
+        const logs = phases.map(phase => {
+            // Derive a human-readable event name from the phase status
+            let event;
+            switch (phase.status) {
+                case 'completed': event = 'phase_executed'; break;
+                case 'executing': event = 'phase_executing'; break;
+                case 'failed': event = 'phase_failed'; break;
+                case 'cancelled': event = 'phase_cancelled'; break;
+                default: event = 'phase_scheduled'; break;
+            }
+
+            return {
+                campaignId: phase.campaignId,
+                phaseNumber: phase.phaseNumber,
+                event,
+                timestamp: phase.executedAt || phase.scheduledAt || phase.createdAt,
+                details: {
+                    status: phase.status,
+                    scheduledAt: phase.scheduledAt,
+                    executedAt: phase.executedAt || null,
+                    errorMessage: phase.errorMessage || null,
+                    tenantId: phase.tenantId
+                }
+            };
+        });
+
+        console.log(
+            `[admin] GET /api/admin/retry-system/logs — page=${page}, limit=${limit}, ` +
+            `campaignId=${campaignId || 'all'}, total=${total}`
+        );
+
+        res.json({
+            logs,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (err) {
+        console.error('[admin] GET /api/admin/retry-system/logs error:', err.message, err.stack);
+        res.status(500).json({ error: 'Failed to fetch retry system logs' });
+    }
+});
+
+// --- Groups API ---
+
+// GET /api/groups — list all groups for the authenticated tenant
+app.get('/api/groups', authenticate, async (req, res) => {
+    try {
+        const groups = await Group.find({ tenantId: req.user.tenantId }).sort({ createdAt: -1 });
+        res.json(groups);
+    } catch (err) {
+        console.error(' GET /api/groups error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// POST /api/groups — create a new group for the authenticated tenant
+app.post('/api/groups', authenticate, async (req, res) => {
+    const { name, clientIds } = req.body;
+    if (!name || name.trim() === '') return res.status(400).json({ error: 'Group name is required' });
+    if (!clientIds || clientIds.length === 0) return res.status(400).json({ error: 'At least one client must be selected' });
+    try {
+        const group = await Group.create({ tenantId: req.user.tenantId, name: name.trim(), clientIds });
+        res.status(201).json(group);
+    } catch (err) {
+        console.error(' POST /api/groups error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// PUT /api/groups/:id — update an existing group for the authenticated tenant
+app.put('/api/groups/:id', authenticate, async (req, res) => {
+    const { name, clientIds } = req.body;
+    if (!name || name.trim() === '') return res.status(400).json({ error: 'Group name is required' });
+    if (!clientIds || clientIds.length === 0) return res.status(400).json({ error: 'At least one client must be selected' });
+    try {
+        const group = await Group.findOneAndUpdate(
+            { _id: req.params.id, tenantId: req.user.tenantId },
+            { name: name.trim(), clientIds },
+            { new: true }
+        );
+        if (!group) return res.status(404).json({ error: 'Group not found' });
+        res.status(200).json(group);
+    } catch (err) {
+        console.error(' PUT /api/groups/:id error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// DELETE /api/groups/:id — delete a group for the authenticated tenant
+app.delete('/api/groups/:id', authenticate, async (req, res) => {
+    try {
+        const group = await Group.findOneAndDelete({ _id: req.params.id, tenantId: req.user.tenantId });
+        if (!group) return res.status(404).json({ error: 'Group not found' });
+        res.status(200).json({ message: 'Group deleted' });
+    } catch (err) {
+        console.error(' DELETE /api/groups/:id error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// Global error handling middleware to capture body-parser errors (like 413 Payload Too Large)
+app.use((err, req, res, next) => {
+    if (err) {
+        if (err.status === 413) {
+            return res.status(413).json({ error: 'Payload too large. Request data cannot exceed 50MB.' });
+        }
+        if (err.status === 400) {
+            return res.status(400).json({ error: 'Bad Request. Invalid request data.' });
+        }
+        console.error('Unhandled request error:', err);
+        return res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+    }
+    next();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  SUPER ADMIN MODULE
+//  All routes prefixed /api/superadmin/*
+//  Uses a dedicated SUPERADMIN_JWT_SECRET — completely isolated from tenant JWTs
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Super Admin Auth Middleware ───────────────────────────────────────────────
+const authenticateSuperAdmin = (req, res, next) => {
+    const token = req.headers['authorization']?.split(' ')[1] || req.query.token;
+    if (!token) return res.status(401).json({ error: 'Unauthorized: No token provided' });
+    const secret = process.env.SUPERADMIN_JWT_SECRET || 'sendzyy-superadmin-secret-change-me';
+    jwt.verify(token, secret, (err, decoded) => {
+        if (err) return res.status(403).json({ error: 'Forbidden: Invalid or expired super admin token' });
+        if (decoded.role !== 'superadmin') return res.status(403).json({ error: 'Forbidden: Insufficient role' });
+        req.superAdmin = decoded;
+        next();
+    });
+};
+
+// ── POST /api/superadmin/login ────────────────────────────────────────────────
+app.post('/api/superadmin/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+
+        const adminEmail = process.env.SUPERADMIN_EMAIL;
+        const adminPasswordHash = process.env.SUPERADMIN_PASSWORD_HASH;
+
+        if (!adminEmail || !adminPasswordHash) {
+            return res.status(500).json({ error: 'Super Admin credentials not configured on server' });
+        }
+
+        if (email.toLowerCase() !== adminEmail.toLowerCase()) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        const isMatch = await bcrypt.compare(password, adminPasswordHash);
+        if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
+
+        const secret = process.env.SUPERADMIN_JWT_SECRET || 'sendzyy-superadmin-secret-change-me';
+        const token = jwt.sign(
+            { role: 'superadmin', email: adminEmail },
+            secret,
+            { expiresIn: '12h' }
+        );
+
+        res.json({
+            success: true,
+            token,
+            admin: { email: adminEmail, role: 'superadmin' },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] Login error:', err.message);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// ── GET /api/superadmin/tenants ───────────────────────────────────────────────
+// Lists all tenants with pagination, search, and status filtering
+// Note: 'expired' is a computed state (subscription.expiryDate < now), NOT a DB enum value
+app.get('/api/superadmin/tenants', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const { page = 1, limit = 10, search = '', status = 'all' } = req.query;
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const now = new Date();
+
+        // Build base query
+        let query = {};
+
+        // Search by name or email
+        if (search.trim()) {
+            query.$or = [
+                { name: { $regex: search.trim(), $options: 'i' } },
+                { email: { $regex: search.trim(), $options: 'i' } },
+            ];
+        }
+
+        // Status filter
+        if (status === 'active') {
+            query.status = 'active';
+            query['subscription.expiryDate'] = { $gte: now };
+        } else if (status === 'inactive') {
+            query.status = 'inactive';
+        } else if (status === 'expired') {
+            // Expired = active account but subscription has lapsed
+            query.status = 'active';
+            query['subscription.expiryDate'] = { $lt: now };
+        }
+        // 'all' → no filter
+
+        const total = await Tenant.countDocuments(query);
+        const tenants = await Tenant.find(query)
+            .select('-password -webhookSecret -openaiApiKey')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit))
+            .lean();
+
+        const formatted = tenants.map(t => {
+            const expiryDate = t.subscription?.expiryDate ? new Date(t.subscription.expiryDate) : null;
+            const isExpired = expiryDate ? now > expiryDate : false;
+            const daysRemaining = expiryDate ? Math.max(0, Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24))) : 0;
+
+            return {
+                id: t._id.toString(),
+                name: t.name,
+                email: t.email,
+                status: t.status,
+                computedStatus: isExpired && t.status === 'active' ? 'expired' : t.status,
+                subscription: {
+                    planId: t.subscription?.planId,
+                    planName: t.subscription?.planName,
+                    price: t.subscription?.price,
+                    expiryDate: t.subscription?.expiryDate,
+                    lastPaymentId: t.subscription?.lastPaymentId,
+                    isExpired,
+                    daysRemaining,
+                },
+                whatsappConfig: {
+                    verified: t.whatsappConfig?.verified || false,
+                    displayPhone: t.whatsappConfig?.displayPhone || null,
+                    phoneStatus: t.whatsappConfig?.phoneStatus || 'PENDING',
+                },
+                createdAt: t.createdAt,
+                updatedAt: t.updatedAt,
+            };
+        });
+
+        res.json({
+            success: true,
+            total,
+            page: parseInt(page),
+            totalPages: Math.ceil(total / parseInt(limit)),
+            tenants: formatted,
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] GET /tenants error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch tenants', details: err.message });
+    }
+});
+
+// ── POST /api/superadmin/tenants/register-manual ─────────────────────────────
+// Mode 1: Super Admin directly registers a tenant with offline/cash/bank payment clearance
+// Payment is confirmed by Super Admin — no Razorpay involved
+app.post('/api/superadmin/tenants/register-manual', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const { name, email, password, planId, paymentReference, sendWelcomeEmail = true } = req.body;
+
+        if (!name || !email || !password || !planId) {
+            return res.status(400).json({ error: 'name, email, password, and planId are required' });
+        }
+
+        // Duplicate email guard
+        const existing = await Tenant.findOne({ email: email.toLowerCase().trim() });
+        if (existing) return res.status(400).json({ error: 'Email already registered' });
+
+        const plan = await getPlanById(planId);
+        if (!plan) return res.status(400).json({ error: 'Invalid planId' });
+
+        // Always bcrypt hash — never store plain text password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const now = new Date();
+        const panelExpiresAt = new Date(now.getTime() + plan.panelDays * 24 * 60 * 60 * 1000);
+
+        const tenant = await Tenant.create({
+            name: name.trim(),
+            email: email.toLowerCase().trim(),
+            password: hashedPassword,
+            subscription: {
+                planId: plan.id,
+                planName: plan.name,
+                price: plan.totalPrice,
+                expiryDate: panelExpiresAt,
+                lastPaymentId: paymentReference || `MANUAL-${Date.now()}`,
+                lastPaymentDate: now,
+            },
+            status: 'active',
+        });
+
+        // Log payment record (mark as manual/cash)
+        await PaymentRecord.create({
+            tenantId: tenant._id.toString(),
+            paymentId: paymentReference || `MANUAL-${Date.now()}`,
+            orderId: null,
+            category: 'panel_renewal',
+            description: `${plan.name} — Super Admin Manual Registration (Cash/Bank)`,
+            amount: plan.totalPrice,
+            timestamp: now,
+        });
+
+        // Send welcome credentials email with the plain-text password they provided
+        if (sendWelcomeEmail) {
+            try { sendCredentialsEmail(email, password, name); } catch (_) { }
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Tenant registered and activated successfully.',
+            tenant: {
+                id: tenant._id.toString(),
+                name: tenant.name,
+                email: tenant.email,
+                status: tenant.status,
+                subscription: {
+                    planId: plan.id,
+                    planName: plan.name,
+                    expiryDate: panelExpiresAt,
+                },
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] register-manual error:', err.message);
+        res.status(500).json({ error: 'Failed to register tenant', details: err.message });
+    }
+});
+
+// ── POST /api/superadmin/tenants/create-payment-invite ───────────────────────
+// Mode 2: Super Admin sends payment invite — tenant pays online via Live Razorpay
+// Issues a 72-hour registration token; NO DB write until payment is verified
+app.post('/api/superadmin/tenants/create-payment-invite', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const { name, email, planId } = req.body;
+        if (!name || !email || !planId) {
+            return res.status(400).json({ error: 'name, email, and planId are required' });
+        }
+
+        // Duplicate email guard — check upfront before creating invite
+        const existing = await Tenant.findOne({ email: email.toLowerCase().trim() });
+        if (existing) return res.status(400).json({ error: 'Email already registered' });
+
+        if (!razorpay) return res.status(500).json({ error: 'Payment gateway not configured' });
+
+        const plan = await getPlanById(planId);
+        if (!plan) return res.status(400).json({ error: 'Invalid planId' });
+
+        // Create Razorpay order using LIVE keys (same as self-service registration)
+        const order = await razorpay.orders.create({
+            amount: plan.totalPrice * 100,
+            currency: 'INR',
+            receipt: `invite_${Date.now()}`,
+            payment_capture: 1, // Auto-capture: no manual capture needed on Razorpay dashboard
+            notes: { email: email.toLowerCase().trim(), name: name.trim(), planId: plan.id, source: 'superadmin_invite' },
+        });
+
+        // Issue a 72-hour registration token (much more than self-service 15 min)
+        const inviteToken = jwt.sign(
+            {
+                type: 'superadmin_invite',
+                name: name.trim(),
+                email: email.toLowerCase().trim(),
+                planId: plan.id,
+                orderId: order.id,
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '72h' }
+        );
+
+        res.json({
+            success: true,
+            message: 'Payment invite created. Share the inviteToken and orderId with the tenant.',
+            inviteToken,
+            razorpayOrder: {
+                orderId: order.id,
+                amount: plan.totalPrice,
+                currency: 'INR',
+                planName: plan.name,
+                panelDays: plan.panelDays,
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] create-payment-invite error:', err.message);
+        res.status(500).json({ error: 'Failed to create payment invite', details: err.message });
+    }
+});
+
+// ── POST /api/superadmin/tenants/verify-payment-invite ───────────────────────
+// Verifies payment for Mode 2 invite flow — uses LIVE Razorpay keys for signature
+// Creates tenant in MongoDB ONLY after successful payment verification
+app.post('/api/superadmin/tenants/verify-payment-invite', async (req, res) => {
+    try {
+        const { inviteToken, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+        if (!inviteToken || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ error: 'inviteToken, razorpay_order_id, razorpay_payment_id, and razorpay_signature are required' });
+        }
+
+        // Verify and decode invite token
+        let inviteData;
+        try {
+            inviteData = jwt.verify(inviteToken, process.env.JWT_SECRET);
+            if (inviteData.type !== 'superadmin_invite') {
+                return res.status(400).json({ error: 'Invalid invite token type' });
+            }
+        } catch (e) {
+            return res.status(401).json({ error: 'Invite token expired or invalid. Request a new invite from Super Admin.' });
+        }
+
+        // Verify Razorpay payment signature using LIVE key
+        const expectedSignature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+            .digest('hex');
+
+        if (expectedSignature !== razorpay_signature) {
+            return res.status(400).json({ error: 'Invalid payment signature' });
+        }
+
+        // Final duplicate check (race condition guard)
+        const existing = await Tenant.findOne({ email: inviteData.email });
+        if (existing) return res.status(400).json({ error: 'Email already registered' });
+
+        const plan = await getPlanById(inviteData.planId);
+        const now = new Date();
+        const panelExpiresAt = new Date(now.getTime() + plan.panelDays * 24 * 60 * 60 * 1000);
+
+        // Auto-generate a secure temporary password (tenant must change on first login)
+        const tempPassword = crypto.randomBytes(8).toString('hex'); // 16 char hex
+        const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+        // NOW create the tenant in MongoDB — payment is confirmed
+        const tenant = await Tenant.create({
+            name: inviteData.name,
+            email: inviteData.email,
+            password: hashedPassword,
+            subscription: {
+                planId: plan.id,
+                planName: plan.name,
+                price: plan.totalPrice,
+                expiryDate: panelExpiresAt,
+                lastPaymentId: razorpay_payment_id,
+                lastPaymentDate: now,
+            },
+            status: 'active',
+        });
+
+        // Log payment record
+        await PaymentRecord.create({
+            tenantId: tenant._id.toString(),
+            paymentId: razorpay_payment_id,
+            orderId: razorpay_order_id,
+            category: 'panel_renewal',
+            description: `${plan.name} — Super Admin Invite Registration`,
+            amount: plan.totalPrice,
+            timestamp: now,
+        });
+
+        // Send welcome email with auto-generated temporary password
+        try {
+            sendCredentialsEmail(inviteData.email, tempPassword, inviteData.name);
+            sendInvoiceEmail(inviteData.email, inviteData.name, razorpay_payment_id, { name: plan.name, credits: 0, price: plan.totalPrice }, plan.totalPrice);
+        } catch (_) { }
+
+        res.json({
+            success: true,
+            message: 'Account created successfully. Login credentials have been emailed.',
+            tenant: {
+                id: tenant._id.toString(),
+                name: tenant.name,
+                email: tenant.email,
+                status: tenant.status,
+                subscription: { planId: plan.id, planName: plan.name, expiryDate: panelExpiresAt },
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] verify-payment-invite error:', err.message);
+        res.status(500).json({ error: 'Failed to complete tenant registration', details: err.message });
+    }
+});
+
+// ── PATCH /api/superadmin/tenants/:id/status ─────────────────────────────────
+// Toggle tenant active/inactive — login is blocked immediately for inactive tenants
+app.patch('/api/superadmin/tenants/:id/status', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const { status } = req.body;
+        const { id } = req.params;
+
+        if (!id) return res.status(400).json({ error: 'tenantId is required' });
+        if (!status || !['active', 'inactive'].includes(status)) {
+            return res.status(400).json({ error: "status must be 'active' or 'inactive'" });
+        }
+
+        const updated = await Tenant.findByIdAndUpdate(
+            id,
+            { $set: { status } },
+            { new: true }
+        ).select('-password -webhookSecret -openaiApiKey');
+
+        if (!updated) return res.status(404).json({ error: 'Tenant not found' });
+
+        res.json({
+            success: true,
+            message: `Tenant status updated to ${status}`,
+            tenant: {
+                id: updated._id.toString(),
+                name: updated.name,
+                email: updated.email,
+                status: updated.status,
+                subscription: updated.subscription,
+                updatedAt: updated.updatedAt,
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] PATCH tenant status error:', err.message);
+        res.status(500).json({ error: 'Failed to update tenant status', details: err.message });
+    }
+});
+
+// ── Secure existing unprotected tenant status routes ──────────────────────────
+// These previously had NO auth — now protected by authenticateSuperAdmin
+app.patch('/api/tenant/:id/status', authenticateSuperAdmin, async (req, res) => {
+    const { status } = req.body;
+    if (!status || !['active', 'inactive'].includes(status)) {
+        return res.status(400).json({ error: "status must be 'active' or 'inactive'" });
+    }
+    const updated = await Tenant.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Tenant not found' });
+    res.json({ success: true, message: `Tenant status updated to ${status}`, tenant: { id: updated._id.toString(), name: updated.name, email: updated.email, status: updated.status } });
+});
+app.patch('/api/tenants/:id/status', authenticateSuperAdmin, async (req, res) => {
+    const { status } = req.body;
+    if (!status || !['active', 'inactive'].includes(status)) {
+        return res.status(400).json({ error: "status must be 'active' or 'inactive'" });
+    }
+    const updated = await Tenant.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Tenant not found' });
+    res.json({ success: true, message: `Tenant status updated to ${status}`, tenant: { id: updated._id.toString(), name: updated.name, email: updated.email, status: updated.status } });
+});
+
+// ── GET /api/superadmin/packages ─────────────────────────────────────────────
+// Returns ALL packages (active AND inactive) for Super Admin management
+app.get('/api/superadmin/packages', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const packages = await PanelPackage.find().sort({ panelDays: 1 }).lean();
+        res.json({
+            success: true,
+            packages: packages.map(p => ({
+                id: p._id.toString(),
+                planId: p.planId,
+                name: p.name,
+                description: p.description,
+                basePrice: p.basePrice,
+                gstPercent: p.gstPercent,
+                totalPrice: p.totalPrice,
+                panelDays: p.panelDays,
+                isActive: p.isActive,
+                createdAt: p.createdAt,
+                updatedAt: p.updatedAt,
+            })),
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] GET packages error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch packages', details: err.message });
+    }
+});
+
+// ── POST /api/superadmin/packages ────────────────────────────────────────────
+// Creates a new package; totalPrice auto-computed if not provided
+app.post('/api/superadmin/packages', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const { planId, name, description = '', basePrice, gstPercent = 18, panelDays, isActive = true } = req.body;
+
+        if (!planId || !name || !basePrice || !panelDays) {
+            return res.status(400).json({ error: 'planId, name, basePrice, and panelDays are required' });
+        }
+
+        const existing = await PanelPackage.findOne({ planId });
+        if (existing) return res.status(400).json({ error: `Package with planId '${planId}' already exists` });
+
+        const totalPrice = Math.round(basePrice * (1 + gstPercent / 100));
+
+        const pkg = await PanelPackage.create({ planId, name, description, basePrice, gstPercent, totalPrice, panelDays, isActive });
+
+        res.status(201).json({
+            success: true,
+            message: 'Package created successfully',
+            package: {
+                id: pkg._id.toString(),
+                planId: pkg.planId,
+                name: pkg.name,
+                description: pkg.description,
+                basePrice: pkg.basePrice,
+                gstPercent: pkg.gstPercent,
+                totalPrice: pkg.totalPrice,
+                panelDays: pkg.panelDays,
+                isActive: pkg.isActive,
+                createdAt: pkg.createdAt,
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] POST packages error:', err.message);
+        res.status(500).json({ error: 'Failed to create package', details: err.message });
+    }
+});
+
+// ── PUT /api/superadmin/packages/:id ─────────────────────────────────────────
+// Edits an existing package; totalPrice is recomputed from basePrice + gstPercent
+app.put('/api/superadmin/packages/:id', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const { name, description, basePrice, gstPercent, panelDays, isActive } = req.body;
+        const pkg = await PanelPackage.findById(req.params.id);
+        if (!pkg) return res.status(404).json({ error: 'Package not found' });
+
+        if (name !== undefined) pkg.name = name;
+        if (description !== undefined) pkg.description = description;
+        if (panelDays !== undefined) pkg.panelDays = panelDays;
+        if (isActive !== undefined) pkg.isActive = isActive;
+
+        // Recompute totalPrice if pricing fields change
+        if (basePrice !== undefined) pkg.basePrice = basePrice;
+        if (gstPercent !== undefined) pkg.gstPercent = gstPercent;
+        if (basePrice !== undefined || gstPercent !== undefined) {
+            pkg.totalPrice = Math.round(pkg.basePrice * (1 + pkg.gstPercent / 100));
+        }
+
+        await pkg.save();
+
+        res.json({
+            success: true,
+            message: 'Package updated successfully',
+            package: {
+                id: pkg._id.toString(),
+                planId: pkg.planId,
+                name: pkg.name,
+                description: pkg.description,
+                basePrice: pkg.basePrice,
+                gstPercent: pkg.gstPercent,
+                totalPrice: pkg.totalPrice,
+                panelDays: pkg.panelDays,
+                isActive: pkg.isActive,
+                updatedAt: pkg.updatedAt,
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] PUT packages error:', err.message);
+        res.status(500).json({ error: 'Failed to update package', details: err.message });
+    }
+});
+
+// ── DELETE /api/superadmin/packages/:id ──────────────────────────────────────
+// Hard-deletes a package from DB. Guards against deletion if active tenants use it.
+app.delete('/api/superadmin/packages/:id', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const pkg = await PanelPackage.findById(req.params.id);
+        if (!pkg) return res.status(404).json({ error: 'Package not found' });
+
+        // Guard: count active tenants subscribed to this planId
+        const activeTenantCount = await Tenant.countDocuments({
+            'subscription.planId': pkg.planId,
+            status: 'active',
+        });
+
+        if (activeTenantCount > 0) {
+            return res.status(409).json({
+                error: `Cannot delete package. ${activeTenantCount} active tenant(s) are currently on this plan.`,
+                activeTenantCount,
+            });
+        }
+
+        // Hard delete — permanently removes the document from MongoDB
+        await PanelPackage.findByIdAndDelete(req.params.id);
+
+        res.json({
+            success: true,
+            message: `Package '${pkg.name}' deleted permanently.`,
+            package: {
+                id: pkg._id.toString(),
+                planId: pkg.planId,
+                name: pkg.name,
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] DELETE packages error:', err.message);
+        res.status(500).json({ error: 'Failed to delete package', details: err.message });
+    }
+});
+
+// ── GET /api/superadmin/dashboard-stats ──────────────────────────────────────
+// Returns system-wide metrics. Revenue split by source to separate manual from online payments.
+app.get('/api/superadmin/dashboard-stats', authenticateSuperAdmin, async (req, res) => {
+    try {
+        const now = new Date();
+
+        const [totalTenants, activeTenants, inactiveTenants, expiredTenants, totalPackages, allPayments] =
+            await Promise.all([
+                Tenant.countDocuments({}),
+                Tenant.countDocuments({ status: 'active', 'subscription.expiryDate': { $gte: now } }),
+                Tenant.countDocuments({ status: 'inactive' }),
+                Tenant.countDocuments({ status: 'active', 'subscription.expiryDate': { $lt: now } }),
+                PanelPackage.countDocuments({ isActive: true }),
+                PaymentRecord.find({ category: 'panel_renewal' }).select('amount description').lean(),
+            ]);
+
+        // Separate manual (cash/bank) from online Razorpay payments
+        let onlineRevenueINR = 0;
+        let manualRevenueINR = 0;
+
+        for (const rec of allPayments) {
+            const isManual = rec.description && (
+                rec.description.includes('Manual Registration') ||
+                rec.description.includes('Cash/Bank')
+            );
+            if (isManual) {
+                manualRevenueINR += rec.amount || 0;
+            } else {
+                onlineRevenueINR += rec.amount || 0;
+            }
+        }
+
+        res.json({
+            success: true,
+            stats: {
+                totalTenants,
+                activeTenants,
+                inactiveTenants,
+                expiredSubscriptions: expiredTenants,
+                totalActivePackages: totalPackages,
+                revenue: {
+                    totalINR: onlineRevenueINR + manualRevenueINR,
+                    onlinePaymentsINR: onlineRevenueINR,
+                    manualPaymentsINR: manualRevenueINR,
+                },
+            },
+        });
+    } catch (err) {
+        console.error('[SuperAdmin] dashboard-stats error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch dashboard stats', details: err.message });
+    }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  APP VERSION & APK SELF-UPDATE MODULE
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── APK Storage Configuration ────────────────────────────────────────────────
+const apkUploadDir = path.join(__dirname, 'uploads', 'apk');
+if (!fs.existsSync(apkUploadDir)) {
+    fs.mkdirSync(apkUploadDir, { recursive: true });
+}
+
+const apkStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, apkUploadDir);
+    },
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const safeName = `temp-${Date.now()}-${Math.round(Math.random() * 1E6)}${ext}`;
+        cb(null, safeName);
+    }
+});
+
+const apkUpload = multer({
+    storage: apkStorage,
+    limits: { fileSize: 300 * 1024 * 1024 }, // 300MB limit
+    fileFilter: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (ext !== '.apk') {
+            return cb(new Error('Only .apk files are allowed'));
+        }
+        cb(null, true);
+    }
+});
+
+// ── Admin Authentication Helper for App Updates ──────────────────────────────
+const authenticateAdminOrSecret = (req, res, next) => {
+    // 1. Check admin secret header or query
+    const secret = req.headers['x-admin-secret'] || req.headers['admin-secret'] || req.query.secret || req.body?.secret;
+    const adminSecret = process.env.ADMIN_UPDATE_SECRET || 'sendzyy-update-secret-9988';
+    if (secret && secret === adminSecret) {
+        return next();
+    }
+
+    // 2. Check Super Admin JWT token
+    const token = req.headers['authorization']?.split(' ')[1] || req.query.token;
+    if (token) {
+        const superSecret = process.env.SUPERADMIN_JWT_SECRET || 'sendzyy-superadmin-secret-change-me';
+        return jwt.verify(token, superSecret, (err, decoded) => {
+            if (!err && decoded && decoded.role === 'superadmin') {
+                req.superAdmin = decoded;
+                return next();
+            }
+            return res.status(403).json({ success: false, error: 'Forbidden: Invalid or expired super admin credentials' });
+        });
+    }
+
+    return res.status(401).json({ success: false, error: 'Unauthorized: Admin credentials or token required' });
+};
+
+// ── 1. GET /api/app/version (Public) ──────────────────────────────────────────
+// Returns the latest active Android release metadata
+app.get('/api/app/version', async (req, res) => {
+    try {
+        const platform = (req.query.platform || 'android').toLowerCase();
+        const latest = await AppVersion.findOne({ platform, isActive: true })
+            .sort({ buildNumber: -1, createdAt: -1 });
+
+        if (!latest) {
+            return res.json({
+                success: true,
+                data: null,
+                message: 'No active release found'
+            });
+        }
+
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const apkDownloadUrl = latest.apkUrl.startsWith('http')
+            ? latest.apkUrl
+            : `${baseUrl}${latest.apkUrl.startsWith('/') ? '' : '/'}${latest.apkUrl}`;
+
+        res.json({
+            success: true,
+            data: {
+                platform: latest.platform,
+                version: latest.version,
+                buildNumber: latest.buildNumber,
+                apkUrl: apkDownloadUrl,
+                apkFileName: latest.apkFileName,
+                sha256: latest.sha256,
+                forceUpdate: latest.forceUpdate,
+                releaseNotes: latest.releaseNotes || [],
+                fileSize: latest.fileSize || 0,
+                updatedAt: latest.updatedAt,
+            }
+        });
+    } catch (err) {
+        console.error('[AppUpdate] GET /api/app/version error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to retrieve version information', details: err.message });
+    }
+});
+
+// ── 2. GET /api/app/download/android (Public) ─────────────────────────────────
+// Streams/downloads the active Android APK
+app.get('/api/app/download/android', async (req, res) => {
+    try {
+        const latest = await AppVersion.findOne({ platform: 'android', isActive: true })
+            .sort({ buildNumber: -1, createdAt: -1 });
+
+        if (!latest) {
+            return res.status(404).json({ success: false, error: 'No active release found' });
+        }
+
+        const filePath = path.join(apkUploadDir, latest.apkFileName);
+        if (!fs.existsSync(filePath)) {
+            console.error(`[AppUpdate] APK file not found on disk: ${filePath}`);
+            return res.status(404).json({ success: false, error: 'APK binary file not found on server' });
+        }
+
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', `attachment; filename="${latest.apkFileName}"`);
+        res.setHeader('Content-Length', fs.statSync(filePath).size);
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+        const stream = fs.createReadStream(filePath);
+        stream.pipe(res);
+    } catch (err) {
+        console.error('[AppUpdate] GET /api/app/download/android error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to download APK', details: err.message });
+    }
+});
+
+// ── 3. POST /api/admin/app-version (Admin/SuperAdmin) ──────────────────────────
+// Uploads new APK release with validation and SHA-256 calculation
+app.post('/api/admin/app-version', authenticateAdminOrSecret, apkUpload.single('apk'), async (req, res) => {
+    let uploadedTempPath = req.file?.path;
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'APK file is required (form-data field: apk)' });
+        }
+
+        const { version, buildNumber, forceUpdate } = req.body;
+        let releaseNotes = req.body.releaseNotes;
+
+        if (!version || !buildNumber) {
+            if (uploadedTempPath && fs.existsSync(uploadedTempPath)) fs.unlinkSync(uploadedTempPath);
+            return res.status(400).json({ success: false, message: 'Version (e.g. 1.0.1) and buildNumber (integer) are required' });
+        }
+
+        // Validate semver format
+        const cleanVersion = String(version).trim();
+        if (!/^\d+(\.\d+)+$/.test(cleanVersion)) {
+            if (uploadedTempPath && fs.existsSync(uploadedTempPath)) fs.unlinkSync(uploadedTempPath);
+            return res.status(400).json({ success: false, message: 'Version must follow standard format (e.g. 1.0.1)' });
+        }
+
+        // Validate positive build number
+        const parsedBuild = parseInt(buildNumber, 10);
+        if (isNaN(parsedBuild) || parsedBuild <= 0) {
+            if (uploadedTempPath && fs.existsSync(uploadedTempPath)) fs.unlinkSync(uploadedTempPath);
+            return res.status(400).json({ success: false, message: 'buildNumber must be a positive integer' });
+        }
+
+        // Parse release notes
+        let parsedNotes = [];
+        if (Array.isArray(releaseNotes)) {
+            parsedNotes = releaseNotes.map(n => String(n).trim()).filter(Boolean);
+        } else if (typeof releaseNotes === 'string') {
+            try {
+                const parsed = JSON.parse(releaseNotes);
+                parsedNotes = Array.isArray(parsed) ? parsed : [releaseNotes];
+            } catch (_) {
+                parsedNotes = releaseNotes.split('\n').map(n => n.trim().replace(/^[-*•]\s*/, '')).filter(Boolean);
+            }
+        }
+
+        const isForceUpdate = forceUpdate === true || forceUpdate === 'true' || forceUpdate === '1';
+
+        // Check current active version to prevent downgrade
+        const currentActive = await AppVersion.findOne({ platform: 'android', isActive: true })
+            .sort({ buildNumber: -1 });
+
+        if (currentActive && parsedBuild <= currentActive.buildNumber) {
+            if (uploadedTempPath && fs.existsSync(uploadedTempPath)) fs.unlinkSync(uploadedTempPath);
+            return res.status(400).json({
+                success: false,
+                message: `Build number must be greater than current active build number (${currentActive.buildNumber}). Downgrades are rejected.`
+            });
+        }
+
+        // Calculate SHA-256 checksum of the uploaded APK
+        const fileBuffer = fs.readFileSync(uploadedTempPath);
+        const computedSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+        const fileSize = fileBuffer.length;
+
+        // Clean target filename
+        const finalApkFileName = `sendzyy-${cleanVersion}-${parsedBuild}.apk`;
+        const finalApkPath = path.join(apkUploadDir, finalApkFileName);
+
+        // Move/rename temp file to final location
+        fs.renameSync(uploadedTempPath, finalApkPath);
+        uploadedTempPath = null; // Cleared
+
+        // Deactivate older releases
+        await AppVersion.updateMany({ platform: 'android' }, { isActive: false });
+
+        // Create new release document
+        const newRelease = new AppVersion({
+            platform: 'android',
+            version: cleanVersion,
+            buildNumber: parsedBuild,
+            apkUrl: '/api/app/download/android',
+            apkFileName: finalApkFileName,
+            sha256: computedSha256,
+            forceUpdate: isForceUpdate,
+            releaseNotes: parsedNotes,
+            fileSize: fileSize,
+            isActive: true,
+        });
+
+        await newRelease.save();
+
+        console.log(`[AppUpdate] ✅ New Android release published: v${cleanVersion} (Build ${parsedBuild}) — SHA256: ${computedSha256}`);
+
+        res.status(201).json({
+            success: true,
+            message: 'New version published successfully',
+            data: newRelease,
+        });
+    } catch (err) {
+        if (uploadedTempPath && fs.existsSync(uploadedTempPath)) {
+            try { fs.unlinkSync(uploadedTempPath); } catch (_) {}
+        }
+        console.error('[AppUpdate] POST /api/admin/app-version error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to upload and publish new APK', details: err.message });
+    }
+});
+
+// ── 4. GET /api/admin/app-versions (Admin/SuperAdmin) ──────────────────────────
+// Lists all release history
+app.get('/api/admin/app-versions', authenticateAdminOrSecret, async (req, res) => {
+    try {
+        const platform = (req.query.platform || 'android').toLowerCase();
+        const releases = await AppVersion.find({ platform }).sort({ buildNumber: -1, createdAt: -1 });
+        res.json({
+            success: true,
+            count: releases.length,
+            data: releases,
+        });
+    } catch (err) {
+        console.error('[AppUpdate] GET /api/admin/app-versions error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to fetch release history', details: err.message });
+    }
+});
+
+// ── 5. PATCH /api/admin/app-version/:id (Admin/SuperAdmin) ─────────────────────
+// Toggles forceUpdate or active status on an existing release
+app.patch('/api/admin/app-version/:id', authenticateAdminOrSecret, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { forceUpdate, isActive, releaseNotes } = req.body;
+
+        const updateData = {};
+        if (typeof forceUpdate !== 'undefined') updateData.forceUpdate = forceUpdate === true || forceUpdate === 'true';
+        if (typeof isActive !== 'undefined') updateData.isActive = isActive === true || isActive === 'true';
+        if (Array.isArray(releaseNotes)) updateData.releaseNotes = releaseNotes;
+
+        const updated = await AppVersion.findByIdAndUpdate(id, { $set: updateData }, { new: true });
+        if (!updated) {
+            return res.status(404).json({ success: false, message: 'Release not found' });
+        }
+
+        res.json({
+            success: true,
+            message: 'Release updated successfully',
+            data: updated,
+        });
+    } catch (err) {
+        console.error('[AppUpdate] PATCH /api/admin/app-version/:id error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to update release', details: err.message });
+    }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  END SUPER ADMIN MODULE
+// ════════════════════════════════════════════════════════════════════════════
+
+//  Start 
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, async () => {
+    console.log(` Webhook server is listening on port ${PORT}`);
+    console.log(` Next step: Run 'ngrok http ${PORT}' in another terminal`);
+
+    // ── Drop stale global unique index on RetryConfiguration.version ──────────
+    // The old schema had { version: 1, unique: true } globally. The new schema
+    // uses { tenantId: 1, version: 1, unique: true }. Drop the old index if it
+    // still exists to prevent 500 errors when tenants save their first config.
+    try {
+        const collection = mongoose.connection.collection('retryconfigurations');
+        const indexes = await collection.indexes();
+        const staleIndex = indexes.find(idx =>
+            idx.key && idx.key.version === 1 &&
+            !idx.key.tenantId &&
+            idx.unique === true
+        );
+        if (staleIndex) {
+            await collection.dropIndex(staleIndex.name);
+            console.log(' Dropped stale global RetryConfiguration.version index');
+        }
+    } catch (err) {
+        console.warn(' Could not clean up RetryConfiguration index:', err.message);
+    }
+
+    // ── Retry Scheduler + Token Expiry Watcher (Tasks 13.1, 13.2 & Token Health) ──
+    try {
+        const { initScheduler } = require('./scheduler');
+        await initScheduler(retryScheduler, ScheduledRetryPhase, Tenant, transporter, io);
+        console.log(' Retry scheduler initialised (cron: every minute)');
+        console.log(' Token expiry watcher initialised (cron: daily at 9:00 AM)');
+    } catch (err) {
+        console.error(' Failed to initialise retry scheduler:', err.message, err.stack);
+    }
+});
