@@ -3,7 +3,6 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:iFloraBuzz/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:iFloraBuzz/features/auth/presentation/pages/login_page.dart';
-
 import 'package:dio/dio.dart';
 import 'package:iFloraBuzz/features/templates/presentation/bloc/template_bloc.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
@@ -31,6 +30,8 @@ import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_autom
 import 'package:iFloraBuzz/features/calling/presentation/pages/call_log_page.dart';
 import 'package:iFloraBuzz/features/calling/presentation/pages/calling_settings_page.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
+import 'package:iFloraBuzz/features/meta_ads/presentation/pages/meta_ads_dashboard_page.dart';
+import 'package:iFloraBuzz/features/meta_ads/presentation/bloc/meta_ads_bloc.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
 import 'package:iFloraBuzz/core/services/renewal_reminder_service.dart';
 import 'package:iFloraBuzz/core/constants/app_constants.dart';
@@ -398,6 +399,7 @@ class _DashboardShellState extends State<DashboardShell> {
     const CallingSettingsPage(phoneNumberId: ''),
     const CatalogPage(),
     const WhatsAppFlowsPage(),
+    const MetaAdsDashboardPage(),
   ];
 
   Widget _buildSidebarContent({bool isDrawer = false}) {
@@ -431,6 +433,7 @@ class _DashboardShellState extends State<DashboardShell> {
                 _buildNavItem(8, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
                 _buildNavItem(18, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
                 _buildNavItem(19, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
+                _buildNavItem(20, Icons.campaign_rounded, 'Meta Ads', isDrawer: isDrawer),
                 _buildNavItem(9, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
                 const SizedBox(height: 16),
                 const Divider(
@@ -495,6 +498,7 @@ class _DashboardShellState extends State<DashboardShell> {
           BlocProvider(create: (context) => getIt<ChatBloc>()),
           BlocProvider(create: (context) => getIt<ChatbotBloc>()),
           BlocProvider(create: (context) => getIt<CatalogBloc>()),
+          BlocProvider(create: (context) => getIt<MetaAdsBloc>()),
         ],
         child: Scaffold(
           key: _scaffoldKey,

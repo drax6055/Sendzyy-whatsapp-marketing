@@ -33,6 +33,11 @@ const CatalogService = require('./services/CatalogService');
 const { createCatalogController } = require('./controllers/catalogController');
 const webhookIngestionService = require('./services/WebhookIngestionService');
 const { processIncomingWebhookPayload } = require('./services/WebhookRouter');
+const MetaAdCampaign = require('./models/MetaAdCampaign');
+const MetaAdToken = require('./models/MetaAdToken');
+const MetaAdsService = require('./services/MetaAdsService');
+const { requireMetaAuth } = require('./middleware/metaAuth');
+const { createMetaAdsController } = require('./controllers/metaAdsController');
 
 //  MongoDB Connection 
 if (process.env.MONGODB_URI) {
@@ -489,7 +494,7 @@ const leadSchema = new mongoose.Schema({
     mobileNumber: { type: String, required: true },   // normalised, e.g. "919876543210"
     email: { type: String, default: '' },
     companyName: { type: String, default: '' },
-    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart'], required: true },
+    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'meta_ads'], required: true },
     formName: { type: String, default: '' },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     status: { type: String, enum: ['new', 'contacted', 'converted', 'failed'], default: 'new' },
@@ -502,7 +507,7 @@ const Lead = mongoose.model('Lead', leadSchema);
 
 const leadTriggerSchema = new mongoose.Schema({
     tenantId: { type: String, required: true },
-    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'any'], default: 'any' },
+    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'meta_ads', 'any'], default: 'any' },
     formName: { type: String, default: '' },
     action: { type: String, enum: ['send_template', 'start_chatbot'], required: true },
     templateName: { type: String, default: '' },
@@ -8044,6 +8049,164 @@ app.patch('/api/catalog/orders/:id/status', authenticate, catalogController.upda
 app.post('/api/catalog/orders/:id/send-payment-link', authenticate, catalogController.sendPaymentLink);
 app.post('/api/catalog/orders/:id/mark-paid', authenticate, catalogController.markOrderPaid);
 app.post('/api/catalog/payment-webhook', catalogController.handlePaymentWebhook);
+
+// ── Meta Ads Management Module ──────────────────────────────────────────────
+const metaAdsController = createMetaAdsController({ Lead, Tenant, triggerLeadAction: evaluateTriggers });
+const metaCreativeUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            const uploadDir = path.join(__dirname, 'uploads');
+            if (!fs.existsSync(uploadDir)) {
+                fs.mkdirSync(uploadDir, { recursive: true });
+            }
+            cb(null, uploadDir);
+        },
+        filename: (req, file, cb) => {
+            const ext = path.extname(file.originalname);
+            cb(null, `meta_creative_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`);
+        }
+    }),
+    limits: { fileSize: 30 * 1024 * 1024 }
+});
+
+// Meta Auth
+app.post('/api/meta/auth/connect', authenticate, metaAdsController.connectAccount);
+app.get('/api/meta/auth/status', authenticate, metaAdsController.getAccountStatus);
+app.post('/api/meta/auth/disconnect', authenticate, metaAdsController.disconnectAccount);
+
+// Meta Ad Accounts & Pages
+app.get('/api/meta/ad-accounts', authenticate, requireMetaAuth, metaAdsController.getAdAccounts);
+app.get('/api/meta/pages', authenticate, requireMetaAuth, metaAdsController.getPages);
+
+// Creative upload
+app.post('/api/meta/creative/upload', authenticate, requireMetaAuth, metaCreativeUpload.single('image'), metaAdsController.uploadCreativeImage);
+
+// Campaigns
+app.get('/api/meta/campaigns', authenticate, metaAdsController.getCampaigns);
+app.post('/api/meta/campaigns', authenticate, requireMetaAuth, metaAdsController.createFullCampaign);
+app.get('/api/meta/campaigns/:id', authenticate, metaAdsController.getCampaignById);
+app.get('/api/meta/campaigns/:id/stats', authenticate, requireMetaAuth, metaAdsController.syncCampaignStats);
+app.patch('/api/meta/campaigns/:id/status', authenticate, requireMetaAuth, metaAdsController.updateCampaignStatus);
+app.delete('/api/meta/campaigns/:id', authenticate, requireMetaAuth, metaAdsController.deleteCampaign);
+
+// Meta Leads
+app.get('/api/meta/leads', authenticate, metaAdsController.getMetaLeads);
+
+// Meta Leads Webhook verification & ingestion
+app.get('/webhooks/meta-leads', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const verifyToken = process.env.META_LEADS_WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'sendzyy_meta_lead_verify_token';
+    if (mode === 'subscribe' && token === verifyToken) {
+        console.log('[MetaLeadsWebhook] Verification successful');
+        return res.status(200).send(challenge);
+    }
+    return res.sendStatus(403);
+});
+
+app.post('/webhooks/meta-leads', async (req, res) => {
+    // Acknowledge Meta immediately
+    res.status(200).send('EVENT_RECEIVED');
+    try {
+        const body = req.body;
+        if (body.object === 'page' && Array.isArray(body.entry)) {
+            for (const entry of body.entry) {
+                const pageId = entry.id;
+                for (const change of (entry.changes || [])) {
+                    if (change.field === 'leadgen') {
+                        const { leadgen_id, form_id, ad_id } = change.value || {};
+                        if (!leadgen_id) continue;
+
+                        let tokenDoc = await MetaAdToken.findOne({ pageId, status: 'connected' });
+                        let campaign = null;
+                        if (form_id) {
+                            campaign = await MetaAdCampaign.findOne({ metaLeadFormId: form_id });
+                        }
+                        if (!tokenDoc && campaign) {
+                            tokenDoc = await MetaAdToken.findOne({ tenantId: campaign.tenantId, status: 'connected' });
+                        }
+
+                        if (!tokenDoc) {
+                            console.warn(`[MetaLeadsWebhook] No connected tenant found for page ${pageId} or form ${form_id}`);
+                            continue;
+                        }
+
+                        const tenantId = tokenDoc.tenantId;
+                        const pageAccessToken = tokenDoc.pageAccessToken
+                            ? decryptSecret(tokenDoc.pageAccessToken)
+                            : decryptSecret(tokenDoc.accessToken);
+
+                        const leadDetails = await MetaAdsService.getLeadDetails(pageAccessToken, leadgen_id);
+                        const fieldData = leadDetails.field_data || [];
+
+                        let fullName = '';
+                        let phone = '';
+                        let email = '';
+                        const extraData = {};
+
+                        for (const item of fieldData) {
+                            const val = Array.isArray(item.values) ? item.values[0] : item.values;
+                            const nameLower = (item.name || '').toLowerCase();
+                            if (nameLower.includes('full_name') || nameLower === 'name') {
+                                fullName = val;
+                            } else if (nameLower.includes('phone') || nameLower.includes('mobile')) {
+                                phone = val;
+                            } else if (nameLower.includes('email')) {
+                                email = val;
+                            } else {
+                                extraData[item.name] = val;
+                            }
+                        }
+
+                        let cleanPhone = (phone || '').replace(/\D/g, '');
+                        if (cleanPhone.length === 10) {
+                            cleanPhone = '91' + cleanPhone;
+                        }
+
+                        const newLead = new Lead({
+                            tenantId,
+                            name: fullName || 'Meta Lead',
+                            mobileNumber: cleanPhone || `meta_${leadgen_id}`,
+                            email: email || '',
+                            source: 'meta_ads',
+                            formName: form_id || 'Meta Lead Form',
+                            metadata: {
+                                metaLeadgenId: leadgen_id,
+                                metaFormId: form_id,
+                                metaAdId: ad_id,
+                                metaCampaignId: campaign ? campaign._id.toString() : null,
+                                rawFieldData: fieldData,
+                                ...extraData
+                            }
+                        });
+
+                        await newLead.save();
+                        console.log(`[MetaLeadsWebhook] Saved lead ${newLead._id} for tenant ${tenantId}`);
+
+                        if (campaign) {
+                            await MetaAdCampaign.updateOne(
+                                { _id: campaign._id },
+                                {
+                                    $inc: { 'insights.leadsCount': 1 },
+                                    $set: { 'insights.lastSyncedAt': new Date() }
+                                }
+                            );
+                        }
+
+                        try {
+                            await evaluateTriggers(tenantId, newLead);
+                        } catch (trigErr) {
+                            console.error('[MetaLeadsWebhook] Error in evaluateTriggers:', trigErr.message);
+                        }
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[MetaLeadsWebhook] Ingestion error:', err.message);
+    }
+});
 
 //  Scheduled Campaign Runner (checks every minute) 
 async function runScheduledCampaigns() {

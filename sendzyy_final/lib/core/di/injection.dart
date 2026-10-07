@@ -33,6 +33,8 @@ import 'package:iFloraBuzz/features/calling/presentation/bloc/call_log_bloc.dart
 import 'package:iFloraBuzz/features/app_update/data/services/app_update_service.dart';
 import 'package:iFloraBuzz/features/app_update/presentation/bloc/app_update_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/repositories/whatsapp_flow_repository.dart';
+import 'package:iFloraBuzz/features/meta_ads/data/repositories/meta_ads_repository.dart';
+import 'package:iFloraBuzz/features/meta_ads/presentation/bloc/meta_ads_bloc.dart';
 
 final getIt = GetIt.instance;
 
@@ -139,4 +141,8 @@ Future<void> init() async {
   // Features - App Update
   getIt.registerLazySingleton(() => AppUpdateService(dio: getIt()));
   getIt.registerFactory(() => AppUpdateBloc(updateService: getIt()));
+
+  // Features - Meta Ads
+  getIt.registerLazySingleton(() => MetaAdsRepository(getIt()));
+  getIt.registerFactory(() => MetaAdsBloc(getIt()));
 }
