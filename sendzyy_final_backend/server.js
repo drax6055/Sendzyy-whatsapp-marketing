@@ -6,7 +6,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
@@ -24,15 +24,18 @@ try {
 }
 const { verifyMetaWebhookSignature } = require('./middleware/verifyMetaSignature');
 const WebhookRawLog = require('./models/WebhookRawLog');
-const WhatsAppFlow = require('./models/WhatsAppFlow');
-const WhatsAppFlowResponse = require('./models/WhatsAppFlowResponse');
-const { WhatsAppFlowService, compileFieldsToFlowJson } = require('./services/WhatsAppFlowService');
-const { createFlowController } = require('./controllers/flowController');
-const WhatsAppOrder = require('./models/WhatsAppOrder');
-const CatalogService = require('./services/CatalogService');
-const { createCatalogController } = require('./controllers/catalogController');
 const webhookIngestionService = require('./services/WebhookIngestionService');
 const { processIncomingWebhookPayload } = require('./services/WebhookRouter');
+
+// ── Instagram Modular Imports ────────────────────────────────────────────────
+const InstagramAutomation = require('./models/InstagramAutomation');
+const InstagramAutomationSession = require('./models/InstagramAutomationSession');
+const { handleInstagramWebhook } = require('./services/instagramWebhookService');
+const instagramRoutes = require('./routes/instagramRoutes');
+const instagramCommentAutomationRoutes = require('./routes/instagramCommentAutomationRoutes');
+const catalogRoutes = require('./routes/catalogRoutes');
+const CatalogOrder = require('./models/CatalogOrder');
+const CatalogProduct = require('./models/CatalogProduct');
 
 //  MongoDB Connection 
 if (process.env.MONGODB_URI) {
@@ -45,7 +48,7 @@ if (process.env.MONGODB_URI) {
             await backfillTenantReportingTimezones();
             // Recover any pending/stuck webhook logs on boot
             await webhookIngestionService.recoverPendingWebhookLogs();
-            // Drop the  9999ld unique compound index on {tenantId, version} if it exists.
+            // Drop the old unique compound index on {tenantId, version} if it exists.
             // We now use a single-field unique index on {tenantId} since one doc per tenant.
             try {
                 const col = mongoose.connection.collection('retryconfigurations');
@@ -81,7 +84,7 @@ const tenantSchema = new mongoose.Schema({
         businessPortfolioId: String,    // Business Portfolio ID (Step 3 — required for Step 5)
         metaAppId: String,
         businessId: String,
-        displayPhone: String,          // Human-readable phone e.g. +91 98765 43210 (Step 6)
+        displayPhone: String,           // Human-readable phone e.g. +91 98765 43210 (Step 6)
         verifiedName: String,           // Business display name (Step 6)
         qualityRating: String,          // GREEN / YELLOW / RED (Step 6)
         throughputLevel: String,        // STANDARD / HIGH / NOT_APPLICABLE (Step 6)
@@ -98,28 +101,14 @@ const tenantSchema = new mongoose.Schema({
         tokenType: { type: String, default: 'user' }, // 'user' | 'system_user'
         tokenStatus: { type: String, default: 'active', enum: ['active', 'expiring_soon', 'expired', 'unknown'] },
         reportingTimezone: { type: String, default: 'Asia/Kolkata' }, // WABA timezone for daily analytics reconciliation
-        // ── Catalog Management (Supports multiple catalogs) ────────────────
-        catalogId: { type: String, default: null }, // Active / primary catalog ID
-        catalogs: [{
-            catalogId: { type: String, required: true },
-            name: { type: String, default: '' },
-            vertical: { type: String, default: 'commerce' },
-            isDefault: { type: Boolean, default: false },
-            discoveredAt: { type: Date, default: Date.now },
-            productCount: { type: Number, default: 0 }
-        }],
-        commerceSettings: {
-            autoSendPaymentLink: { type: Boolean, default: true },
-            paymentGateway: { type: String, default: 'razorpay' },
-            razorpayKeyId: { type: String, default: '' },
-            razorpayKeySecret: { type: String, default: '' },
-        },
     },
     webhookSecret: { type: String, default: '' },  // AES-256 encrypted hex string
     openaiApiKey: { type: String, default: '' },
     instagramConfig: {
         instagramAccountId: { type: String, default: '' },
+        igUserId: { type: String, default: '' },
         username: { type: String, default: '' },
+        name: { type: String, default: '' },
         accessToken: { type: String, default: '' },
         tokenExpiry: { type: Date, default: null },
         connected: { type: Boolean, default: false }
@@ -822,10 +811,17 @@ function logToFile(msg) {
     const timestamp = new Date().toISOString();
     fs.appendFileSync(logFile, `[${timestamp}] ${msg}\n`);
 }
+function formatLogArg(arg) {
+    if (arg === null || arg === undefined) return String(arg);
+    if (typeof arg === 'object') {
+        try { return JSON.stringify(arg); } catch (_) { return String(arg); }
+    }
+    return String(arg);
+}
 const originalLog = console.log;
 const originalError = console.error;
-console.log = (...args) => { logToFile(args.join(' ')); originalLog(...args); };
-console.error = (...args) => { logToFile(args.join(' ')); originalError(...args); };
+console.log = (...args) => { logToFile(args.map(formatLogArg).join(' ')); originalLog(...args); };
+console.error = (...args) => { logToFile(args.map(formatLogArg).join(' ')); originalError(...args); };
 
 process.on('unhandledRejection', (reason, promise) => console.error(' Unhandled Rejection:', reason));
 process.on('uncaughtException', (err) => console.error(' Uncaught Exception:', err));
@@ -853,9 +849,16 @@ SocketEmitter.setIo(io);
 app.use(bodyParser.json({
     limit: '50mb',
     verify: (req, res, buf) => {
+        req.rawBuffer = buf;
         req.rawBody = buf.toString();
     }
 }));
+
+// ── Mount Modular Instagram Routes ───────────────────────────────────────────
+app.set('TenantModel', Tenant);
+app.use('/api/instagram', instagramRoutes);
+app.use('/api/instagram/comment-automations', instagramCommentAutomationRoutes);
+app.use('/api/catalog', catalogRoutes);
 app.use(bodyParser.raw({
     type: (req) => {
         const contentType = req.headers['content-type'] || '';
@@ -1180,498 +1183,7 @@ const authenticate = (req, res, next) => {
     });
 };
 
-// ── Instagram OAuth Connection Flow ──────────────────────────────────────────
 
-// 1. Initiate Instagram OAuth Flow
-app.get('/api/instagram/auth', authenticate, (req, res) => {
-    try {
-        const token = req.headers['authorization']?.split(' ')[1] || req.query.token;
-        const clientId = process.env.INSTAGRAM_CLIENT_ID;
-        const redirectUri = 'https://appapi.sendzyy.com/api/instagram/callback';
-        const scope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights';
-        const authUrl =
-            `https://www.instagram.com/oauth/authorize` +
-            `?force_reauth=true` +
-            `&client_id=${clientId}` +
-            `&redirect_uri=${redirectUri}` +
-            `&response_type=code` +
-            `&scope=${encodeURIComponent(scope)}` +
-            `&state=${encodeURIComponent(token)}`;
-
-        return res.redirect(authUrl);
-    } catch (error) {
-        console.error('[INSTAGRAM AUTH] ❌ ERROR');
-        console.error('[INSTAGRAM AUTH] Error message:', error.message);
-        console.error('[INSTAGRAM AUTH] Stack:', error.stack);
-
-        return res.status(500).json({
-            error: 'Internal Server Error'
-        });
-    }
-});
-
-// 2. OAuth Callback Handler
-app.get('/api/instagram/callback', async (req, res) => {
-    const { code, state } = req.query;
-    const targetFrontend = 'https://app.sendzyy.com';
-
-    // Check Instagram OAuth errors
-    if (req.query.error) {
-        console.error('[INSTAGRAM CALLBACK] ❌ Instagram returned an OAuth error');
-        console.error(
-            '[INSTAGRAM CALLBACK] Error:',
-            req.query.error
-        );
-        console.error(
-            '[INSTAGRAM CALLBACK] Reason:',
-            req.query.error_reason
-        );
-        console.error(
-            '[INSTAGRAM CALLBACK] Description:',
-            req.query.error_description
-        );
-
-        return res.redirect(
-            `${targetFrontend}/?error=${encodeURIComponent(
-                req.query.error_description ||
-                req.query.error ||
-                'Instagram authorization failed'
-            )}`
-        );
-    }
-
-    if (!code || !state) {
-        console.error(
-            '[INSTAGRAM CALLBACK] ❌ Missing code or state'
-        );
-        console.error(
-            '[INSTAGRAM CALLBACK] Code received:',
-            !!code
-        );
-        console.error(
-            '[INSTAGRAM CALLBACK] State received:',
-            !!state
-        );
-
-        return res.redirect(
-            `${targetFrontend}/?error=${encodeURIComponent(
-                'Missing code or state'
-            )}`
-        );
-    }
-
-    // 3. Verify JWT state
-    jwt.verify(
-        state,
-        process.env.JWT_SECRET,
-        async (err, user) => {
-            if (err) {
-                console.error(
-                    '[INSTAGRAM CALLBACK] ❌ JWT verification failed'
-                );
-                console.error(
-                    '[INSTAGRAM CALLBACK] JWT error:',
-                    err.message
-                );
-
-                return res.redirect(
-                    `${targetFrontend}/?error=${encodeURIComponent(
-                        'Invalid state token'
-                    )}`
-                );
-            }
-
-            if (!user?.tenantId) {
-                console.error(
-                    '[INSTAGRAM CALLBACK] ❌ tenantId missing in JWT'
-                );
-
-                return res.redirect(
-                    `${targetFrontend}/?error=${encodeURIComponent(
-                        'Tenant ID missing'
-                    )}`
-                );
-            }
-
-            const tenantId = user.tenantId;
-
-            try {
-                // 4. Check environment variables
-                const clientId =
-                    process.env.INSTAGRAM_CLIENT_ID;
-
-                const clientSecret =
-                    process.env.INSTAGRAM_CLIENT_SECRET ||
-                    process.env.META_APP_SECRET;
-
-                if (!clientId) {
-                    throw new Error(
-                        'INSTAGRAM_CLIENT_ID is not configured'
-                    );
-                }
-
-                if (!clientSecret) {
-                    throw new Error(
-                        'INSTAGRAM_CLIENT_SECRET or META_APP_SECRET is not configured'
-                    );
-                }
-
-                // 5. Exchange code for short-lived token
-                const redirectUri =
-                    'https://appapi.sendzyy.com/api/instagram/callback';
-
-                const tokenParams = new URLSearchParams();
-                tokenParams.append(
-                    'client_id',
-                    clientId
-                );
-                tokenParams.append(
-                    'client_secret',
-                    clientSecret
-                );
-                tokenParams.append(
-                    'grant_type',
-                    'authorization_code'
-                );
-                tokenParams.append(
-                    'redirect_uri',
-                    redirectUri
-                );
-                tokenParams.append(
-                    'code',
-                    code
-                );
-
-                const tokenResponse = await axios.post(
-                    'https://api.instagram.com/oauth/access_token',
-                    tokenParams,
-                    {
-                        headers: {
-                            'Content-Type':
-                                'application/x-www-form-urlencoded'
-                        }
-                    }
-                );
-
-                const {
-                    access_token: shortLivedToken
-                } = tokenResponse.data;
-
-                if (!shortLivedToken) {
-                    throw new Error(
-                        'Instagram did not return short-lived access token'
-                    );
-                }
-
-                // 6. Exchange short-lived → long-lived
-                const longLivedResponse =
-                    await axios.get(
-                        'https://graph.instagram.com/access_token',
-                        {
-                            params: {
-                                grant_type:
-                                    'ig_exchange_token',
-                                client_secret:
-                                    clientSecret,
-                                access_token:
-                                    shortLivedToken
-                            }
-                        }
-                    );
-
-                const {
-                    access_token: longLivedToken,
-                    expires_in
-                } = longLivedResponse.data;
-
-                if (!longLivedToken) {
-                    throw new Error(
-                        'Instagram did not return long-lived access token'
-                    );
-                }
-
-                // 7. Fetch Instagram profile
-                const profileResponse =
-                    await axios.get(
-                        'https://graph.instagram.com/me',
-                        {
-                            params: {
-                                fields:
-                                    'id,username,name',
-                                access_token:
-                                    longLivedToken
-                            }
-                        }
-                    );
-
-                const {
-                    id: instagramAccountId,
-                    username,
-                    name
-                } = profileResponse.data;
-
-                const tokenExpiry =
-                    expires_in
-                        ? new Date(
-                            Date.now() +
-                            expires_in * 1000
-                        )
-                        : null;
-
-                // 8. Find tenant
-                const tenant =
-                    await Tenant.findById(tenantId);
-
-                if (!tenant) {
-                    console.error(
-                        '[INSTAGRAM DATABASE] ❌ Tenant not found:',
-                        tenantId
-                    );
-
-                    return res.redirect(
-                        `${targetFrontend}/?error=${encodeURIComponent(
-                            'Tenant not found'
-                        )}`
-                    );
-                }
-
-                // 9. Save Instagram configuration
-                tenant.instagramConfig = {
-                    instagramAccountId,
-                    username,
-                    name: name || username,
-                    accessToken: longLivedToken,
-                    tokenExpiry,
-                    connected: true
-                };
-
-                await tenant.save();
-
-                return res.redirect(
-                    `${targetFrontend}/?instagram_connected=true`
-                );
-
-            } catch (error) {
-                console.error(
-                    '[INSTAGRAM CALLBACK] ❌ ERROR DURING OAUTH FLOW'
-                );
-                console.error(
-                    '[INSTAGRAM CALLBACK] Error message:',
-                    error.message
-                );
-                console.error(
-                    '[INSTAGRAM CALLBACK] Error response:',
-                    error.response?.data || 'No response data'
-                );
-                console.error(
-                    '[INSTAGRAM CALLBACK] HTTP status:',
-                    error.response?.status || 'N/A'
-                );
-                console.error(
-                    '[INSTAGRAM CALLBACK] Stack:',
-                    error.stack
-                );
-
-                const errMsg =
-                    error.response?.data?.error_message ||
-                    error.response?.data?.error?.message ||
-                    error.message ||
-                    'Instagram connection failed';
-
-                console.error(
-                    '[INSTAGRAM CALLBACK] Redirecting with error:',
-                    errMsg
-                );
-
-                return res.redirect(
-                    `${targetFrontend}/?error=${encodeURIComponent(
-                        errMsg
-                    )}`
-                );
-            }
-        }
-    );
-});
-
-
-// 4. Get Instagram Profile
-app.get('/api/instagram/profile', authenticate, async (req, res) => {
-    try {
-        const tenant =
-            await Tenant.findById(req.user.tenantId);
-
-        if (!tenant) {
-            console.error(
-                '[INSTAGRAM PROFILE API] ❌ Tenant not found'
-            );
-
-            return res.status(404).json({
-                error: 'Tenant not found'
-            });
-        }
-
-        let config =
-            tenant.instagramConfig || {
-                connected: false
-            };
-
-        // Auto-refresh long-lived token if it is connected
-        // and expires in less than 15 days
-        if (
-            config.connected &&
-            config.accessToken &&
-            config.tokenExpiry
-        ) {
-            const expiryTime =
-                new Date(config.tokenExpiry).getTime();
-
-            const timeDiff =
-                expiryTime - Date.now();
-
-            const fifteenDaysInMs =
-                15 * 24 * 60 * 60 * 1000;
-
-            if (
-                timeDiff > 0 &&
-                timeDiff < fifteenDaysInMs
-            ) {
-                try {
-                    const refreshResponse =
-                        await axios.get(
-                            'https://graph.instagram.com/refresh_access_token',
-                            {
-                                params: {
-                                    grant_type:
-                                        'ig_refresh_token',
-                                    access_token:
-                                        config.accessToken
-                                }
-                            }
-                        );
-
-                    const {
-                        access_token: newAccessToken,
-                        expires_in: newExpiresIn
-                    } = refreshResponse.data;
-
-                    const newTokenExpiry =
-                        newExpiresIn
-                            ? new Date(
-                                Date.now() +
-                                newExpiresIn * 1000
-                            )
-                            : null;
-
-                    tenant.instagramConfig.accessToken =
-                        newAccessToken;
-
-                    tenant.instagramConfig.tokenExpiry =
-                        newTokenExpiry;
-
-                    await tenant.save();
-
-                    config =
-                        tenant.instagramConfig;
-
-                } catch (refreshErr) {
-                    console.error(
-                        '[INSTAGRAM REFRESH] ❌ Refresh failed'
-                    );
-                    console.error(
-                        '[INSTAGRAM REFRESH] Error:',
-                        refreshErr.message
-                    );
-                    console.error(
-                        '[INSTAGRAM REFRESH] Response:',
-                        refreshErr.response?.data ||
-                        'No response data'
-                    );
-                }
-            }
-        }
-
-        // IMPORTANT:
-        // Never return Instagram access token to frontend
-        const safeConfig = {
-            instagramAccountId:
-                config.instagramAccountId,
-            username:
-                config.username,
-            name:
-                config.name,
-            tokenExpiry:
-                config.tokenExpiry,
-            connected:
-                config.connected
-        };
-
-        return res.json(safeConfig);
-
-    } catch (error) {
-        console.error(
-            '[INSTAGRAM PROFILE API] ❌ ERROR:',
-            error.message
-        );
-        console.error(
-            '[INSTAGRAM PROFILE API] Stack:',
-            error.stack
-        );
-
-        return res.status(500).json({
-            error: 'Internal Server Error'
-        });
-    }
-});
-
-
-// 5. Disconnect Instagram Profile
-app.post('/api/instagram/disconnect', authenticate, async (req, res) => {
-    try {
-        const tenant =
-            await Tenant.findById(req.user.tenantId);
-
-        if (!tenant) {
-            console.error(
-                '[INSTAGRAM DISCONNECT] ❌ Tenant not found'
-            );
-
-            return res.status(404).json({
-                error: 'Tenant not found'
-            });
-        }
-
-        tenant.instagramConfig = {
-            instagramAccountId: '',
-            username: '',
-            name: '',
-            accessToken: '',
-            tokenExpiry: null,
-            connected: false
-        };
-
-        await tenant.save();
-
-        return res.json({
-            success: true,
-            message: 'Instagram profile disconnected'
-        });
-
-    } catch (error) {
-        console.error(
-            '[INSTAGRAM DISCONNECT] ❌ ERROR:',
-            error.message
-        );
-
-        console.error(
-            '[INSTAGRAM DISCONNECT] Stack:',
-            error.stack
-        );
-
-        return res.status(500).json({
-            error: 'Internal Server Error'
-        });
-    }
-});
 
 //  System Update broadcast (triggered via Postman/admin)
 app.post('/api/admin/system-update', (req, res) => {
@@ -1790,14 +1302,6 @@ app.post('/api/notifications/register-token', async (req, res) => {
             },
             { upsert: true, new: true }
         );
-
-        // Deactivate or remove any old stale tokens for the same deviceId
-        if (deviceId) {
-            await FCMToken.deleteMany({
-                deviceId,
-                token: { $ne: token }
-            });
-        }
 
         // Subscribe device token to tenant FCM topic
         await FCMService.subscribeToTenantTopic(token, tenantId);
@@ -2042,12 +1546,15 @@ app.post('/verify-panel-payment-register', async (req, res) => {
 
 //  Login 
 app.post('/login', async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email and password are required' });
+    }
     try {
-        const tenant = await Tenant.findOne({ email });
+        const tenant = await Tenant.findOne({ email: String(email).trim().toLowerCase() });
         if (!tenant) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const isMatch = await bcrypt.compare(password, tenant.password);
+        const isMatch = await bcrypt.compare(String(password), tenant.password);
         if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
 
         // Block login if account status is inactive
@@ -2080,9 +1587,10 @@ app.post('/login', async (req, res) => {
             }
         }
 
+        const jwtSecret = process.env.JWT_SECRET || 'super-secret-key-123';
         const token = jwt.sign(
             { tenantId: tenant._id.toString(), email: tenant.email },
-            process.env.JWT_SECRET,
+            jwtSecret,
             { expiresIn: '24h' }
         );
 
@@ -2098,8 +1606,8 @@ app.post('/login', async (req, res) => {
             }
         });
     } catch (error) {
-        console.error(' Login Error:', error);
-        res.status(500).json({ error: 'Internal Server Error' });
+        console.error(' Login Error:', error.message, error.stack);
+        res.status(500).json({ error: 'Internal Server Error', details: error.message });
     }
 });
 
@@ -2277,11 +1785,19 @@ app.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
-    if (mode && token === VERIFY_TOKEN) {
-        console.log(' Webhook Verified!');
-        return res.status(200).send(challenge);
+    const verifyTokenInstagram = process.env.INSTAGRAM_VERIFY_TOKEN || 'app_sendzyy_auth_token_1502200214082002';
+    const verifyTokenWhatsApp = process.env.WHATSAPP_VERIFY_TOKEN || 'whatsapp_bulk_verify_token_123';
+    const verifyTokenGeneric = process.env.WEBHOOK_VERIFY_TOKEN || 'sendzyy_meta_webhook_verify_2024';
+
+    if (mode === 'subscribe' && (
+        token === verifyTokenInstagram || 
+        token === verifyTokenWhatsApp || 
+        token === verifyTokenGeneric
+    )) {
+        console.log('Webhook verified successfully');
+        return res.status(200).send(challenge); 
     }
-    res.sendStatus(403);
+    return res.sendStatus(403);
 });
 
 //  Templates 
@@ -2435,7 +1951,7 @@ app.get('/me', authenticate, async (req, res) => {
 });
 
 app.post('/update-config', authenticate, async (req, res) => {
-    const { phoneNumberId, accessToken, businessAccountId, metaAppId, displayPhone, verifiedName, qualityRating, throughputLevel, catalogId, catalogs } = req.body;
+    const { phoneNumberId, accessToken, businessAccountId, metaAppId, displayPhone, verifiedName, qualityRating, throughputLevel } = req.body;
     try {
         const updateFields = {
             'whatsappConfig.verified': true,
@@ -2448,13 +1964,8 @@ app.post('/update-config', authenticate, async (req, res) => {
         if (verifiedName !== undefined) updateFields['whatsappConfig.verifiedName'] = verifiedName;
         if (qualityRating !== undefined) updateFields['whatsappConfig.qualityRating'] = qualityRating;
         if (throughputLevel !== undefined) updateFields['whatsappConfig.throughputLevel'] = throughputLevel;
-        if (catalogId !== undefined) updateFields['whatsappConfig.catalogId'] = catalogId;
-        if (catalogs !== undefined) updateFields['whatsappConfig.catalogs'] = catalogs;
 
-        const updatedTenant = await Tenant.findByIdAndUpdate(req.user.tenantId, { $set: updateFields }, { new: true });
-        if (updatedTenant && (accessToken || businessAccountId)) {
-            CatalogService.syncCatalogs(updatedTenant).catch(e => console.warn('[update-config] Background catalog sync notice:', e.message));
-        }
+        await Tenant.findByIdAndUpdate(req.user.tenantId, { $set: updateFields });
         res.json({ success: true, message: 'Configuration updated' });
     } catch (error) {
         res.status(500).json({ error: 'Failed to update configuration' });
@@ -3329,30 +2840,6 @@ app.post('/send-message', authenticate, async (req, res) => {
             if (type === 'document' && text) {
                 payload.document.filename = text; // optional filename
             }
-        } else if (type === 'flow') {
-            payload.type = 'interactive';
-            payload.interactive = {
-                type: 'flow',
-                header: req.body.headerText ? { type: 'text', text: req.body.headerText } : undefined,
-                body: { text: text || req.body.bodyText || 'Please complete the form below:' },
-                footer: req.body.footerText ? { text: req.body.footerText } : undefined,
-                action: {
-                    name: 'flow',
-                    parameters: {
-                        flow_message_version: '3',
-                        flow_token: req.body.flowToken || `ft_${Date.now()}`,
-                        flow_id: req.body.flowId,
-                        flow_cta: req.body.ctaText || 'Open Form',
-                        flow_action: 'navigate',
-                        flow_action_payload: {
-                            screen: req.body.screenId || 'QUESTION_SCREEN'
-                        }
-                    }
-                }
-            };
-        } else if (type === 'interactive' && req.body.interactive) {
-            payload.type = 'interactive';
-            payload.interactive = req.body.interactive;
         }
 
         const response = await axios.post(
@@ -3482,28 +2969,16 @@ app.post('/send-message', authenticate, async (req, res) => {
                 { lastMessage: msgPreview, lastActive: new Date(), $setOnInsert: { hasReply: false } },
                 { upsert: true }
             );
-            let outboundText = text || '';
-            if (['image', 'video', 'audio', 'document'].includes(type)) {
-                outboundText = type === 'document' ? (text || '') : '';
-            } else if (type === 'text') {
-                outboundText = text || '';
-            } else if (type === 'template') {
-                outboundText = outboundTemplateBody || '';
-            } else if (type === 'interactive') {
-                outboundText = req.body.interactive?.body?.text || 'Interactive Message';
-            }
-
             await Message.create({
                 tenantId,
                 contactId: to,
-                text: outboundText,
+                text: ['image', 'video', 'audio', 'document'].includes(type) ? (type === 'document' ? text : '') : (type === 'text' ? text : (outboundTemplateBody || '')),
                 isMe: true,
                 time: new Date().toISOString(),
                 messageType: outboundMessageType,
                 templateName: outboundTemplateName,
                 templateBody: outboundTemplateBody,
                 mediaUrl: ['image', 'video', 'audio', 'document'].includes(type) ? mediaId : null,
-                interactivePayload: (type === 'interactive' && req.body.interactive) ? req.body.interactive : (type === 'flow' ? payload.interactive : null),
                 wamid: wamid || null,
                 contextMessageId: targetWamid || replyToWamid || replyToMessageId || null,
                 replyContextPreview: replyContextPreview || null,
@@ -3564,7 +3039,16 @@ app.get('/campaigns', authenticate, async (req, res) => {
             totalCampaigns
         };
 
-        // 3. Fetch ONLY the requested page of campaigns
+        // 3. Fetch all distinct template names across ALL campaigns of this tenant (for filter dropdown)
+        const rawTemplates = await Campaign.distinct('template', {
+            tenantId: req.user.tenantId,
+            template: { $exists: true, $ne: '' }
+        });
+        const templates = (rawTemplates || [])
+            .filter(t => t && typeof t === 'string' && t.trim().length > 0)
+            .sort((a, b) => a.localeCompare(b));
+
+        // 4. Fetch ONLY the requested page of campaigns
         let campaignQuery = Campaign.find({ tenantId: req.user.tenantId })
             .sort({ timestamp: -1 });
 
@@ -3574,7 +3058,7 @@ app.get('/campaigns', authenticate, async (req, res) => {
 
         const campaigns = await campaignQuery;
 
-        // 4. Attach hasPendingRetry flag & Recipient counts for the fetched campaigns
+        // 5. Attach hasPendingRetry flag & Recipient counts for the fetched campaigns
         const campaignIds = campaigns.map(c => c.id);
         const pendingPhases = await ScheduledRetryPhase.find({
             campaignId: { $in: campaignIds },
@@ -3640,6 +3124,7 @@ app.get('/campaigns', authenticate, async (req, res) => {
         res.json({
             campaigns: enriched,
             totalStats,
+            templates,
             totalCampaigns,
             page,
             limit: isPaginated ? limit : totalCampaigns,
@@ -4641,120 +4126,6 @@ async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionI
             });
         }
 
-        // ── Step 6.8: Auto-discover Meta Product Catalogs ──────────────────
-        let discoveredCatalogs = [];
-        let activeCatalogId = null;
-        try {
-            await saveOnboardingLog({
-                tenantId,
-                sessionId,
-                wabaId,
-                businessPortfolioId,
-                step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_START',
-                status: 'info',
-                message: `Step 6.8: Auto-discovering product catalogs for WABA ID: ${wabaId}`
-            });
-
-            // 1. Try querying catalogs linked to WABA
-            let catalogsRes = null;
-            try {
-                catalogsRes = await axios.get(
-                    `https://graph.facebook.com/${apiVersion}/${wabaId}/product_catalogs`,
-                    {
-                        params: {
-                            fields: 'id,name,vertical,product_count',
-                            access_token: tokenForPhoneQuery,
-                        },
-                    }
-                );
-            } catch (wabaCatErr) {
-                console.warn(`${tag} /product_catalogs query on WABA failed, trying portfolio...`, wabaCatErr.response?.data || wabaCatErr.message);
-            }
-
-            let rawCatalogs = catalogsRes?.data?.data || [];
-
-            // 2. If no catalogs found on WABA directly, check owned catalogs on Business Portfolio
-            if (rawCatalogs.length === 0 && businessPortfolioId) {
-                try {
-                    const portfolioCatRes = await axios.get(
-                        `https://graph.facebook.com/${apiVersion}/${businessPortfolioId}/owned_product_catalogs`,
-                        {
-                            params: {
-                                fields: 'id,name,vertical,product_count',
-                                access_token: tokenForPhoneQuery,
-                            },
-                        }
-                    );
-                    rawCatalogs = portfolioCatRes.data?.data || [];
-                } catch (portCatErr) {
-                    console.warn(`${tag} /owned_product_catalogs query on Portfolio failed:`, portCatErr.response?.data || portCatErr.message);
-                }
-            }
-
-            if (rawCatalogs.length > 0) {
-                discoveredCatalogs = rawCatalogs.map((c, index) => ({
-                    catalogId: c.id,
-                    name: c.name || `Catalog ${c.id}`,
-                    vertical: c.vertical || 'commerce',
-                    isDefault: index === 0,
-                    discoveredAt: new Date(),
-                    productCount: c.product_count || 0
-                }));
-                activeCatalogId = discoveredCatalogs[0].catalogId;
-
-                await saveOnboardingLog({
-                    tenantId,
-                    sessionId,
-                    wabaId,
-                    step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_SUCCESS',
-                    status: 'success',
-                    message: `Step 6.8: Discovered ${discoveredCatalogs.length} catalog(s). Default active catalog: ${activeCatalogId}`,
-                    details: discoveredCatalogs
-                });
-
-                // Auto-enable commerce settings on the phone number if available
-                if (phoneNumberId) {
-                    try {
-                        await axios.post(
-                            `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/whatsapp_commerce_settings`,
-                            {
-                                is_cart_enabled: true,
-                                is_catalog_visible: true,
-                            },
-                            {
-                                headers: {
-                                    Authorization: `Bearer ${tokenForPhoneQuery}`,
-                                    'Content-Type': 'application/json',
-                                },
-                            }
-                        );
-                    } catch (commErr) {
-                        console.warn(`${tag} Auto-enabling commerce settings notice:`, commErr.response?.data || commErr.message);
-                    }
-                }
-            } else {
-                await saveOnboardingLog({
-                    tenantId,
-                    sessionId,
-                    wabaId,
-                    step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_EMPTY',
-                    status: 'info',
-                    message: 'Step 6.8: No existing Meta product catalogs found for this business.'
-                });
-            }
-        } catch (catErr) {
-            console.warn(`${tag} Catalog auto-discovery failed:`, catErr.response?.data || catErr.message);
-            await saveOnboardingLog({
-                tenantId,
-                sessionId,
-                wabaId,
-                step: 'ONBOARDING_PROCESS_FETCH_CATALOGS_FAIL',
-                status: 'warning',
-                message: 'Step 6.8: Catalog auto-discovery encountered an error (continuing onboarding).',
-                details: catErr.response?.data || catErr.message
-            });
-        }
-
         // ── Step 7: Persist to MongoDB ──────────────────────────────────────
         const isFullyVerified = !!(businessToken && phoneNumberId && phoneStatus === 'CONNECTED');
         const updateFields = {
@@ -4777,10 +4148,6 @@ async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionI
         if (verifiedName) updateFields['whatsappConfig.verifiedName'] = verifiedName;
         if (qualityRating) updateFields['whatsappConfig.qualityRating'] = qualityRating;
         if (throughputLevel) updateFields['whatsappConfig.throughputLevel'] = throughputLevel;
-        if (discoveredCatalogs.length > 0) {
-            updateFields['whatsappConfig.catalogs'] = discoveredCatalogs;
-            updateFields['whatsappConfig.catalogId'] = activeCatalogId;
-        }
 
         await saveOnboardingLog({
             tenantId,
@@ -4845,8 +4212,6 @@ async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionI
             verifiedName,
             qualityRating,
             throughputLevel,
-            catalogs: discoveredCatalogs,
-            activeCatalogId,
         };
     } catch (err) {
         await saveOnboardingLog({
@@ -5401,40 +4766,7 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
 
         // Refresh tenant from DB to get the final merged state
         const finalTenant = await Tenant.findById(tenantId);
-
-        // ── Auto-discover and connect WhatsApp Catalogs ──
-        if (finalTenant && finalTenant.whatsappConfig?.accessToken && finalTenant.whatsappConfig?.businessAccountId) {
-            try {
-                await saveOnboardingLog({
-                    tenantId,
-                    sessionId,
-                    step: 'BACKEND_AUTO_SYNC_CATALOGS_START',
-                    status: 'info',
-                    message: 'Auto-discovering and syncing WhatsApp catalogs from Meta...'
-                });
-                const catSyncResult = await CatalogService.syncCatalogs(finalTenant);
-                await saveOnboardingLog({
-                    tenantId,
-                    sessionId,
-                    step: 'BACKEND_AUTO_SYNC_CATALOGS_SUCCESS',
-                    status: 'success',
-                    message: `Auto-connected ${catSyncResult.count} catalog(s). Active catalog: ${catSyncResult.catalogId || 'none'}`,
-                    details: catSyncResult
-                });
-            } catch (catErr) {
-                console.warn('[Embedded Signup] Auto catalog sync notice:', catErr.message);
-                await saveOnboardingLog({
-                    tenantId,
-                    sessionId,
-                    step: 'BACKEND_AUTO_SYNC_CATALOGS_NOTICE',
-                    status: 'info',
-                    message: `Auto catalog discovery notice: ${catErr.message}`,
-                });
-            }
-        }
-
-        const freshTenant = await Tenant.findById(tenantId);
-        const finalConfig = freshTenant?.whatsappConfig || {};
+        const finalConfig = finalTenant?.whatsappConfig || {};
 
         const successResp = {
             success: true,
@@ -5454,8 +4786,6 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
                 throughputLevel: finalConfig.throughputLevel,
                 metaAppId: appId,
                 verified: finalConfig.verified,
-                catalogId: finalConfig.catalogId || null,
-                catalogs: finalConfig.catalogs || [],
             }
         };
 
@@ -5606,17 +4936,9 @@ app.post('/refresh-meta-account', authenticate, async (req, res) => {
             }
         }
 
-        // Read final state from DB and auto-sync catalogs
+        // Read final state from DB
         const finalTenant = await Tenant.findById(tenantId);
-        if (finalTenant && finalTenant.whatsappConfig?.accessToken && finalTenant.whatsappConfig?.businessAccountId) {
-            try {
-                await CatalogService.syncCatalogs(finalTenant);
-            } catch (catErr) {
-                console.warn('[Refresh Account] Auto catalog sync notice:', catErr.message);
-            }
-        }
-        const freshTenant = await Tenant.findById(tenantId);
-        const finalConfig = freshTenant?.whatsappConfig || {};
+        const finalConfig = finalTenant?.whatsappConfig || {};
 
         await saveOnboardingLog({
             tenantId,
@@ -5640,8 +4962,6 @@ app.post('/refresh-meta-account', authenticate, async (req, res) => {
                 qualityRating: finalConfig.qualityRating,
                 throughputLevel: finalConfig.throughputLevel,
                 verified: finalConfig.verified,
-                catalogId: finalConfig.catalogId || null,
-                catalogs: finalConfig.catalogs || [],
             }
         });
     } catch (error) {
@@ -5715,6 +5035,97 @@ app.post('/upload-media', authenticate, async (req, res) => {
     } catch (error) {
         const errorData = error.response?.data || error.message;
         res.status(error.response?.status || 500).json({ error: { message: 'Failed to proxy media upload', details: errorData } });
+    }
+});
+
+// Profile picture upload proxy - avoids CORS when called from Flutter Web
+// Steps: 1) Create Meta upload session, 2) Upload binary, 3) Attach handle to profile
+app.post('/upload-profile-picture', authenticate, async (req, res) => {
+    const { phoneNumberId, accessToken, appId, fileName, fileType } = req.query;
+    const fileData = req.body;
+
+    try {
+        if (!phoneNumberId || !accessToken || !appId) {
+            return res.status(400).json({ error: { message: 'phoneNumberId, accessToken, and appId are required.' } });
+        }
+        if (!fileData || !Buffer.isBuffer(fileData) || fileData.length === 0) {
+            console.error('[Profile Picture Upload]: req.body is not a buffer. Content-Type:', req.headers['content-type']);
+            return res.status(400).json({ error: { message: 'Invalid file data. Expected binary stream.' } });
+        }
+
+        let binaryData = fileData;
+        // Handle case where Flutter sends JSON array of byte values
+        const str = fileData.toString('utf8').trim();
+        if (str.startsWith('[') && str.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(str);
+                if (Array.isArray(parsed)) {
+                    binaryData = Buffer.from(parsed);
+                }
+            } catch (_) {}
+        }
+
+        const mimeType = fileType || 'image/jpeg';
+
+        // Step 1: Create Resumable Upload Session with Meta
+        const initResponse = await axios.post(
+            `${WHATSAPP_API_URL}/${appId}/uploads`,
+            null,
+            {
+                params: {
+                    file_name: fileName || 'profile.jpg',
+                    file_length: binaryData.length,
+                    file_type: mimeType,
+                    access_token: accessToken,
+                },
+            }
+        );
+        const uploadSessionId = initResponse.data?.id;
+        if (!uploadSessionId) {
+            return res.status(500).json({ error: { message: 'Failed to create upload session with Meta.' } });
+        }
+
+        // Step 2: Upload Binary Data to Meta
+        const uploadResponse = await axios.post(
+            `${WHATSAPP_API_URL}/${uploadSessionId}`,
+            binaryData,
+            {
+                headers: {
+                    Authorization: `OAuth ${accessToken}`,
+                    'Content-Type': 'application/octet-stream',
+                    file_offset: '0',
+                },
+            }
+        );
+        const handleId = uploadResponse.data?.h;
+        if (!handleId) {
+            return res.status(500).json({ error: { message: 'Failed to get upload handle from Meta.' } });
+        }
+
+        // Step 3: Attach profile picture handle to WhatsApp Business Profile
+        const attachResponse = await axios.post(
+            `${WHATSAPP_API_URL}/${phoneNumberId}/whatsapp_business_profile`,
+            {
+                messaging_product: 'whatsapp',
+                profile_picture_handle: handleId,
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        if (attachResponse.data?.success) {
+            res.json({ success: true, handle: handleId });
+        } else {
+            res.status(500).json({ error: { message: 'Failed to attach profile picture to WhatsApp profile.' } });
+        }
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        console.error('[Profile Picture Upload Error]:', JSON.stringify(errorData, null, 2));
+        res.status(error.response?.status || 500).json({ error: { message: 'Failed to upload profile picture', details: errorData } });
     }
 });
 
@@ -6196,11 +5607,6 @@ async function executeNode(session, node, tenant, from) {
     if (type === 'listMessage') return handleListMessageNode(session, node, tenant, from);
     if (type === 'condition') return handleConditionNode(session, node, tenant, from);
     if (type === 'action') return handleActionNode(session, node, tenant, from);
-    if (type === 'whatsappFlow' || type === 'flow') return handleWhatsAppFlowNode(session, node, tenant, from);
-    if (type === 'catalogMessage') return handleCatalogMessageNode(session, node, tenant, from);
-    if (type === 'singleProduct') return handleSingleProductNode(session, node, tenant, from);
-    if (type === 'multiProduct') return handleMultiProductNode(session, node, tenant, from);
-    if (type === 'productCarousel' || type === 'carousel') return handleCarouselNode(session, node, tenant, from);
     if (type === 'end') return handleEndNode(session, node, tenant, from);
     // Unknown node type — skip to next
     const flow = session._flow;
@@ -6687,199 +6093,6 @@ async function handleEndNode(session, node, tenant, from) {
     }
 }
 
-// WhatsApp Flow Node Handler
-async function handleWhatsAppFlowNode(session, node, tenant, from) {
-    const data = node.data || {};
-    const flow = session._flow;
-    const tenantId = tenant._id.toString();
-
-    const alreadyWaiting = session.currentNodeId === node.id && session.waitingForReply;
-
-    if (alreadyWaiting) {
-        console.log(` [ChatbotEngine] Received Flow response for node ${node.id} from ${from}`);
-        session.waitingForReply = false;
-        const nextId = findNextNodeId(flow, node.id);
-        if (nextId) {
-            session.currentNodeId = nextId;
-            await session.save();
-            return executeNode(session, findNode(flow, nextId), tenant, from);
-        }
-        return;
-    }
-
-    const flowId = data.flowId;
-    if (!flowId) {
-        console.warn(` [ChatbotEngine] Flow node ${node.id} has no flowId configured! Advancing.`);
-        const nextId = findNextNodeId(flow, node.id);
-        if (nextId) {
-            session.currentNodeId = nextId;
-            await session.save();
-            return executeNode(session, findNode(flow, nextId), tenant, from);
-        }
-        return;
-    }
-
-    try {
-        const flowDoc = await WhatsAppFlow.findOne({ tenantId, flowId });
-        const flowName = flowDoc?.name || data.flowName || 'Form';
-        const bodyText = data.bodyText || flowDoc?.bodyText || 'Please complete the form below:';
-        const headerText = data.headerText || flowDoc?.headerText || '';
-        const footerText = data.footerText || flowDoc?.footerText || '';
-        const ctaText = data.ctaText || flowDoc?.ctaText || 'Open Form';
-        const screenId = data.screenId || 'QUESTION_SCREEN';
-
-        const { wamid, flowToken } = await WhatsAppFlowService.sendFlowMessage(tenant, {
-            to: from,
-            flowId,
-            headerText,
-            bodyText,
-            footerText,
-            ctaText,
-            screenId
-        });
-
-        await saveChatbotMessageToDB({
-            tenantId,
-            contactId: from,
-            text: bodyText,
-            isMe: true,
-            messageType: 'flow',
-            source: 'chatbot',
-            wamid: wamid || null,
-            interactivePayload: {
-                type: 'flow',
-                flowId,
-                flowName,
-                ctaText,
-                headerText,
-                bodyText,
-                footerText,
-                flowToken
-            },
-            previewText: `📋 Flow: ${flowName}`
-        });
-
-        session.currentNodeId = node.id;
-        session.waitingForReply = true;
-        await session.save();
-    } catch (flowErr) {
-        console.error(` [ChatbotEngine] Failed to send Flow for node ${node.id}:`, flowErr.response?.data || flowErr.message);
-        const nextId = findNextNodeId(flow, node.id);
-        if (nextId) {
-            session.currentNodeId = nextId;
-            await session.save();
-            return executeNode(session, findNode(flow, nextId), tenant, from);
-        }
-    }
-}
-
-// Catalog Message Node Handler
-async function handleCatalogMessageNode(session, node, tenant, from) {
-    const data = node.data || {};
-    const flow = session._flow;
-    try {
-        await CatalogService.sendCatalogMessage(
-            { io, Message, Conversation },
-            tenant,
-            {
-                to: from,
-                catalogId: data.catalogId,
-                bodyText: data.text || data.bodyText || data.body || 'Browse our catalog',
-                footerText: data.footerText,
-            }
-        );
-    } catch (err) {
-        console.error('[ChatbotEngine] handleCatalogMessageNode error:', err.message);
-    }
-    const nextId = findNextNodeId(flow, node.id);
-    if (nextId) {
-        session.currentNodeId = nextId;
-        await session.save();
-        return executeNode(session, findNode(flow, nextId), tenant, from);
-    }
-}
-
-// Single Product Node Handler
-async function handleSingleProductNode(session, node, tenant, from) {
-    const data = node.data || {};
-    const flow = session._flow;
-    try {
-        await CatalogService.sendSingleProduct(
-            { io, Message, Conversation },
-            tenant,
-            {
-                to: from,
-                catalogId: data.catalogId,
-                productRetailerId: data.productRetailerId || data.retailerId || data.sku,
-                bodyText: data.text || data.bodyText || data.body,
-                footerText: data.footerText,
-            }
-        );
-    } catch (err) {
-        console.error('[ChatbotEngine] handleSingleProductNode error:', err.message);
-    }
-    const nextId = findNextNodeId(flow, node.id);
-    if (nextId) {
-        session.currentNodeId = nextId;
-        await session.save();
-        return executeNode(session, findNode(flow, nextId), tenant, from);
-    }
-}
-
-// Multi Product Node Handler
-async function handleMultiProductNode(session, node, tenant, from) {
-    const data = node.data || {};
-    const flow = session._flow;
-    try {
-        await CatalogService.sendMultiProduct(
-            { io, Message, Conversation },
-            tenant,
-            {
-                to: from,
-                catalogId: data.catalogId,
-                headerText: data.headerText,
-                bodyText: data.bodyText || data.text || data.body || 'Our Products',
-                footerText: data.footerText,
-                sections: data.sections || [],
-            }
-        );
-    } catch (err) {
-        console.error('[ChatbotEngine] handleMultiProductNode error:', err.message);
-    }
-    const nextId = findNextNodeId(flow, node.id);
-    if (nextId) {
-        session.currentNodeId = nextId;
-        await session.save();
-        return executeNode(session, findNode(flow, nextId), tenant, from);
-    }
-}
-
-// Carousel Node Handler
-async function handleCarouselNode(session, node, tenant, from) {
-    const data = node.data || {};
-    const flow = session._flow;
-    try {
-        await CatalogService.sendCarousel(
-            { io, Message, Conversation },
-            tenant,
-            {
-                to: from,
-                catalogId: data.catalogId,
-                bodyText: data.bodyText || data.text || data.body,
-                cards: data.cards || [],
-            }
-        );
-    } catch (err) {
-        console.error('[ChatbotEngine] handleCarouselNode error:', err.message);
-    }
-    const nextId = findNextNodeId(flow, node.id);
-    if (nextId) {
-        session.currentNodeId = nextId;
-        await session.save();
-        return executeNode(session, findNode(flow, nextId), tenant, from);
-    }
-}
-
 // Task 2.2 — main entry point
 async function chatbotEngineProcessMessage(tenantId, message, profileName, from, tenant) {
     const lockKey = `${tenantId}:${from}`;
@@ -6896,85 +6109,9 @@ async function chatbotEngineProcessMessage(tenantId, message, profileName, from,
                 rawText = interactive.list_reply?.title || interactive.list_reply?.id || '';
             } else if (interactive.type === 'button_reply') {
                 rawText = interactive.button_reply?.title || interactive.button_reply?.id || '';
-            } else if (interactive.type === 'nfm_reply') {
-                const nfm = interactive.nfm_reply || {};
-                let parsed = {};
-                try { parsed = JSON.parse(nfm.response_json || '{}'); } catch (_) {}
-                const entries = Object.entries(parsed);
-                rawText = entries.length > 0
-                    ? '📝 Flow Submitted:\n' + entries.map(([k, v]) => `• ${k}: ${v}`).join('\n')
-                    : (nfm.body || 'Flow Submitted');
             }
         } else if (msgType === 'button') {
             rawText = message.button?.text || message.button?.payload || '';
-        } else if (msgType === 'order') {
-            const ord = message.order || {};
-            const items = ord.product_items || [];
-            let total = 0;
-            let currency = 'INR';
-            const lines = [];
-
-            items.forEach((item) => {
-                const qty = item.quantity || 1;
-                const price = typeof item.item_price === 'number' ? item.item_price : parseFloat(item.item_price || '0');
-                if (item.currency) currency = item.currency;
-                total += qty * price;
-                lines.push(`• SKU ${item.product_retailer_id} (x${qty}) - ${currency} ${price.toFixed(2)}`);
-            });
-
-            const formattedItems = items.map(i => ({
-                productRetailerId: i.product_retailer_id,
-                quantity: i.quantity || 1,
-                itemPrice: typeof i.item_price === 'number' ? i.item_price : parseFloat(i.item_price || '0'),
-                currency: i.currency || currency,
-            }));
-
-            rawText = `🛍️ Order Received (${items.length} item${items.length === 1 ? '' : 's'})\n` +
-                lines.join('\n') +
-                (total > 0 ? `\nTotal: ${currency} ${total.toFixed(2)}` : '') +
-                (ord.text ? `\nNote: "${ord.text}"` : '');
-
-            // Persist customer catalog order
-            try {
-                const savedOrder = await WhatsAppOrder.create({
-                    tenantId,
-                    contactId: from,
-                    contactName: profileName,
-                    catalogId: ord.catalog_id || '',
-                    wamid: message.id || '',
-                    customerNote: ord.text || '',
-                    items: formattedItems,
-                    totalAmount: total,
-                    currency,
-                    status: 'received',
-                    paymentStatus: 'pending',
-                    rawOrderPayload: ord,
-                });
-                if (typeof io !== 'undefined') {
-                    io.to(tenantId).emit('catalog_order_received', {
-                        contactId: from,
-                        contactName: profileName,
-                        totalAmount: total,
-                        currency,
-                        itemsCount: items.length,
-                        orderId: savedOrder._id.toString(),
-                    });
-                }
-
-                // ── Auto-generate & send payment link if enabled ──
-                if (savedOrder && total > 0) {
-                    const autoPay = tenant?.whatsappConfig?.commerceSettings?.autoSendPaymentLink !== false;
-                    if (autoPay) {
-                        CatalogService.sendPaymentLinkForOrder(
-                            { io, Message, Conversation, razorpay },
-                            tenant,
-                            savedOrder
-                        ).catch(e => console.warn('[ChatbotEngine] Auto payment link notice:', e.message));
-                    }
-                }
-            } catch (ordErr) {
-                console.error('[ChatbotEngine] WhatsAppOrder save error:', ordErr.message);
-            }
         }
 
         console.log(`[ChatbotEngine] Full message object:`, JSON.stringify(message, null, 2));
@@ -6987,8 +6124,8 @@ async function chatbotEngineProcessMessage(tenantId, message, profileName, from,
         let session = await ChatbotSession.findOne({ tenantId, contactId: from });
 
         if (session) {
-            // Media guard: block non-text, non-interactive, non-button, non-order messages (images, audio, etc.)
-            if (msgType !== 'text' && msgType !== 'interactive' && msgType !== 'button' && msgType !== 'order') {
+            // Media guard: block non-text, non-interactive, non-button messages (images, audio, etc.)
+            if (msgType !== 'text' && msgType !== 'interactive' && msgType !== 'button') {
                 // Log the unsupported media message so tenant can see customer sent something
                 saveChatbotMessageToDB({
                     tenantId,
@@ -7022,15 +6159,7 @@ async function chatbotEngineProcessMessage(tenantId, message, profileName, from,
             let _crInteractivePayload = null;
             let _crMsgType = msgType;
             let _crText = msgText;
-            if (msgType === 'order') {
-                const ord = message.order || {};
-                _crInteractivePayload = {
-                    type: 'order',
-                    catalogId: ord.catalog_id || '',
-                    text: ord.text || '',
-                    productItems: ord.product_items || []
-                };
-            } else if (msgType === 'interactive') {
+            if (msgType === 'interactive') {
                 const _crInteractive = message.interactive || {};
                 if (_crInteractive.type === 'list_reply') {
                     _crInteractivePayload = {
@@ -7046,105 +6175,6 @@ async function chatbotEngineProcessMessage(tenantId, message, profileName, from,
                         id: _crInteractive.button_reply?.id || '',
                     };
                     _crText = _crInteractive.button_reply?.title || '';
-                } else if (_crInteractive.type === 'nfm_reply') {
-                    _crMsgType = 'nfm_reply';
-                    const nfm = _crInteractive.nfm_reply || {};
-                    let parsed = {};
-                    try { parsed = JSON.parse(nfm.response_json || '{}'); } catch (_) {}
-                    const flowToken = parsed.flow_token || nfm.flow_token || '';
-                    const cleanResponses = { ...parsed };
-                    delete cleanResponses.flow_token;
-
-                    let resolvedFlowId = '';
-                    let resolvedFlowName = '';
-
-                    try {
-                        const flow = await getChatbotFlow(session.chatbotId);
-                        const currNode = flow ? findNode(flow, session.currentNodeId) : null;
-                        if (currNode && (currNode.type === 'whatsappFlow' || currNode.type === 'flow')) {
-                            resolvedFlowId = currNode.data?.flowId || '';
-                            resolvedFlowName = currNode.data?.flowName || '';
-                        }
-                    } catch (_) {}
-
-                    if (!resolvedFlowId && flowToken) {
-                        try {
-                            const flowMsg = await Message.findOne({
-                                tenantId,
-                                'interactivePayload.flowToken': flowToken
-                            }).lean();
-                            if (flowMsg?.interactivePayload?.flowId) {
-                                resolvedFlowId = flowMsg.interactivePayload.flowId;
-                                resolvedFlowName = flowMsg.interactivePayload.flowName || '';
-                            }
-                        } catch (_) {}
-                    }
-
-                    if (!resolvedFlowId) {
-                        try {
-                            const lastFlowMsg = await Message.findOne({
-                                tenantId,
-                                contactId: from,
-                                messageType: 'flow'
-                            }).sort({ createdAt: -1 }).lean();
-                            if (lastFlowMsg?.interactivePayload?.flowId) {
-                                resolvedFlowId = lastFlowMsg.interactivePayload.flowId;
-                                resolvedFlowName = lastFlowMsg.interactivePayload.flowName || '';
-                            }
-                        } catch (_) {}
-                    }
-
-                    if (resolvedFlowId && !resolvedFlowName) {
-                        try {
-                            const fDoc = await WhatsAppFlow.findOne({ tenantId, flowId: resolvedFlowId }).lean();
-                            if (fDoc) resolvedFlowName = fDoc.name || '';
-                        } catch (_) {}
-                    }
-
-                    _crInteractivePayload = {
-                        type: 'flow_response',
-                        flowToken,
-                        flowId: resolvedFlowId,
-                        flowName: resolvedFlowName,
-                        name: nfm.name || 'flow',
-                        responses: cleanResponses
-                    };
-
-                    const entries = Object.entries(cleanResponses);
-                    _crText = entries.length > 0
-                        ? `📝 Flow Submitted (${resolvedFlowName || 'Form'}):\n` + entries.map(([k, v]) => `• ${k}: ${v}`).join('\n')
-                        : (nfm.body || 'Flow Submitted');
-
-                    session.lastReply = _crText;
-                    session.flowResponses = cleanResponses;
-                    session.save().catch(() => {});
-
-                    try {
-                        const savedResp = await WhatsAppFlowResponse.create({
-                            tenantId,
-                            flowId: resolvedFlowId || 'unknown',
-                            flowName: resolvedFlowName,
-                            contactId: from,
-                            contactName: profileName,
-                            wamid: message.id || '',
-                            flowToken,
-                            responseData: cleanResponses,
-                            source: 'chatbot'
-                        });
-
-                        if (resolvedFlowId) {
-                            await WhatsAppFlow.findOneAndUpdate(
-                                { tenantId, flowId: resolvedFlowId },
-                                { $inc: { responsesCount: 1 } }
-                            ).catch(() => {});
-                        }
-
-                        if (typeof io !== 'undefined') {
-                            io.to(tenantId).emit('flow_submission', savedResp);
-                        }
-                    } catch (e) {
-                        console.error('[ChatbotEngine] Flow response save error:', e.message);
-                    }
                 }
             } else if (msgType === 'button') {
                 _crText = message.button?.text || message.button?.payload || '';
@@ -7384,8 +6414,6 @@ function buildPreview(messageType, opts = {}) {
             return '📍 Location';
         case 'interactive':
             return opts.interactiveTitle || '↩ Reply';
-        case 'order':
-            return truncate(opts.text) || '🛍️ Order Received';
         case 'button':
             return opts.text ? '↩ ' + opts.text : '↩ Reply';
         case 'reaction':
@@ -7399,7 +6427,7 @@ function buildPreview(messageType, opts = {}) {
 
 // Live Chat handler — processes an incoming message through the live chat pipeline
 async function handleLiveChat(tenantId, message, profileName, from) {
-    let msgType = message.type || 'unsupported';
+    const msgType = message.type || 'unsupported';
 
     // Extract structured fields per message type
     let msgText = '';
@@ -7416,87 +6444,6 @@ async function handleLiveChat(tenantId, message, profileName, from) {
         if (msgType === 'document' && message.document?.filename) {
             msgText = message.document.filename;
         }
-    } else if (msgType === 'order') {
-        const ord = message.order || {};
-        const items = ord.product_items || [];
-        let total = 0;
-        let currency = 'INR';
-        const lines = [];
-
-        items.forEach((item) => {
-            const qty = item.quantity || 1;
-            const price = typeof item.item_price === 'number' ? item.item_price : parseFloat(item.item_price || '0');
-            if (item.currency) currency = item.currency;
-            total += qty * price;
-            lines.push(`• SKU ${item.product_retailer_id} (x${qty}) - ${currency} ${price.toFixed(2)}`);
-        });
-
-        const formattedItems = items.map(i => ({
-            productRetailerId: i.product_retailer_id,
-            quantity: i.quantity || 1,
-            itemPrice: typeof i.item_price === 'number' ? i.item_price : parseFloat(i.item_price || '0'),
-            currency: i.currency || currency,
-        }));
-
-        msgText = `🛍️ Order Received (${items.length} item${items.length === 1 ? '' : 's'})\n` +
-            lines.join('\n') +
-            (total > 0 ? `\nTotal: ${currency} ${total.toFixed(2)}` : '') +
-            (ord.text ? `\nNote: "${ord.text}"` : '');
-
-        interactivePayload = {
-            type: 'order',
-            catalogId: ord.catalog_id || '',
-            customerNote: ord.text || '',
-            items: formattedItems,
-            totalAmount: total,
-            currency,
-        };
-
-        // Persist to WhatsAppOrder if not already saved
-        try {
-            const savedOrder = await WhatsAppOrder.findOneAndUpdate(
-                { tenantId, wamid: message.id || '' },
-                {
-                    tenantId,
-                    contactId: from,
-                    contactName: profileName,
-                    catalogId: ord.catalog_id || '',
-                    wamid: message.id || '',
-                    customerNote: ord.text || '',
-                    items: formattedItems,
-                    totalAmount: total,
-                    currency,
-                    status: 'received',
-                    paymentStatus: 'pending',
-                    rawOrderPayload: ord,
-                },
-                { upsert: true, new: true }
-            );
-            if (typeof io !== 'undefined') {
-                io.to(tenantId).emit('catalog_order_received', {
-                    contactId: from,
-                    contactName: profileName,
-                    totalAmount: total,
-                    currency,
-                    itemsCount: items.length,
-                    orderId: savedOrder?._id?.toString(),
-                });
-            }
-
-            // ── Auto-generate & send payment link if enabled ──
-            if (savedOrder && total > 0) {
-                const autoPay = tenant?.whatsappConfig?.commerceSettings?.autoSendPaymentLink !== false;
-                if (autoPay) {
-                    CatalogService.sendPaymentLinkForOrder(
-                        { io, Message, Conversation, razorpay },
-                        tenant,
-                        savedOrder
-                    ).catch(e => console.warn('[LiveChat] Auto payment link notice:', e.message));
-                }
-            }
-        } catch (ordErr) {
-            console.error('[LiveChat] WhatsAppOrder error:', ordErr.message);
-        }
     } else if (msgType === 'interactive') {
         const interactive = message.interactive || {};
         if (interactive.type === 'button_reply') {
@@ -7511,108 +6458,6 @@ async function handleLiveChat(tenantId, message, profileName, from) {
                 title: interactive.list_reply?.title || '',
                 id: interactive.list_reply?.id || '',
             };
-        } else if (interactive.type === 'nfm_reply') {
-            msgType = 'nfm_reply';
-            const nfm = interactive.nfm_reply || {};
-            let parsedResponses = {};
-            try {
-                parsedResponses = JSON.parse(nfm.response_json || '{}');
-            } catch (_) {}
-
-            const flowToken = parsedResponses.flow_token || nfm.flow_token || '';
-            const cleanResponses = { ...parsedResponses };
-            delete cleanResponses.flow_token;
-
-            let resolvedFlowId = '';
-            let resolvedFlowName = '';
-
-            if (flowToken) {
-                try {
-                    const flowMsg = await Message.findOne({
-                        tenantId,
-                        'interactivePayload.flowToken': flowToken
-                    }).lean();
-                    if (flowMsg?.interactivePayload?.flowId) {
-                        resolvedFlowId = flowMsg.interactivePayload.flowId;
-                        resolvedFlowName = flowMsg.interactivePayload.flowName || '';
-                    }
-                } catch (_) {}
-            }
-
-            if (!resolvedFlowId && message.context?.id) {
-                try {
-                    const ctxMsg = await Message.findOne({
-                        tenantId,
-                        wamid: message.context.id
-                    }).lean();
-                    if (ctxMsg?.interactivePayload?.flowId) {
-                        resolvedFlowId = ctxMsg.interactivePayload.flowId;
-                        resolvedFlowName = ctxMsg.interactivePayload.flowName || '';
-                    }
-                } catch (_) {}
-            }
-
-            if (!resolvedFlowId) {
-                try {
-                    const lastFlowMsg = await Message.findOne({
-                        tenantId,
-                        contactId: from,
-                        messageType: 'flow'
-                    }).sort({ createdAt: -1 }).lean();
-                    if (lastFlowMsg?.interactivePayload?.flowId) {
-                        resolvedFlowId = lastFlowMsg.interactivePayload.flowId;
-                        resolvedFlowName = lastFlowMsg.interactivePayload.flowName || '';
-                    }
-                } catch (_) {}
-            }
-
-            if (resolvedFlowId && !resolvedFlowName) {
-                try {
-                    const fDoc = await WhatsAppFlow.findOne({ tenantId, flowId: resolvedFlowId }).lean();
-                    if (fDoc) resolvedFlowName = fDoc.name || '';
-                } catch (_) {}
-            }
-
-            interactivePayload = {
-                type: 'flow_response',
-                flowToken,
-                flowId: resolvedFlowId,
-                flowName: resolvedFlowName,
-                name: nfm.name || 'flow',
-                responses: cleanResponses
-            };
-
-            const entries = Object.entries(cleanResponses);
-            msgText = entries.length > 0
-                ? `📝 Flow Submitted (${resolvedFlowName || 'Form'}):\n` + entries.map(([k, v]) => `• ${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n')
-                : (nfm.body || 'Flow Submitted');
-
-            try {
-                const savedFlowResponse = await WhatsAppFlowResponse.create({
-                    tenantId,
-                    flowId: resolvedFlowId || 'unknown',
-                    flowName: resolvedFlowName,
-                    contactId: from,
-                    contactName: profileName,
-                    wamid: message.id || '',
-                    flowToken,
-                    responseData: cleanResponses,
-                    source: 'chat'
-                });
-
-                if (resolvedFlowId) {
-                    await WhatsAppFlow.findOneAndUpdate(
-                        { tenantId, flowId: resolvedFlowId },
-                        { $inc: { responsesCount: 1 } }
-                    ).catch(() => {});
-                }
-
-                if (typeof io !== 'undefined') {
-                    io.to(tenantId).emit('flow_submission', savedFlowResponse);
-                }
-            } catch (flowRespErr) {
-                console.error('[LiveChat] WhatsAppFlowResponse save error:', flowRespErr.message);
-            }
         }
     } else if (msgType === 'button') {
         msgText = message.button?.text || message.button?.payload || '⚠️ Unsupported message type';
@@ -7831,6 +6676,59 @@ webhookIngestionService.setHandler(async (body, ctx) => {
             } else {
                 const from = message.from;
                 const profileName = contacts?.[0]?.profile?.name || 'Unknown Sender';
+                // ── Catalog Order: handle cart submissions from WhatsApp customers ─────────
+                if (message.type === 'order') {
+                    try {
+                        const order = message.order || {};
+                        const catalogId = order.catalog_id || '';
+                        const productItems = (order.product_items || []).map(item => ({
+                            productRetailerId: item.product_retailer_id,
+                            quantity: item.quantity || 1,
+                            itemPrice: (item.item_price || 0),
+                            currency: item.currency || 'INR',
+                        }));
+
+                        // Resolve product names from DB
+                        for (const item of productItems) {
+                            const prod = await CatalogProduct.findOne({ tenantId, retailerId: item.productRetailerId }).lean();
+                            if (prod) {
+                                item.productName = prod.name || '';
+                                item.imageUrl = prod.imageUrl || '';
+                            }
+                        }
+
+                        const totalAmount = productItems.reduce((sum, i) => sum + (i.itemPrice * i.quantity), 0);
+                        const newOrder = await CatalogOrder.create({
+                            tenantId,
+                            catalogId,
+                            customerPhone: from,
+                            customerName: profileName || '',
+                            productItems,
+                            orderText: order.text || '',
+                            totalAmount,
+                            currency: productItems[0]?.currency || 'INR',
+                            status: 'new',
+                        });
+
+                        // Emit real-time notification to tenant's socket room
+                        io.to(tenantId).emit('catalog_order_received', {
+                            orderId: newOrder._id.toString(),
+                            customerPhone: from,
+                            customerName: profileName,
+                            totalAmount,
+                            currency: newOrder.currency,
+                            productCount: productItems.length,
+                            receivedAt: newOrder.createdAt,
+                        });
+
+                        console.log(`[Catalog] ✅ Order from ${from} saved for tenant ${tenantId}, total: ${totalAmount}`);
+                    } catch (orderErr) {
+                        console.error('[Catalog] ❌ Order processing error:', orderErr.message);
+                    }
+                    return; // Order handled — do not pass to chatbot engine
+                }
+                // ─────────────────────────────────────────────────────────────────────────
+
                 await chatbotEngineProcessMessage(tenantId, message, profileName, from, tenant);
             }
         }
@@ -7840,6 +6738,14 @@ webhookIngestionService.setHandler(async (body, ctx) => {
 //  Incoming Webhook (Messages & Status Updates) 
 app.post('/webhook', verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
+    console.log(`[Webhook POST /webhook] Received webhook event. Object: "${body?.object}", entries: ${body?.entry?.length || 0}`);
+    console.log('[Webhook POST /webhook] Full Payload:', JSON.stringify(body, null, 2));
+
+    // ── Instagram DM & Comment Webhook (Handled in services/instagramWebhookService) ──
+    if (body.object === 'instagram' || body.object === 'page') {
+        console.log(`[Webhook] Routing to handleInstagramWebhook for object: "${body.object}"`);
+        return handleInstagramWebhook(req, res, body, Tenant, InstagramAutomation, InstagramAutomationSession);
+    }
     if (body.object !== 'whatsapp_business_account') return res.sendStatus(404);
 
     let rawLogId = null;
@@ -7993,57 +6899,6 @@ async function broadcastCampaigns(tenantId) {
         io.to(tenantId).emit('campaigns_update', enriched);
     } catch (e) { console.error('broadcastCampaigns error:', e); }
 }
-
-// ── WhatsApp Flows API Endpoints ───────────────────────────────────────────
-const flowController = createFlowController({
-    Tenant,
-    Message,
-    Conversation,
-    StatusMapping,
-    broadcastMessages,
-    broadcastConversations
-});
-
-app.get('/api/flows', authenticate, flowController.getFlows);
-app.post('/api/flows', authenticate, flowController.createFlow);
-app.get('/api/flows/:flowId', authenticate, flowController.getFlowById);
-app.post('/api/flows/:flowId/publish', authenticate, flowController.publishFlow);
-app.delete('/api/flows/:flowId', authenticate, flowController.deleteFlow);
-app.post('/api/flows/send', authenticate, flowController.sendFlow);
-app.get('/api/flows/:flowId/responses', authenticate, flowController.getFlowResponses);
-app.get('/api/flows/responses/all', authenticate, (req, res) => {
-    req.params.flowId = 'all';
-    flowController.getFlowResponses(req, res);
-});
-
-// ── WhatsApp Catalog API Endpoints ─────────────────────────────────────────
-const catalogController = createCatalogController({
-    Tenant,
-    Message,
-    Conversation,
-    StatusMapping,
-    broadcastMessages,
-    broadcastConversations,
-    io,
-    razorpay,
-});
-
-app.get('/api/catalog/catalogs', authenticate, catalogController.getCatalogs);
-app.post('/api/catalog/sync', authenticate, catalogController.syncCatalogs);
-app.post('/api/catalog/catalogs/select', authenticate, catalogController.selectCatalog);
-app.get('/api/catalog/commerce-settings', authenticate, catalogController.getCommerceSettings);
-app.post('/api/catalog/commerce-settings', authenticate, catalogController.updateCommerceSettings);
-app.get('/api/catalog/products', authenticate, catalogController.getProducts);
-app.post('/api/catalog/products', authenticate, catalogController.addProduct);
-app.post('/api/catalog/send-catalog-message', authenticate, catalogController.sendCatalogMessage);
-app.post('/api/catalog/send-single-product', authenticate, catalogController.sendSingleProduct);
-app.post('/api/catalog/send-multi-product', authenticate, catalogController.sendMultiProduct);
-app.post('/api/catalog/send-carousel', authenticate, catalogController.sendCarousel);
-app.get('/api/catalog/orders', authenticate, catalogController.getOrders);
-app.patch('/api/catalog/orders/:id/status', authenticate, catalogController.updateOrderStatus);
-app.post('/api/catalog/orders/:id/send-payment-link', authenticate, catalogController.sendPaymentLink);
-app.post('/api/catalog/orders/:id/mark-paid', authenticate, catalogController.markOrderPaid);
-app.post('/api/catalog/payment-webhook', catalogController.handlePaymentWebhook);
 
 //  Scheduled Campaign Runner (checks every minute) 
 async function runScheduledCampaigns() {

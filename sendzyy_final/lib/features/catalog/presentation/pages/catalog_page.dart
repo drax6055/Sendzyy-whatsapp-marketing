@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:iFloraBuzz/core/theme/app_theme.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
+import 'package:iFloraBuzz/features/catalog/data/models/product_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
-import 'package:iFloraBuzz/features/catalog/presentation/widgets/commerce_settings_card.dart';
-import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
-import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_message_composer.dart';
-import 'package:iFloraBuzz/features/catalog/presentation/widgets/multi_product_composer.dart';
-
+import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_connect_page.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/pages/product_form_page.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_card.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_card.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/order_card.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/send_catalog_dialog.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/batch_import_dialog.dart';
+import 'package:iFloraBuzz/features/catalog/data/models/catalog_order_model.dart';
+import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
-  
+
 class CatalogPage extends StatefulWidget {
   const CatalogPage({super.key});
 
@@ -18,15 +22,16 @@ class CatalogPage extends StatefulWidget {
   State<CatalogPage> createState() => _CatalogPageState();
 }
 
-class _CatalogPageState extends State<CatalogPage>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
+class _CatalogPageState extends State<CatalogPage> with TickerProviderStateMixin {
+  late TabController _tabController;
+  int _newOrderCount = 0;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
-    context.read<CatalogBloc>().add(LoadCommerceSettings());
+    _tabController = TabController(length: 3, vsync: this);
+    context.read<CatalogBloc>().add(FetchCatalogs());
+    context.read<CatalogBloc>().add(FetchOrders());
   }
 
   @override
@@ -41,515 +46,175 @@ class _CatalogPageState extends State<CatalogPage>
 
     return BlocListener<CatalogBloc, CatalogState>(
       listener: (context, state) {
-        if (state is CatalogSettingsLoaded) {
-          if (state.successMessage != null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.check_circle_rounded,
-                        color: Colors.white, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(state.successMessage!)),
-                  ],
-                ),
-                backgroundColor: const Color(0xFF10B981),
-                duration: const Duration(seconds: 3),
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            );
-            context.read<CatalogBloc>().add(ClearCatalogStatus());
-          }
-          if (state.errorMessage != null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.error_outline_rounded,
-                        color: Colors.white, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(state.errorMessage!)),
-                  ],
-                ),
-                backgroundColor: Colors.red.shade500,
-                duration: const Duration(seconds: 4),
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            );
-            context.read<CatalogBloc>().add(ClearCatalogStatus());
-          }
-        }
-      },
-      child: Column(
-        children: [
-          // ── Page Header ───────────────────────────────────────────────────
-          Container(
-            padding: EdgeInsets.fromLTRB(
-              isMobile ? 16 : 24,
-              isMobile ? 14 : 20,
-              isMobile ? 16 : 24,
-              0,
-            ),
-            color: Colors.white,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: EdgeInsets.all(isMobile ? 8 : 10),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            AppTheme.primaryColor,
-                            AppTheme.secondaryColor,
-                          ],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Icon(
-                        Icons.storefront_rounded,
-                        color: Colors.white,
-                        size: isMobile ? 20 : 24,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'WhatsApp Catalog',
-                            style: TextStyle(
-                              fontSize: isMobile ? 18 : 22,
-                              fontWeight: FontWeight.bold,
-                              color: const Color(0xFF1A1D1E),
-                              letterSpacing: -0.5,
-                            ),
-                          ),
-                          Text(
-                            'Manage your Meta products, catalogs, orders, and messages',
-                            style: TextStyle(
-                              fontSize: isMobile ? 11 : 13,
-                              color: const Color(0xFF6B7280),
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                SizedBox(height: isMobile ? 12 : 20),
-                // Tabs
-                TabBar(
-                  controller: _tabController,
-                  labelColor: AppTheme.primaryColor,
-                  unselectedLabelColor: Colors.grey.shade500,
-                  indicatorColor: AppTheme.primaryColor,
-                  indicatorWeight: 2.5,
-                  labelStyle: TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: isMobile ? 12 : 13),
-                  unselectedLabelStyle: TextStyle(fontSize: isMobile ? 12 : 13),
-                  tabs: const [
-                    Tab(
-                      icon: Icon(Icons.settings_rounded, size: 18),
-                      text: 'Overview',
-                    ),
-                    Tab(
-                      icon: Icon(Icons.inventory_2_outlined, size: 18),
-                      text: 'Products',
-                    ),
-                    Tab(
-                      icon: Icon(Icons.shopping_bag_outlined, size: 18),
-                      text: 'Orders',
-                    ),
-                    Tab(
-                      icon: Icon(Icons.send_rounded, size: 18),
-                      text: 'Send Messages',
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          // ── Tab Views ─────────────────────────────────────────────────────
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _OverviewTab(),
-                _ProductsTab(),
-                _OrdersTab(),
-                _SendMessagesTab(),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Tab: Overview ─────────────────────────────────────────────────────────────
-
-class _OverviewTab extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final isMobile = ResponsiveHelper.isMobile(context);
-
-    return BlocBuilder<CatalogBloc, CatalogState>(
-      builder: (context, state) {
-        if (state is CatalogSettingsLoading) {
-          return const Center(child: CircularProgressIndicator());
-        }
         if (state is CatalogError) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.warning_amber_rounded,
-                    color: Colors.orange.shade400, size: 48),
-                const SizedBox(height: 16),
-                Text(state.message,
-                    style: const TextStyle(color: Color(0xFF6B7280))),
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: () =>
-                      context.read<CatalogBloc>().add(LoadCommerceSettings()),
-                  icon: const Icon(Icons.refresh_rounded),
-                  label: const Text('Retry'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ],
-            ),
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(state.message), backgroundColor: Colors.red),
           );
         }
-
-        return SingleChildScrollView(
-          padding: EdgeInsets.all(isMobile ? 16 : 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (state is CatalogSettingsLoaded) ...[
-                // Connected Catalog Card & Switcher
-                _ConnectedCatalogBanner(state: state),
-                SizedBox(height: isMobile ? 16 : 20),
-                // Stats row
-                _StatsRow(state: state),
-                SizedBox(height: isMobile ? 16 : 24),
-              ],
-              // Commerce settings
-              const CommerceSettingsCard(),
-              SizedBox(height: isMobile ? 16 : 24),
-              // Info card
-              _HelpCard(),
-            ],
-          ),
-        );
+        if (state is CatalogOperationSuccess) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(state.message), backgroundColor: Colors.green),
+          );
+        }
+        if (state is OrdersLoaded) {
+          setState(() => _newOrderCount = state.newCount);
+        }
       },
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Column(
+          children: [
+            _buildHeader(isMobile),
+            _buildTabBar(),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _CatalogsTab(onCatalogSelected: (_) => _tabController.animateTo(1)),
+                  _ProductsTab(),
+                  _OrdersTab(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
-}
 
-class _ConnectedCatalogBanner extends StatelessWidget {
-  final CatalogSettingsLoaded state;
-  const _ConnectedCatalogBanner({required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    final activeCat = state.activeCatalog;
-    final hasCatalogs = state.catalogs.isNotEmpty;
-
+  Widget _buildHeader(bool isMobile) {
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      color: Colors.white,
+      padding: EdgeInsets.fromLTRB(isMobile ? 16 : 24, 16, isMobile ? 16 : 24, 12),
+      child: Row(
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.storefront_rounded,
-                    color: Color(0xFF10B981), size: 24),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppTheme.primaryColor, AppTheme.primaryColor.withValues(alpha: 0.75)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            activeCat?.name ??
-                                (hasCatalogs
-                                    ? 'Connected Meta Catalog'
-                                    : 'No Meta Catalog Connected'),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                              color: Color(0xFF1A1D1E),
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: hasCatalogs
-                                ? const Color(0xFF10B981).withValues(alpha: 0.1)
-                                : Colors.amber.shade100,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            hasCatalogs ? 'Connected' : 'Unlinked',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: hasCatalogs
-                                  ? const Color(0xFF10B981)
-                                  : Colors.amber.shade900,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      hasCatalogs
-                          ? 'Catalog ID: ${state.activeCatalogId ?? "N/A"} • ${activeCat?.vertical ?? "commerce"}'
-                          : 'Connect your catalog via Meta Commerce Manager or click Sync below',
-                      style: const TextStyle(
-                          fontSize: 12, color: Color(0xFF6B7280)),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: state.isSyncingCatalogs
-                    ? null
-                    : () => context
-                        .read<CatalogBloc>()
-                        .add(SyncCatalogsWithMeta()),
-                icon: state.isSyncingCatalogs
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.sync_rounded, size: 16),
-                label: Text(
-                    state.isSyncingCatalogs ? 'Syncing...' : 'Sync with Meta'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.primaryColor,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                ),
-              ),
-            ],
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.storefront_rounded, color: Colors.white, size: 22),
           ),
-          if (state.catalogs.length > 1) ...[
-            const SizedBox(height: 16),
-            const Divider(height: 1),
-            const SizedBox(height: 12),
-            Row(
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
-                  'Switch Active Catalog:',
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF4B5563)),
+                Text(
+                  'WhatsApp Catalog',
+                  style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: isMobile ? 18 : 20, color: const Color(0xFF1A1A2E)),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: state.activeCatalogId,
-                      isDense: true,
-                      borderRadius: BorderRadius.circular(12),
-                      items: state.catalogs.map((c) {
-                        return DropdownMenuItem<String>(
-                          value: c.catalogId,
-                          child: Text(
-                            '${c.name} (${c.catalogId})',
-                            style: const TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w500),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (val) {
-                        if (val != null) {
-                          context
-                              .read<CatalogBloc>()
-                              .add(SelectActiveCatalog(val));
-                        }
-                      },
-                    ),
-                  ),
+                Text(
+                  'Manage your products and receive orders',
+                  style: GoogleFonts.inter(fontSize: 12, color: Colors.grey.shade500),
                 ),
               ],
+            ),
+          ),
+          if (!isMobile) ...[
+            OutlinedButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => BlocProvider.value(
+                    value: context.read<CatalogBloc>(),
+                    child: const CatalogConnectPage(),
+                  ),
+                ),
+              ),
+              icon: const Icon(Icons.add_rounded, size: 16),
+              label: Text('Add Catalog', style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.primaryColor,
+                side: BorderSide(color: AppTheme.primaryColor),
+                minimumSize: const Size(0, 38),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+            ),
+            const SizedBox(width: 10),
+            ElevatedButton.icon(
+              onPressed: () => SendCatalogDialog.show(context),
+              icon: const Icon(Icons.send_rounded, size: 16),
+              label: Text('Send Message', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryColor,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(0, 38),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
             ),
           ],
         ],
       ),
     );
   }
-}
 
-class _StatsRow extends StatelessWidget {
-  final CatalogSettingsLoaded state;
-
-  const _StatsRow({required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    final isMobile = ResponsiveHelper.isMobile(context);
-
-    final cards = [
-      _StatCard(
-        icon: Icons.inventory_2_rounded,
-        label: 'Products',
-        value: state.isLoadingProducts ? '...' : '${state.products.length}',
-        color: const Color(0xFF06B6D4),
-      ),
-      _StatCard(
-        icon: Icons.shopping_bag_outlined,
-        label: 'Orders Received',
-        value: '${state.orders.length}',
-        color: const Color(0xFF6366F1),
-      ),
-      _StatCard(
-        icon: Icons.shopping_cart_checkout_rounded,
-        label: 'Cart',
-        value: state.settings.isCartEnabled ? 'Enabled' : 'Disabled',
-        color: state.settings.isCartEnabled
-            ? const Color(0xFF10B981)
-            : Colors.grey,
-      ),
-      _StatCard(
-        icon: Icons.visibility_rounded,
-        label: 'Catalog',
-        value: state.settings.isCatalogVisible ? 'Visible' : 'Hidden',
-        color: state.settings.isCatalogVisible
-            ? AppTheme.primaryColor
-            : Colors.grey,
-      ),
-    ];
-
-    if (isMobile) {
-      return Column(
-        children: cards
-            .map((c) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: c,
-                ))
-            .toList(),
-      );
-    }
-
-    return Row(
-      children: cards
-          .map((c) => Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: c,
-                ),
-              ))
-          .toList(),
-    );
-  }
-}
-
-class _StatCard extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color color;
-
-  const _StatCard({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildTabBar() {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
+        border: Border(bottom: BorderSide(color: Color(0xFFE5E7EB), width: 1)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
+      child: TabBar(
+        controller: _tabController,
+        labelColor: AppTheme.primaryColor,
+        unselectedLabelColor: Colors.grey.shade600,
+        indicatorColor: AppTheme.primaryColor,
+        indicatorWeight: 3,
+        labelStyle: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13),
+        unselectedLabelStyle: GoogleFonts.inter(fontWeight: FontWeight.w500, fontSize: 13),
+        tabs: [
+          const Tab(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.storefront_rounded, size: 18),
+                SizedBox(width: 8),
+                Text('Catalogs'),
+              ],
             ),
-            child: Icon(icon, color: color, size: 20),
           ),
-          const SizedBox(height: 12),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF1A1D1E),
+          const Tab(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.inventory_2_rounded, size: 18),
+                SizedBox(width: 8),
+                Text('Products'),
+              ],
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+          Tab(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.shopping_cart_rounded, size: 18),
+                const SizedBox(width: 8),
+                const Text('Orders'),
+                if (_newOrderCount > 0) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '$_newOrderCount',
+                      style: GoogleFonts.inter(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -557,723 +222,541 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-class _HelpCard extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+//  Catalogs Tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _CatalogsTab extends StatelessWidget {
+  final void Function(CatalogModel) onCatalogSelected;
+
+  const _CatalogsTab({required this.onCatalogSelected});
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF25D366), Color(0xFF128C7E)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
+    return BlocBuilder<CatalogBloc, CatalogState>(
+      builder: (context, state) {
+        if (state is CatalogLoading) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        List<CatalogModel> catalogs = [];
+        CatalogModel? selected;
+        if (state is CatalogsLoaded) {
+          catalogs = state.catalogs;
+          selected = state.selectedCatalog;
+        } else if (state is ProductsLoaded) {
+          catalogs = state.catalogs;
+          selected = state.selectedCatalog;
+        }
+
+        if (catalogs.isEmpty) {
+          return _buildEmptyState(context);
+        }
+
+        return RefreshIndicator(
+          onRefresh: () async => context.read<CatalogBloc>().add(FetchCatalogs()),
+          child: ListView(
+            padding: const EdgeInsets.only(top: 8, bottom: 80),
             children: [
-              Icon(Icons.info_outline_rounded, color: Colors.white, size: 20),
-              SizedBox(width: 10),
-              Text(
-                'How Catalog Commerce Works',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
+              ...catalogs.map((c) => CatalogCard(
+                catalog: c,
+                isSelected: selected?.catalogId == c.catalogId,
+                onTap: () {
+                  context.read<CatalogBloc>().add(SelectCatalog(c));
+                  onCatalogSelected(c);
+                },
+                onUnlink: () => _confirmUnlink(context, c),
+                onDelete: () => _confirmDelete(context, c),
+              )),
+              const SizedBox(height: 16),
+              Center(
+                child: OutlinedButton.icon(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+                      BlocProvider.value(value: context.read<CatalogBloc>(), child: const CatalogConnectPage()))),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Add Another Catalog'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.primaryColor,
+                    side: BorderSide(color: AppTheme.primaryColor.withValues(alpha: 0.5)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          ...[
-            '1. Upload inventory to Meta via Commerce Manager or via Sendzyy',
-            '2. Connect your catalog to your WABA via Embedded Signup or click "Sync with Meta"',
-            '3. Configure cart and catalog visibility above',
-            '4. Use the "Send Messages" tab to share products or single items in chat',
-            '5. When customers check out in WhatsApp, orders appear in the Orders tab and live chat',
-          ].map((s) => Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle_rounded,
-                        color: Colors.white70, size: 14),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(s,
-                          style: const TextStyle(
-                              color: Colors.white70, fontSize: 12, height: 1.4)),
-                    ),
-                  ],
+        );
+      },
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 100,
+              height: 100,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [AppTheme.primaryColor.withValues(alpha: 0.15), AppTheme.primaryColor.withValues(alpha: 0.05)],
                 ),
-              )),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.storefront_rounded, size: 46, color: AppTheme.primaryColor.withValues(alpha: 0.6)),
+            ),
+            const SizedBox(height: 24),
+            Text('No Catalogs Yet',
+                style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 20, color: const Color(0xFF1A1A2E))),
+            const SizedBox(height: 10),
+            Text(
+              'Connect your WhatsApp Business Account to a Meta catalog to start selling products.',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(color: Colors.grey.shade500, height: 1.6),
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+                  BlocProvider.value(value: context.read<CatalogBloc>(), child: const CatalogConnectPage()))),
+              icon: const Icon(Icons.add_rounded),
+              label: Text('Connect Your First Catalog', style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryColor,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(260, 48),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _confirmUnlink(BuildContext context, CatalogModel catalog) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Unlink Catalog?'),
+        content: Text('This will remove "${catalog.catalogName}" from your WhatsApp Business Account.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              context.read<CatalogBloc>().add(UnlinkCatalog(catalog.catalogId));
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
+            child: const Text('Unlink'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDelete(BuildContext context, CatalogModel catalog) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Catalog?'),
+        content: Text('This will permanently delete "${catalog.catalogName}" and its products from Sendzyy.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              context.read<CatalogBloc>().add(DeleteCatalog(catalog.catalogId));
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
   }
 }
 
-// ── Tab: Products ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  Products Tab
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _ProductsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    final isMobile = ResponsiveHelper.isMobile(context);
-
-    return Padding(
-      padding: EdgeInsets.all(isMobile ? 12 : 24),
-      child: const ProductBrowserWidget(),
-    );
-  }
-}
-
-// ── Tab: Orders ───────────────────────────────────────────────────────────────
-
-class _OrdersTab extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final isMobile = ResponsiveHelper.isMobile(context);
-
     return BlocBuilder<CatalogBloc, CatalogState>(
       builder: (context, state) {
-        if (state is! CatalogSettingsLoaded) {
-          return const Center(child: CircularProgressIndicator());
+        if (state is CatalogLoading) return const Center(child: CircularProgressIndicator());
+
+        if (state is CatalogsLoaded && state.selectedCatalog == null) {
+          return _buildSelectCatalogPrompt();
         }
 
-        final orders = state.orders;
+        List<ProductModel> products = [];
+        CatalogModel? selectedCatalog;
 
-        return RefreshIndicator(
-          onRefresh: () async {
-            context.read<CatalogBloc>().add(LoadOrders());
-          },
-          child: orders.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF6366F1).withValues(alpha: 0.1),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.shopping_bag_outlined,
-                            size: 48, color: Color(0xFF6366F1)),
+        if (state is ProductsLoaded) {
+          products = state.products;
+          selectedCatalog = state.selectedCatalog;
+        } else if (state is CatalogsLoaded && state.selectedCatalog != null) {
+          selectedCatalog = state.selectedCatalog;
+        }
+
+        if (selectedCatalog == null) return _buildSelectCatalogPrompt();
+
+        final isWide = MediaQuery.of(context).size.width > 700;
+        final crossAxisCount = isWide ? (MediaQuery.of(context).size.width > 1200 ? 4 : 3) : 2;
+
+        return Stack(
+          children: [
+            products.isEmpty
+                ? _buildNoProductsState(context, selectedCatalog)
+                : RefreshIndicator(
+                    onRefresh: () async => context.read<CatalogBloc>().add(FetchProducts(selectedCatalog!.catalogId)),
+                    child: GridView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: crossAxisCount,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 12,
+                        childAspectRatio: 0.72,
                       ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'No Orders Received Yet',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF1A1D1E)),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'When customers browse your catalog and send an order, it will appear here.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
-                      ),
-                      const SizedBox(height: 16),
-                      OutlinedButton.icon(
-                        onPressed: () =>
-                            context.read<CatalogBloc>().add(LoadOrders()),
-                        icon: const Icon(Icons.refresh_rounded, size: 16),
-                        label: const Text('Refresh Orders'),
-                      ),
-                    ],
+                      itemCount: products.length,
+                      itemBuilder: (context, i) {
+                        final product = products[i];
+                        return ProductCard(
+                          product: product,
+                          onEdit: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+                            BlocProvider.value(value: context.read<CatalogBloc>(), child: ProductFormPage(catalogId: selectedCatalog!.catalogId, existingProduct: product)))),
+                          onDelete: () => _confirmDelete(context, product),
+                          onSend: () => SendCatalogDialog.show(context),
+                        );
+                      },
+                    ),
                   ),
-                )
-              : ListView.builder(
-                  padding: EdgeInsets.all(isMobile ? 16 : 24),
-                  itemCount: orders.length,
-                  itemBuilder: (context, i) {
-                    final order = orders[i];
-                    return _OrderCard(order: order);
-                  },
-                ),
+            Positioned(
+              bottom: 24,
+              right: 24,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  FloatingActionButton.small(
+                    heroTag: 'batch_import',
+                    backgroundColor: Colors.green.shade600,
+                    onPressed: () => BatchImportDialog.show(context, selectedCatalog!.catalogId),
+                    child: const Icon(Icons.upload_file_rounded, color: Colors.white, size: 18),
+                  ),
+                  const SizedBox(height: 10),
+                  FloatingActionButton.extended(
+                    heroTag: 'add_product',
+                    backgroundColor: AppTheme.primaryColor,
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) =>
+                        BlocProvider.value(value: context.read<CatalogBloc>(), child: ProductFormPage(catalogId: selectedCatalog!.catalogId))),
+                    ),
+                    icon: const Icon(Icons.add_rounded, color: Colors.white),
+                    label: Text('Add Product', style: GoogleFonts.inter(fontWeight: FontWeight.w700, color: Colors.white)),
+                  ),
+                ],
+              ),
+            ),
+          ],
         );
       },
     );
   }
-}
 
-class _OrderCard extends StatelessWidget {
-  final WhatsAppOrder order;
-  const _OrderCard({required this.order});
-
-  @override
-  Widget build(BuildContext context) {
-    final statusColor = _statusColor(order.status);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
+  Widget _buildSelectCatalogPrompt() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.touch_app_rounded, size: 60, color: Colors.grey.shade300),
+          const SizedBox(height: 16),
+          Text('Select a Catalog',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 18, color: Colors.grey.shade600)),
+          const SizedBox(height: 8),
+          Text('Go to the Catalogs tab and select one to view its products',
+              style: GoogleFonts.inter(color: Colors.grey.shade400), textAlign: TextAlign.center),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF6366F1).withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.receipt_long_rounded,
-                    color: Color(0xFF6366F1), size: 20),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      order.contactName.isNotEmpty
-                          ? order.contactName
-                          : order.contactId,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 14),
-                    ),
-                    Text(
-                      order.contactId,
-                      style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                    ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: statusColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      order.status.toUpperCase(),
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: statusColor,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  _buildPaymentBadge(order.paymentStatus),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          const SizedBox(height: 10),
-          // Items
-          ...order.items.map((item) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 3),
-              child: Row(
-                children: [
-                  const Icon(Icons.circle, size: 6, color: Colors.grey),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'SKU ${item.productRetailerId} (x${item.quantity})',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  ),
-                  if (item.itemPrice > 0)
-                    Text(
-                      '${item.currency} ${(item.itemPrice * item.quantity).toStringAsFixed(2)}',
-                      style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w600),
-                    ),
-                ],
-              ),
-            );
-          }),
-          if (order.customerNote.isNotEmpty) ...[
+    );
+  }
+
+  Widget _buildNoProductsState(BuildContext context, CatalogModel catalog) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.inventory_2_outlined, size: 72, color: Colors.grey.shade300),
+            const SizedBox(height: 20),
+            Text('No Products Yet',
+                style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 20, color: const Color(0xFF1A1A2E))),
             const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                'Note: "${order.customerNote}"',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: Colors.grey.shade700),
+            Text('Add products to "${catalog.catalogName}" to start sharing them on WhatsApp.',
+                textAlign: TextAlign.center, style: GoogleFonts.inter(color: Colors.grey.shade500)),
+            const SizedBox(height: 28),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+                BlocProvider.value(value: context.read<CatalogBloc>(), child: ProductFormPage(catalogId: catalog.catalogId)))),
+              icon: const Icon(Icons.add_rounded),
+              label: Text('Add First Product', style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryColor,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(220, 48),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
           ],
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                order.createdAt != null
-                    ? '${order.createdAt!.day}/${order.createdAt!.month}/${order.createdAt!.year} ${order.createdAt!.hour}:${order.createdAt!.minute.toString().padLeft(2, '0')}'
-                    : '',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
-              ),
-              if (order.totalAmount > 0)
-                Text(
-                  'Total: ${order.currency} ${order.totalAmount.toStringAsFixed(2)}',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                      color: Color(0xFF10B981)),
-                ),
-            ],
-          ),
+        ),
+      ),
+    );
+  }
 
-          // Payment Link banner (if generated)
-          if (order.paymentLinkUrl != null && order.paymentLinkUrl!.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+  void _confirmDelete(BuildContext context, ProductModel product) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Product?'),
+        content: Text('Are you sure you want to delete "${product.name}"? This will also remove it from Meta.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              if (product.id != null) context.read<CatalogBloc>().add(DeleteProduct(product.id!));
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Orders Tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _OrdersTab extends StatefulWidget {
+  @override
+  State<_OrdersTab> createState() => _OrdersTabState();
+}
+
+class _OrdersTabState extends State<_OrdersTab> {
+  String? _filterStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<CatalogBloc, CatalogState>(
+      builder: (context, state) {
+        if (state is CatalogLoading) return const Center(child: CircularProgressIndicator());
+
+        List<CatalogOrderModel> orders = [];
+        if (state is OrdersLoaded) orders = state.orders;
+
+        return Column(
+          children: [
+            // Filter chips
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Row(
+                children: [
+                  _filterChip('All', null),
+                  const SizedBox(width: 8),
+                  _filterChip('New', 'new'),
+                  const SizedBox(width: 8),
+                  _filterChip('Viewed', 'viewed'),
+                  const SizedBox(width: 8),
+                  _filterChip('Fulfilled', 'fulfilled'),
+                  const SizedBox(width: 8),
+                  _filterChip('Cancelled', 'cancelled'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: orders.isEmpty
+                  ? _buildEmptyOrders()
+                  : RefreshIndicator(
+                      onRefresh: () async => context.read<CatalogBloc>().add(FetchOrders(status: _filterStatus)),
+                      child: ListView.builder(
+                        padding: const EdgeInsets.only(bottom: 24),
+                        itemCount: orders.length,
+                        itemBuilder: (context, i) {
+                          final order = orders[i];
+                          return OrderCard(
+                            order: order,
+                            onTap: () => _showOrderDetail(context, order),
+                            onStatusChange: (status) {
+                              context.read<CatalogBloc>().add(UpdateOrderStatus(orderId: order.id, status: status));
+                            },
+                          );
+                        },
+                      ),
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _filterChip(String label, String? status) {
+    final isSelected = _filterStatus == status;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _filterStatus = status);
+        context.read<CatalogBloc>().add(FetchOrders(status: status));
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? AppTheme.primaryColor : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: isSelected ? AppTheme.primaryColor : const Color(0xFFE5E7EB)),
+          boxShadow: isSelected
+              ? [BoxShadow(color: AppTheme.primaryColor.withValues(alpha: 0.3), blurRadius: 8, offset: const Offset(0, 3))]
+              : [],
+        ),
+        child: Text(
+          label,
+          style: GoogleFonts.inter(
+            fontWeight: FontWeight.w600,
+            fontSize: 12,
+            color: isSelected ? Colors.white : Colors.grey.shade600,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyOrders() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.shopping_cart_outlined, size: 72, color: Colors.grey.shade300),
+          const SizedBox(height: 20),
+          Text('No Orders Yet', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 20, color: const Color(0xFF1A1A2E))),
+          const SizedBox(height: 8),
+          Text('When customers submit their cart via WhatsApp, orders will appear here.',
+              textAlign: TextAlign.center, style: GoogleFonts.inter(color: Colors.grey.shade500)),
+        ],
+      ),
+    );
+  }
+
+  void _showOrderDetail(BuildContext context, CatalogOrderModel order) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        maxChildSize: 0.92,
+        minChildSize: 0.4,
+        expand: false,
+        builder: (__, controller) => ListView(
+          controller: controller,
+          padding: const EdgeInsets.all(24),
+          children: [
+            Center(
+              child: Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2))),
+            ),
+            const SizedBox(height: 20),
+            Text('Order Details', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 20, color: const Color(0xFF1A1A2E))),
+            const SizedBox(height: 4),
+            Text('From: ${order.customerName.isNotEmpty ? order.customerName : order.customerPhone}',
+                style: GoogleFonts.inter(color: Colors.grey.shade600)),
+            if (order.customerName.isNotEmpty)
+              Text(order.customerPhone, style: GoogleFonts.inter(fontSize: 12, color: Colors.grey.shade400)),
+            const SizedBox(height: 24),
+            Text('Items', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 15)),
+            const SizedBox(height: 12),
+            ...order.productItems.map((item) => Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFFF0FDF4),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFF86EFAC)),
+                color: const Color(0xFFF9FAFB),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE5E7EB)),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.link_rounded, size: 16, color: Color(0xFF16A34A)),
-                  const SizedBox(width: 8),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Payment Link Generated',
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF15803D)),
-                        ),
-                        Text(
-                          order.paymentLinkUrl!,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFF15803D),
-                            decoration: TextDecoration.underline,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        Text(item.productName.isNotEmpty ? item.productName : item.productRetailerId,
+                            style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13)),
+                        Text('SKU: ${item.productRetailerId} • Qty: ${item.quantity}',
+                            style: GoogleFonts.inter(fontSize: 12, color: Colors.grey.shade500)),
                       ],
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.copy_rounded, size: 16, color: Color(0xFF16A34A)),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    tooltip: 'Copy payment link',
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: order.paymentLinkUrl!));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Payment link copied to clipboard!'),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ],
-
-          // Paid details banner
-          if (order.paymentStatus.toLowerCase() == 'paid') ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: const Color(0xFFECFDF5),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.verified_rounded, size: 14, color: Color(0xFF059669)),
-                  const SizedBox(width: 6),
                   Text(
-                    order.paymentId != null
-                        ? 'Payment ID: ${order.paymentId}'
-                        : 'Paid via Razorpay',
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF065F46)),
+                    '${item.currency} ${item.lineTotal.toStringAsFixed(2)}',
+                    style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 14, color: AppTheme.primaryColor),
                   ),
                 ],
               ),
+            )),
+            const Divider(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Total', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 16)),
+                Text(order.formattedTotal, style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 18, color: AppTheme.primaryColor)),
+              ],
             ),
-          ],
-
-          // Action buttons for unpaid orders
-          if (order.paymentStatus.toLowerCase() != 'paid' && order.totalAmount > 0) ...[
-            const SizedBox(height: 12),
+            if (order.orderText.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('Customer Note', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 13)),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(color: Colors.amber.shade50, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.amber.shade200)),
+                child: Text(order.orderText, style: GoogleFonts.inter(color: Colors.grey.shade700, fontSize: 13)),
+              ),
+            ],
+            const SizedBox(height: 24),
             Row(
               children: [
                 Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF10B981),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                    icon: const Icon(Icons.send_rounded, size: 14),
-                    label: Text(
-                      order.paymentLinkUrl != null ? 'Resend Payment Link' : 'Send Payment Link',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
+                  child: OutlinedButton(
                     onPressed: () {
-                      context.read<CatalogBloc>().add(SendOrderPaymentLinkEvent(order.id));
+                      Navigator.pop(context);
+                      context.read<CatalogBloc>().add(UpdateOrderStatus(orderId: order.id, status: 'fulfilled'));
                     },
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.green,
+                      side: const BorderSide(color: Colors.green),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text('Mark Fulfilled', style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
                   ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF059669),
-                    side: const BorderSide(color: Color(0xFF10B981)),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                  icon: const Icon(Icons.done_all_rounded, size: 14),
-                  label: const Text('Mark Paid', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                  onPressed: () => _confirmMarkPaid(context),
                 ),
               ],
             ),
           ],
-        ],
+        ),
       ),
     );
-  }
-
-  void _confirmMarkPaid(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle_outline_rounded, color: Color(0xFF10B981)),
-            SizedBox(width: 8),
-            Text('Mark as Paid?', style: TextStyle(fontSize: 16)),
-          ],
-        ),
-        content: Text(
-          'Confirm that customer "${order.contactName.isNotEmpty ? order.contactName : order.contactId}" has completed payment of ${order.currency} ${order.totalAmount.toStringAsFixed(2)}?',
-          style: const TextStyle(fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF10B981),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            onPressed: () {
-              Navigator.pop(ctx);
-              context.read<CatalogBloc>().add(MarkOrderPaidEvent(order.id));
-            },
-            child: const Text('Confirm Paid'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPaymentBadge(String paymentStatus) {
-    switch (paymentStatus.toLowerCase()) {
-      case 'paid':
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: const Color(0xFF10B981).withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.check_circle_rounded, size: 10, color: Color(0xFF10B981)),
-              SizedBox(width: 4),
-              Text(
-                'PAID',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF10B981),
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
-          ),
-        );
-
-      case 'failed':
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: Colors.red.shade50,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.red.shade200),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.error_outline_rounded, size: 10, color: Colors.red.shade700),
-              const SizedBox(width: 4),
-              Text(
-                'FAILED',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.red.shade700,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
-          ),
-        );
-
-      case 'pending':
-      default:
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: Colors.amber.shade50,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.amber.shade300),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.hourglass_bottom_rounded, size: 10, color: Colors.amber.shade800),
-              const SizedBox(width: 4),
-              Text(
-                'UNPAID',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.amber.shade800,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
-          ),
-        );
-    }
-  }
-
-  Color _statusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'received':
-        return const Color(0xFF6366F1);
-      case 'accepted':
-        return const Color(0xFF06B6D4);
-      case 'completed':
-        return const Color(0xFF10B981);
-      case 'cancelled':
-        return Colors.red;
-      default:
-        return Colors.grey;
-    }
-  }
-}
-
-// ── Tab: Send Messages ────────────────────────────────────────────────────────
-
-class _SendMessagesTab extends StatefulWidget {
-  @override
-  State<_SendMessagesTab> createState() => _SendMessagesTabState();
-}
-
-class _SendMessagesTabState extends State<_SendMessagesTab> {
-  int _selectedComposer = 0;
-
-  final _composerLabels = [
-    (icon: Icons.storefront_rounded, label: 'Catalog Msg', color: const Color(0xFF25D366)),
-    (icon: Icons.inventory_2_outlined, label: 'Single Product', color: const Color(0xFF06B6D4)),
-    (icon: Icons.grid_view_rounded, label: 'Multi-Product', color: const Color(0xFF6366F1)),
-    (icon: Icons.view_carousel_rounded, label: 'Carousel', color: const Color(0xFF7C3AED)),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final isMobile = ResponsiveHelper.isMobile(context);
-
-    if (isMobile) {
-      return Column(
-        children: [
-          // Top horizontal selector on mobile
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: List.generate(
-                  _composerLabels.length,
-                  (i) {
-                    final item = _composerLabels[i];
-                    final isSelected = _selectedComposer == i;
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ChoiceChip(
-                        selected: isSelected,
-                        onSelected: (_) => setState(() => _selectedComposer = i),
-                        avatar: Icon(item.icon,
-                            size: 16,
-                            color: isSelected ? Colors.white : item.color),
-                        label: Text(item.label),
-                        selectedColor: item.color,
-                        labelStyle: TextStyle(
-                          fontSize: 12,
-                          color: isSelected ? Colors.white : Colors.black87,
-                          fontWeight:
-                              isSelected ? FontWeight.bold : FontWeight.normal,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: _buildComposer(),
-            ),
-          ),
-        ],
-      );
-    }
-
-    return Row(
-      children: [
-        // Left: composer type selector on desktop/tablet
-        Container(
-          width: 200,
-          color: Colors.white,
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.only(left: 8, bottom: 12, top: 8),
-                child: Text(
-                  'Message Type',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                    color: Color(0xFF6B7280),
-                  ),
-                ),
-              ),
-              ...List.generate(
-                _composerLabels.length,
-                (i) {
-                  final item = _composerLabels[i];
-                  final isSelected = _selectedComposer == i;
-                  return InkWell(
-                    onTap: () => setState(() => _selectedComposer = i),
-                    borderRadius: BorderRadius.circular(12),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? item.color.withValues(alpha: 0.1)
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                        border: isSelected
-                            ? Border.all(
-                                color: item.color.withValues(alpha: 0.3))
-                            : null,
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(item.icon,
-                              color: isSelected
-                                  ? item.color
-                                  : Colors.grey.shade400,
-                              size: 18),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              item.label,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: isSelected
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                                color: isSelected
-                                    ? item.color
-                                    : Colors.grey.shade600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-        const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFE5E7EB)),
-        // Right: composer form
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: _buildComposer(),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildComposer() {
-    switch (_selectedComposer) {
-      case 0:
-        return const CatalogMessageComposer();
-      case 1:
-        return const SingleProductComposer();
-      case 2:
-        return const MultiProductComposer();
-      case 3:
-        return const ProductCarouselComposer();
-      default:
-        return const SizedBox.shrink();
-    }
   }
 }
