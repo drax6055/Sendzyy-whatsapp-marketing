@@ -239,6 +239,7 @@ const CatalogService = {
             });
 
             let items = res.data?.data || [];
+            console.log('[CatalogService] Raw Meta products:', JSON.stringify(items, null, 2));
 
             // Format items into clean CatalogProduct model
             let products = items.map(p => {

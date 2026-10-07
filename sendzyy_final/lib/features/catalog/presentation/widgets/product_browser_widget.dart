@@ -542,7 +542,7 @@ class _ProductBrowserWidgetState extends State<ProductBrowserWidget> {
       padding: const EdgeInsets.only(bottom: 24),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 240,
-        mainAxisExtent: 280,
+        mainAxisExtent: 330,
         crossAxisSpacing: 16,
         mainAxisSpacing: 16,
       ),
@@ -798,7 +798,7 @@ class _ProductGridCard extends StatelessWidget {
             ClipRRect(
               borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
               child: AspectRatio(
-                aspectRatio: 1,
+                aspectRatio: 1.15,
                 child: product.imageUrl != null
                     ? Image.network(
                         product.imageUrl!,
