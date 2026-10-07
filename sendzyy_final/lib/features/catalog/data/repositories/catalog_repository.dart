@@ -221,7 +221,12 @@ class CatalogRepository {
     if (products.isEmpty) {
       products = [..._customAddedProducts, ..._sampleTestProducts];
     } else {
-      products = [..._customAddedProducts, ...products];
+      // Prioritize live Meta catalog products, only keep custom items if not in live data
+      final liveSkus = products.map((p) => p.retailerId.trim()).toSet();
+      final extraCustom = _customAddedProducts
+          .where((p) => !liveSkus.contains(p.retailerId.trim()))
+          .toList();
+      products = [...extraCustom, ...products];
     }
 
     if (searchQuery != null && searchQuery.trim().isNotEmpty) {
