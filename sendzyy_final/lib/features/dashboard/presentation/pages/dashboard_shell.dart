@@ -19,16 +19,17 @@ import 'package:iFloraBuzz/features/help/presentation/pages/help_page.dart';
 import 'package:iFloraBuzz/features/scheduled/presentation/pages/scheduled_campaigns_page.dart';
 import 'package:iFloraBuzz/features/chatbot/presentation/pages/chatbot_list_page.dart';
 import 'package:iFloraBuzz/features/chatbot/presentation/bloc/chatbot_bloc.dart';
-import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
-import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/leads/presentation/pages/lead_management_page.dart';
 import 'package:iFloraBuzz/features/leads/presentation/pages/indiamart_leads_page.dart';
 import 'package:iFloraBuzz/features/integrations/presentation/pages/integration_settings_page.dart';
 import 'package:iFloraBuzz/features/retry/presentation/pages/retry_system_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_profile_setup_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_automation_page.dart';
+import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_messages_page.dart';
 import 'package:iFloraBuzz/features/calling/presentation/pages/call_log_page.dart';
 import 'package:iFloraBuzz/features/calling/presentation/pages/calling_settings_page.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
 import 'package:iFloraBuzz/features/meta_ads/presentation/pages/meta_ads_dashboard_page.dart';
 import 'package:iFloraBuzz/features/meta_ads/presentation/bloc/meta_ads_bloc.dart';
@@ -188,7 +189,7 @@ class _DashboardShellState extends State<DashboardShell> {
         if (saved == 4 || saved == 13) {
           _isLeadsExpanded = true;
         }
-        if (saved == 14 || saved == 15) {
+        if (saved == 14 || saved == 15 || saved == 19) {
           _isInstagramExpanded = true;
         }
       });
@@ -215,7 +216,7 @@ class _DashboardShellState extends State<DashboardShell> {
       if (index == 4 || index == 13) {
         _isLeadsExpanded = true;
       }
-      if (index == 14 || index == 15) {
+      if (index == 14 || index == 15 || index == 19) {
         _isInstagramExpanded = true;
       }
     });
@@ -394,10 +395,13 @@ class _DashboardShellState extends State<DashboardShell> {
     const RetrySystemPage(),
     const IndiaMartLeadsPage(),
     const InstagramProfileSetupPage(),
-    const InstagramAutomationPage(),
+    InstagramAutomationPage(
+      onNavigateToProfile: () => _setSelectedIndex(14),
+    ),
     const CallLogPage(),
     const CallingSettingsPage(phoneNumberId: ''),
     const CatalogPage(),
+    const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
     const MetaAdsDashboardPage(),
   ];
@@ -432,8 +436,8 @@ class _DashboardShellState extends State<DashboardShell> {
                 _buildExpandableReportsMenu(isDrawer: isDrawer),
                 _buildNavItem(8, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
                 _buildNavItem(18, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
-                _buildNavItem(19, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
-                _buildNavItem(20, Icons.campaign_rounded, 'Meta Ads', isDrawer: isDrawer),
+                _buildNavItem(20, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
+                _buildNavItem(21, Icons.campaign_rounded, 'Meta Ads', isDrawer: isDrawer),
                 _buildNavItem(9, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
                 const SizedBox(height: 16),
                 const Divider(
@@ -568,7 +572,6 @@ class _DashboardShellState extends State<DashboardShell> {
                   child: Container(
                     color: AppTheme.backgroundColor,
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         // Header
                         _buildHeader(),
@@ -691,7 +694,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _buildExpandableInstagramMenu({bool isDrawer = false}) {
     final bool isAnyInstagramSelected =
-        _selectedIndex == 14 || _selectedIndex == 15;
+        _selectedIndex == 14 || _selectedIndex == 15 || _selectedIndex == 19;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -761,6 +764,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   15,
                   Icons.auto_awesome_outlined,
                   'Automation',
+                  isSubItem: true,
+                  isDrawer: isDrawer,
+                ),
+                _buildNavItem(
+                  19,
+                  Icons.chat_bubble_outline_rounded,
+                  'Message',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
@@ -1024,6 +1034,66 @@ class _DashboardShellState extends State<DashboardShell> {
           _headerPhoneNumbers = numbers ?? [];
           _loadingHeaderPhoneNumbers = false;
         });
+
+        // Check if active phone number details need to be synced to backend/state
+        final authState = context.read<AuthBloc>().state;
+        if (authState is AuthAuthenticated) {
+          final config =
+              authState.tenant['whatsappConfig'] as Map<String, dynamic>?;
+          if (config != null) {
+            final activePhoneId = config['phoneNumberId']?.toString();
+            if (activePhoneId != null && _headerPhoneNumbers.isNotEmpty) {
+              final activePhone = _headerPhoneNumbers.firstWhere(
+                (p) => p['id']?.toString() == activePhoneId,
+                orElse: () => <String, dynamic>{},
+              );
+              if (activePhone.isNotEmpty) {
+                final liveRating = activePhone['quality_rating']?.toString();
+                final livePhone =
+                    activePhone['display_phone_number']?.toString();
+                final liveName = activePhone['verified_name']?.toString();
+                final liveThroughput =
+                    activePhone['throughput']?['level']?.toString();
+
+                final dbRating = config['qualityRating']?.toString();
+                final dbPhone = config['displayPhone']?.toString();
+                final dbName = config['verifiedName']?.toString();
+                final dbThroughput = config['throughputLevel']?.toString();
+
+                if ((liveRating != null &&
+                        liveRating.isNotEmpty &&
+                        liveRating != dbRating) ||
+                    (livePhone != null &&
+                        livePhone.isNotEmpty &&
+                        livePhone != dbPhone) ||
+                    (liveName != null &&
+                        liveName.isNotEmpty &&
+                        liveName != dbName) ||
+                    (liveThroughput != null &&
+                        liveThroughput.isNotEmpty &&
+                        liveThroughput != dbThroughput)) {
+                  getIt<WhatsAppRepository>()
+                      .updateConfig(
+                    phoneNumberId: activePhoneId,
+                    accessToken: config['accessToken']?.toString() ?? '',
+                    businessAccountId:
+                        config['businessAccountId']?.toString() ?? '',
+                    metaAppId: config['metaAppId']?.toString() ?? '',
+                    displayPhone: livePhone ?? dbPhone,
+                    verifiedName: liveName ?? dbName,
+                    qualityRating: liveRating ?? dbRating,
+                    throughputLevel: liveThroughput ?? dbThroughput,
+                  )
+                      .then((synced) {
+                    if (synced && mounted) {
+                      context.read<AuthBloc>().add(AuthCheckRequested());
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     } catch (_) {
       if (mounted) {

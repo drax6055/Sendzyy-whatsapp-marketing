@@ -8,9 +8,6 @@ import 'package:iFloraBuzz/features/chatbot/presentation/widgets/node_forms/mess
 import 'package:iFloraBuzz/features/chatbot/presentation/widgets/node_forms/question_node_form.dart';
 import 'package:iFloraBuzz/features/chatbot/presentation/widgets/node_forms/quick_reply_node_form.dart';
 
-import 'package:iFloraBuzz/features/chatbot/presentation/widgets/node_forms/catalog_node_forms.dart';
-import 'package:iFloraBuzz/features/chatbot/presentation/widgets/node_forms/whatsapp_flow_node_form.dart';
-
 class PropertiesPanelWidget extends StatelessWidget {
   final FlowNode? selectedNode;
   final ValueChanged<Map<String, dynamic>> onNodeDataChanged;
@@ -71,16 +68,6 @@ class PropertiesPanelWidget extends StatelessWidget {
         return 'Action Node';
       case FlowNodeType.end:
         return 'End Node';
-      case FlowNodeType.catalogMessage:
-        return 'Catalog Message Node';
-      case FlowNodeType.singleProduct:
-        return 'Single Product Node';
-      case FlowNodeType.multiProduct:
-        return 'Multi Product Node';
-      case FlowNodeType.productCarousel:
-        return 'Carousel Node';
-      case FlowNodeType.whatsappFlow:
-        return 'WhatsApp Flow Node';
     }
   }
 
@@ -137,16 +124,6 @@ class PropertiesPanelWidget extends StatelessWidget {
         return ActionNodeForm(node: node, onChanged: onNodeDataChanged);
       case FlowNodeType.end:
         return const EndNodeForm();
-      case FlowNodeType.catalogMessage:
-        return CatalogMessageNodeForm(node: node, onChanged: onNodeDataChanged);
-      case FlowNodeType.singleProduct:
-        return SingleProductNodeForm(node: node, onChanged: onNodeDataChanged);
-      case FlowNodeType.multiProduct:
-        return MultiProductNodeForm(node: node, onChanged: onNodeDataChanged);
-      case FlowNodeType.productCarousel:
-        return ProductCarouselNodeForm(node: node, onChanged: onNodeDataChanged);
-      case FlowNodeType.whatsappFlow:
-        return WhatsAppFlowNodeForm(node: node, onChanged: onNodeDataChanged);
     }
   }
 }

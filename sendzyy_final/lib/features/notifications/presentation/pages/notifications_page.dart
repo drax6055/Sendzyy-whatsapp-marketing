@@ -28,26 +28,30 @@ class _NotificationsPageState extends State<NotificationsPage> {
     );
   }
 
-  void _showClearAllDialog() {
+  void _showClearAllDialog(BuildContext context) {
     showDialog(
       context: context,
       builder: (dialogCtx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: Colors.white,
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
+        titlePadding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+        contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+        title: Row(
           children: [
-            CircleAvatar(
-              backgroundColor: Color(0xFFFFEBEE),
-              radius: 18,
-              child: Icon(
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: const BoxDecoration(
+                color: Color(0xFFFFEBEE),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
                 Icons.delete_sweep_rounded,
                 color: Color(0xFFD32F2F),
-                size: 20,
+                size: 22,
               ),
             ),
-            SizedBox(width: 12),
-            Flexible(
+            const SizedBox(width: 12),
+            const Expanded(
               child: Text(
                 'Clear All Notifications',
                 style: TextStyle(
@@ -69,40 +73,36 @@ class _NotificationsPageState extends State<NotificationsPage> {
             height: 1.4,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         actions: [
-          OutlinedButton(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.grey.shade700,
-              side: BorderSide(color: Colors.grey.shade300),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
+          TextButton(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             ),
             onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: const Text(
+            child: Text(
               'Cancel',
               style: TextStyle(
+                color: Colors.grey.shade700,
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
               ),
             ),
           ),
+          const SizedBox(width: 8),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFD32F2F),
               foregroundColor: Colors.white,
               elevation: 0,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8),
               ),
             ),
             icon: const Icon(Icons.delete_sweep_rounded, size: 16),
             label: const Text(
-              'Yes, Clear All',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+              'Clear All',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
             ),
             onPressed: () {
               Navigator.of(dialogCtx).pop();
@@ -178,7 +178,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                           color: Color(0xFFD32F2F),
                         ),
                         tooltip: 'Clear All',
-                        onPressed: _showClearAllDialog,
+                        onPressed: () => _showClearAllDialog(context),
                       ),
                   ],
                 );
@@ -221,7 +221,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                        onPressed: _showClearAllDialog,
+                        onPressed: () => _showClearAllDialog(context),
                       ),
                     ],
                   ],
