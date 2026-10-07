@@ -33,6 +33,7 @@ class CatalogProduct {
   final String name;
   final String description;
   final double? price;
+  final double? salePrice;
   final String? currency;
   final String? imageUrl;
   final bool isAvailable;
@@ -43,6 +44,7 @@ class CatalogProduct {
     required this.name,
     required this.description,
     this.price,
+    this.salePrice,
     this.currency,
     this.imageUrl,
     this.isAvailable = true,
@@ -51,13 +53,17 @@ class CatalogProduct {
 
   factory CatalogProduct.fromJson(Map<String, dynamic> json) {
     double? parsedPrice;
-    final rawPrice = json['price'] ?? json['sale_price'];
+    final rawPrice = json['price'];
     if (rawPrice != null) {
-      parsedPrice = double.tryParse(rawPrice.toString());
-      // Meta returns price as integer cents sometimes
-      if (parsedPrice != null && parsedPrice > 100) {
-        parsedPrice = parsedPrice / 100;
-      }
+      final clean = rawPrice.toString().replaceAll(RegExp(r'[^0-9.]'), '');
+      parsedPrice = double.tryParse(clean);
+    }
+
+    double? parsedSalePrice;
+    final rawSale = json['sale_price'] ?? json['salePrice'];
+    if (rawSale != null) {
+      final cleanSale = rawSale.toString().replaceAll(RegExp(r'[^0-9.]'), '');
+      parsedSalePrice = double.tryParse(cleanSale);
     }
 
     return CatalogProduct(
@@ -68,6 +74,7 @@ class CatalogProduct {
       name: json['name']?.toString() ?? '',
       description: json['description']?.toString() ?? '',
       price: parsedPrice,
+      salePrice: parsedSalePrice,
       currency: json['currency']?.toString(),
       imageUrl: json['image_url']?.toString() ??
           json['imageUrl']?.toString(),
@@ -76,10 +83,26 @@ class CatalogProduct {
     );
   }
 
+  /// The active effective price (salePrice if available and > 0, else regular price)
+  double? get effectivePrice =>
+      (salePrice != null && salePrice! > 0) ? salePrice : price;
+
   String get formattedPrice {
-    if (price == null) return '';
+    final amount = effectivePrice;
+    if (amount == null) return '';
     final symbol = _currencySymbol(currency);
-    return '$symbol${price!.toStringAsFixed(2)}';
+    return '$symbol${amount.toStringAsFixed(2)}';
+  }
+
+  String get formattedOriginalPrice {
+    if (salePrice != null &&
+        salePrice! > 0 &&
+        price != null &&
+        price! > salePrice!) {
+      final symbol = _currencySymbol(currency);
+      return '$symbol${price!.toStringAsFixed(2)}';
+    }
+    return '';
   }
 
   String _currencySymbol(String? currency) {

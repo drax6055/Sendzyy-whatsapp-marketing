@@ -638,6 +638,17 @@ class _ProductBrowserWidgetState extends State<ProductBrowserWidget> {
                         color: AppTheme.primaryColor,
                       ),
                     ),
+                  if (product.formattedOriginalPrice.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      product.formattedOriginalPrice,
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: Colors.grey.shade500,
+                        decoration: TextDecoration.lineThrough,
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   Container(
                     padding:
@@ -827,6 +838,17 @@ class _ProductGridCard extends StatelessWidget {
                               color: AppTheme.primaryColor,
                             ),
                           ),
+                        if (product.formattedOriginalPrice.isNotEmpty) ...[
+                          const SizedBox(width: 4),
+                          Text(
+                            product.formattedOriginalPrice,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey.shade500,
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                        ],
                         const Spacer(),
                         Container(
                           padding: const EdgeInsets.symmetric(
@@ -942,13 +964,29 @@ class _ProductListTile extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           if (product.formattedPrice.isNotEmpty)
-            Text(
-              product.formattedPrice,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: AppTheme.primaryColor,
-                fontSize: 14,
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  product.formattedPrice,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.primaryColor,
+                    fontSize: 14,
+                  ),
+                ),
+                if (product.formattedOriginalPrice.isNotEmpty) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    product.formattedOriginalPrice,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade500,
+                      decoration: TextDecoration.lineThrough,
+                    ),
+                  ),
+                ],
+              ],
             ),
           const SizedBox(height: 4),
           Container(

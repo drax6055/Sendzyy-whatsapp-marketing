@@ -227,7 +227,7 @@ const CatalogService = {
 
         try {
             const params = {
-                fields: 'id,retailer_id,name,description,price,currency,image_url,availability,brand,visibility',
+                fields: 'id,retailer_id,name,description,price,sale_price,currency,image_url,availability,brand,visibility',
                 limit: Math.min(Math.max(Number(limit) || 50, 1), 100),
                 access_token: accessToken,
             };
@@ -247,8 +247,16 @@ const CatalogService = {
                     const raw = String(p.price).replace(/[^0-9.]/g, '');
                     const num = parseFloat(raw);
                     if (!isNaN(num)) {
-                        // Meta Graph API returns price in cents / minor currency units if integer > 100
-                        parsedPrice = (Number.isInteger(num) && num > 100) ? num / 100 : num;
+                        parsedPrice = num;
+                    }
+                }
+
+                let parsedSalePrice = null;
+                if (p.sale_price != null) {
+                    const rawSale = String(p.sale_price).replace(/[^0-9.]/g, '');
+                    const numSale = parseFloat(rawSale);
+                    if (!isNaN(numSale)) {
+                        parsedSalePrice = numSale;
                     }
                 }
 
@@ -257,6 +265,7 @@ const CatalogService = {
                     name: p.name || '',
                     description: p.description || '',
                     price: parsedPrice,
+                    sale_price: parsedSalePrice,
                     currency: p.currency || 'INR',
                     image_url: p.image_url || '',
                     availability: p.availability === 'out of stock' ? 'out of stock' : 'in stock',
