@@ -8,6 +8,7 @@ import 'package:iFloraBuzz/features/catalog/presentation/widgets/commerce_settin
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_message_composer.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/multi_product_composer.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_report_tab.dart';
 
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
   
@@ -25,7 +26,7 @@ class _CatalogPageState extends State<CatalogPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
     context.read<CatalogBloc>().add(LoadCommerceSettings());
   }
 
@@ -175,6 +176,10 @@ class _CatalogPageState extends State<CatalogPage>
                       icon: Icon(Icons.send_rounded, size: 18),
                       text: 'Send Messages',
                     ),
+                    Tab(
+                      icon: Icon(Icons.analytics_outlined, size: 18),
+                      text: 'Catalog Report',
+                    ),
                   ],
                 ),
               ],
@@ -189,6 +194,7 @@ class _CatalogPageState extends State<CatalogPage>
                 _ProductsTab(),
                 _OrdersTab(),
                 _SendMessagesTab(),
+                const CatalogReportTab(),
               ],
             ),
           ),

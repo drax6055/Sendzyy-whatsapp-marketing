@@ -70,6 +70,12 @@ class MarkOrderPaidEvent extends CatalogEvent {
   MarkOrderPaidEvent(this.orderId, {this.paymentId});
 }
 
+class UpdateOrderStatusEvent extends CatalogEvent {
+  final String orderId;
+  final String status;
+  UpdateOrderStatusEvent(this.orderId, this.status);
+}
+
 class ClearCatalogStatus extends CatalogEvent {}
 
 // ── States ────────────────────────────────────────────────────────────────────
@@ -156,6 +162,7 @@ class CatalogError extends CatalogState {
 
 class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
   final CatalogRepository _repository;
+  CatalogRepository get repository => _repository;
 
   CatalogBloc(this._repository) : super(CatalogInitial()) {
     on<LoadCommerceSettings>(_onLoadCommerceSettings);
@@ -171,6 +178,7 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
     on<AddProductEvent>(_onAddProduct);
     on<SendOrderPaymentLinkEvent>(_onSendOrderPaymentLink);
     on<MarkOrderPaidEvent>(_onMarkOrderPaid);
+    on<UpdateOrderStatusEvent>(_onUpdateOrderStatus);
     on<ClearCatalogStatus>(_onClearStatus);
   }
 
@@ -398,6 +406,28 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
       if (current != null) {
         emit(current.copyWith(
           successMessage: 'Order marked as paid!',
+        ));
+      }
+      add(LoadOrders());
+    } catch (e) {
+      if (current != null) {
+        emit(current.copyWith(
+          errorMessage: e.toString().replaceAll('Exception: ', ''),
+        ));
+      }
+    }
+  }
+
+  Future<void> _onUpdateOrderStatus(
+    UpdateOrderStatusEvent event,
+    Emitter<CatalogState> emit,
+  ) async {
+    final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
+    try {
+      await _repository.updateOrderStatus(event.orderId, event.status);
+      if (current != null) {
+        emit(current.copyWith(
+          successMessage: 'Order status updated to ${event.status}!',
         ));
       }
       add(LoadOrders());
