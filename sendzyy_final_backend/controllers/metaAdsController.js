@@ -1,5 +1,6 @@
 'use strict';
 
+const axios = require('axios');
 const MetaAdCampaign = require('../models/MetaAdCampaign');
 const MetaAdToken = require('../models/MetaAdToken');
 const MetaAdsService = require('../services/MetaAdsService');
@@ -10,12 +11,15 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
         /**
          * Connect Facebook Business Account / Token
          * POST /api/meta/auth/connect
+         * Supports: userAccessToken, OAuth code, or syncing from tenant onboarding
          */
         connectAccount: async (req, res) => {
             try {
                 const tenantId = req.user?.tenantId || req.user?.id;
-                const {
+                let {
                     userAccessToken,
+                    code,
+                    useTenantOnboarding,
                     adAccountId,
                     adAccountName,
                     pageId,
@@ -24,11 +28,57 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     businessId
                 } = req.body;
 
-                if (!userAccessToken) {
-                    return res.status(400).json({ success: false, error: 'userAccessToken is required' });
+                // 1. If useTenantOnboarding is requested or no token/code provided, sync from Tenant whatsappConfig
+                if (useTenantOnboarding || (!userAccessToken && !code)) {
+                    const tenant = await Tenant.findById(tenantId);
+                    if (tenant?.whatsappConfig?.accessToken) {
+                        userAccessToken = tenant.whatsappConfig.accessToken;
+                        businessId = businessId || tenant.whatsappConfig.businessPortfolioId || tenant.whatsappConfig.businessId;
+                        console.log(`[metaAdsController] Synced onboarding token for tenant ${tenantId}`);
+                    } else if (!userAccessToken && !code) {
+                        return res.status(400).json({
+                            success: false,
+                            error: 'No connected Meta account found in General Settings. Please connect via Facebook or provide a token.'
+                        });
+                    }
                 }
 
-                // Exchange for long-lived user token
+                // 2. If OAuth code is provided, exchange for user access token
+                if (code && (!userAccessToken || userAccessToken.trim() === '')) {
+                    const appId = process.env.META_APP_ID || '1509853364110343';
+                    const appSecret = process.env.META_APP_SECRET;
+                    if (!appSecret) {
+                        return res.status(500).json({
+                            success: false,
+                            error: 'META_APP_SECRET is not configured on the server environment.'
+                        });
+                    }
+                    const apiVersion = process.env.META_API_VERSION || 'v25.0';
+                    const tokenUrl = `https://graph.facebook.com/${apiVersion}/oauth/access_token`;
+                    try {
+                        const tokenRes = await axios.get(tokenUrl, {
+                            params: {
+                                client_id: appId,
+                                client_secret: appSecret,
+                                code: code.trim()
+                            }
+                        });
+                        userAccessToken = tokenRes.data?.access_token;
+                        console.log('[metaAdsController] Exchanged OAuth code for user access token');
+                    } catch (codeErr) {
+                        console.error('[metaAdsController] Code exchange error:', codeErr.response?.data || codeErr.message);
+                        return res.status(400).json({
+                            success: false,
+                            error: 'Failed to exchange Facebook authorization code: ' + (codeErr.response?.data?.error?.message || codeErr.message)
+                        });
+                    }
+                }
+
+                if (!userAccessToken) {
+                    return res.status(400).json({ success: false, error: 'User access token or OAuth code is required' });
+                }
+
+                // 3. Exchange for long-lived user token (~60 days)
                 let longLivedToken = userAccessToken;
                 let expiresAt = null;
                 try {
@@ -37,31 +87,48 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     expiresAt = tokenExchange.expiresAt;
                 } catch (tokenErr) {
                     console.warn('[metaAdsController] Token exchange warning:', tokenErr.message);
-                    // If exchange fails (e.g. already long-lived or dev token), continue with provided token
                 }
 
-                // If pageId was selected, fetch page access token and subscribe webhook
+                // 4. Auto-fetch available Ad Accounts and Pages
+                let adAccounts = [];
+                let pages = [];
+                try {
+                    adAccounts = await MetaAdsService.getAdAccounts(longLivedToken);
+                } catch (adErr) {
+                    console.warn('[metaAdsController] Auto-fetch ad accounts warning:', adErr.message);
+                }
+                try {
+                    pages = await MetaAdsService.getPages(longLivedToken);
+                } catch (pageErr) {
+                    console.warn('[metaAdsController] Auto-fetch pages warning:', pageErr.message);
+                }
+
+                // Auto-select if single account / page available and not specified
+                if (!adAccountId && adAccounts.length > 0) {
+                    adAccountId = adAccounts[0].id;
+                    adAccountName = adAccounts[0].name;
+                }
+                if (!pageId && pages.length > 0) {
+                    pageId = pages[0].id;
+                    pageName = pages[0].name;
+                }
+
+                // 5. If pageId was resolved, fetch page access token and subscribe webhook
                 let pageAccessToken = null;
-                if (pageId) {
-                    try {
-                        const pages = await MetaAdsService.getPages(longLivedToken);
-                        const targetPage = pages.find(p => p.id === pageId);
-                        if (targetPage && targetPage.access_token) {
-                            pageAccessToken = targetPage.access_token;
-                            // Subscribe page to leadgen webhook
-                            try {
-                                await MetaAdsService.subscribePageLeadWebhook(pageAccessToken, pageId);
-                                console.log(`[metaAdsController] Subscribed page ${pageId} to leadgen webhook`);
-                            } catch (subErr) {
-                                console.warn('[metaAdsController] Webhook subscription warning:', subErr.message);
-                            }
+                if (pageId && pages.length > 0) {
+                    const targetPage = pages.find(p => p.id === pageId);
+                    if (targetPage && targetPage.access_token) {
+                        pageAccessToken = targetPage.access_token;
+                        try {
+                            await MetaAdsService.subscribePageLeadWebhook(pageAccessToken, pageId);
+                            console.log(`[metaAdsController] Subscribed page ${pageId} to leadgen webhook`);
+                        } catch (subErr) {
+                            console.warn('[metaAdsController] Webhook subscription warning:', subErr.message);
                         }
-                    } catch (pageErr) {
-                        console.warn('[metaAdsController] Fetch page token error:', pageErr.message);
                     }
                 }
 
-                // Encrypt secrets before storing in DB
+                // 6. Encrypt secrets before storing in DB
                 const encryptedAccessToken = encryptSecret(longLivedToken);
                 const encryptedPageAccessToken = pageAccessToken ? encryptSecret(pageAccessToken) : null;
 
@@ -94,7 +161,9 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                         pageName: tokenDoc.pageName,
                         status: tokenDoc.status,
                         expiresAt: tokenDoc.expiresAt
-                    }
+                    },
+                    adAccounts,
+                    pages
                 });
             } catch (err) {
                 console.error('[metaAdsController] connectAccount error:', err);
@@ -111,17 +180,31 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                 const tenantId = req.user?.tenantId || req.user?.id;
                 const tokenDoc = await MetaAdToken.findOne({ tenantId });
 
+                let hasTenantOnboarding = false;
+                let tenantBusinessId = null;
+                try {
+                    const tenant = await Tenant.findById(tenantId).select('whatsappConfig').lean();
+                    hasTenantOnboarding = !!(tenant?.whatsappConfig?.accessToken && tenant?.whatsappConfig?.accessToken.trim());
+                    tenantBusinessId = tenant?.whatsappConfig?.businessPortfolioId || tenant?.whatsappConfig?.businessAccountId || null;
+                } catch (tErr) {
+                    console.warn('[metaAdsController] Tenant lookup warning:', tErr.message);
+                }
+
                 if (!tokenDoc || tokenDoc.status !== 'connected') {
                     return res.json({
                         success: true,
                         connected: false,
-                        status: tokenDoc ? tokenDoc.status : 'disconnected'
+                        status: tokenDoc ? tokenDoc.status : 'disconnected',
+                        hasTenantOnboarding,
+                        tenantBusinessId
                     });
                 }
 
                 return res.json({
                     success: true,
                     connected: true,
+                    hasTenantOnboarding,
+                    tenantBusinessId,
                     data: {
                         adAccountId: tokenDoc.adAccountId,
                         adAccountName: tokenDoc.adAccountName,
@@ -135,6 +218,62 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                 });
             } catch (err) {
                 console.error('[metaAdsController] getAccountStatus error:', err);
+                return res.status(500).json({ success: false, error: err.message });
+            }
+        },
+
+        /**
+         * Select Active Ad Account & Facebook Page
+         * POST /api/meta/auth/select-assets
+         */
+        selectAssets: async (req, res) => {
+            try {
+                const tenantId = req.user?.tenantId || req.user?.id;
+                const { adAccountId, adAccountName, pageId, pageName } = req.body;
+                const tokenDoc = await MetaAdToken.findOne({ tenantId, status: 'connected' });
+                if (!tokenDoc) {
+                    return res.status(400).json({ success: false, error: 'Meta account not connected' });
+                }
+
+                let pageAccessToken = tokenDoc.pageAccessToken;
+                if (pageId) {
+                    try {
+                        const userToken = decryptSecret(tokenDoc.accessToken);
+                        const pages = await MetaAdsService.getPages(userToken);
+                        const targetPage = pages.find(p => p.id === pageId);
+                        if (targetPage && targetPage.access_token) {
+                            pageAccessToken = encryptSecret(targetPage.access_token);
+                            try {
+                                await MetaAdsService.subscribePageLeadWebhook(targetPage.access_token, pageId);
+                                console.log(`[metaAdsController] Subscribed page ${pageId} to leadgen webhook`);
+                            } catch (subErr) {
+                                console.warn('[metaAdsController] Webhook subscription warning:', subErr.message);
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('[metaAdsController] selectAssets page retrieval warning:', err.message);
+                    }
+                }
+
+                if (adAccountId !== undefined) tokenDoc.adAccountId = adAccountId;
+                if (adAccountName !== undefined) tokenDoc.adAccountName = adAccountName;
+                if (pageId !== undefined) tokenDoc.pageId = pageId;
+                if (pageName !== undefined) tokenDoc.pageName = pageName;
+                if (pageAccessToken !== undefined) tokenDoc.pageAccessToken = pageAccessToken;
+                await tokenDoc.save();
+
+                return res.json({
+                    success: true,
+                    message: 'Active Ad Account and Facebook Page updated successfully',
+                    data: {
+                        adAccountId: tokenDoc.adAccountId,
+                        adAccountName: tokenDoc.adAccountName,
+                        pageId: tokenDoc.pageId,
+                        pageName: tokenDoc.pageName
+                    }
+                });
+            } catch (err) {
+                console.error('[metaAdsController] selectAssets error:', err);
                 return res.status(500).json({ success: false, error: err.message });
             }
         },

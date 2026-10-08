@@ -6983,6 +6983,7 @@ const metaCreativeUpload = multer({
 // Meta Auth
 app.post('/api/meta/auth/connect', authenticate, metaAdsController.connectAccount);
 app.get('/api/meta/auth/status', authenticate, metaAdsController.getAccountStatus);
+app.post('/api/meta/auth/select-assets', authenticate, requireMetaAuth, metaAdsController.selectAssets);
 app.post('/api/meta/auth/disconnect', authenticate, metaAdsController.disconnectAccount);
 
 // Meta Ad Accounts & Pages

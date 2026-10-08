@@ -12,7 +12,9 @@ class LoadMetaAccountStatusEvent extends MetaAdsEvent {
 }
 
 class ConnectMetaAccountEvent extends MetaAdsEvent {
-  final String userAccessToken;
+  final String? userAccessToken;
+  final String? code;
+  final bool useTenantOnboarding;
   final String? adAccountId;
   final String? adAccountName;
   final String? pageId;
@@ -21,7 +23,9 @@ class ConnectMetaAccountEvent extends MetaAdsEvent {
   final String? businessId;
 
   const ConnectMetaAccountEvent({
-    required this.userAccessToken,
+    this.userAccessToken,
+    this.code,
+    this.useTenantOnboarding = false,
     this.adAccountId,
     this.adAccountName,
     this.pageId,
@@ -31,7 +35,24 @@ class ConnectMetaAccountEvent extends MetaAdsEvent {
   });
 
   @override
-  List<Object?> get props => [userAccessToken, adAccountId, pageId];
+  List<Object?> get props => [userAccessToken, code, useTenantOnboarding, adAccountId, pageId];
+}
+
+class SelectMetaAssetsEvent extends MetaAdsEvent {
+  final String adAccountId;
+  final String? adAccountName;
+  final String pageId;
+  final String? pageName;
+
+  const SelectMetaAssetsEvent({
+    required this.adAccountId,
+    this.adAccountName,
+    required this.pageId,
+    this.pageName,
+  });
+
+  @override
+  List<Object?> get props => [adAccountId, pageId];
 }
 
 class DisconnectMetaAccountEvent extends MetaAdsEvent {

@@ -259,6 +259,54 @@
       );
     });
   }
+
+  // 4. Launch Facebook Login for Meta Ads (OAuth popup)
+  async function launchFacebookAdsLogin(appId) {
+    console.log('[launchFacebookAdsLogin] Initiating Facebook Login for Ads...');
+    return new Promise((resolve) => {
+      if (!window.FB) {
+        console.error('[launchFacebookAdsLogin] window.FB not found. SDK failed to load.');
+        resolve({
+          status: 'error_sdk_not_loaded',
+          error: 'Facebook SDK is not loaded. Please disable ad-blockers and reload.',
+        });
+        return;
+      }
+
+      try {
+        FB.login(
+          function (response) {
+            console.log('[launchFacebookAdsLogin] FB.login response:', response);
+            if (response.status === 'connected' && response.authResponse) {
+              resolve({
+                status: 'success',
+                accessToken: response.authResponse.accessToken || '',
+                code: response.authResponse.code || '',
+                userId: response.authResponse.userID || '',
+                expiresIn: response.authResponse.expiresIn ? String(response.authResponse.expiresIn) : '',
+              });
+            } else {
+              console.warn('[launchFacebookAdsLogin] Cancelled or not authorized:', response.status);
+              resolve({
+                status: 'cancelled',
+                error: response.status || 'Login was cancelled',
+              });
+            }
+          },
+          {
+            scope: 'ads_management,ads_read,leads_retrieval,pages_read_engagement,pages_show_list,pages_manage_ads',
+            return_scopes: true,
+          }
+        );
+      } catch (err) {
+        console.error('[launchFacebookAdsLogin] FB.login threw exception:', err);
+        resolve({
+          status: 'error',
+          error: err.message || 'Exception occurred during Facebook Login',
+        });
+      }
+    });
+  }
 </script>
 <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
 

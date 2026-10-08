@@ -79,6 +79,14 @@ class _CreateCampaignWizardPageState extends State<CreateCampaignWizardPage> {
   final _completionCtaUrlController = TextEditingController(text: 'https://sendzyy.com');
 
   @override
+  void initState() {
+    super.initState();
+    final bloc = context.read<MetaAdsBloc>();
+    _selectedPageId = bloc.state.accountStatus?.pageId ??
+        (bloc.state.pages.isNotEmpty ? bloc.state.pages.first.id : null);
+  }
+
+  @override
   void dispose() {
     _campaignNameController.dispose();
     _campaignBudgetAmountController.dispose();
@@ -134,6 +142,22 @@ class _CreateCampaignWizardPageState extends State<CreateCampaignWizardPage> {
         ? (double.tryParse(_campaignBudgetAmountController.text) ?? 500)
         : (double.tryParse(_adSetBudgetAmountController.text) ?? 500);
 
+    final effectivePageId = _selectedPageId ??
+        bloc.state.accountStatus?.pageId ??
+        (bloc.state.pages.isNotEmpty ? bloc.state.pages.first.id : null);
+
+    if (effectivePageId == null || effectivePageId.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please connect and select a Facebook Page before creating ads.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
     final payload = {
       'name': _campaignNameController.text.trim(),
       'objective': _selectedObjective,
@@ -172,7 +196,7 @@ class _CreateCampaignWizardPageState extends State<CreateCampaignWizardPage> {
       },
       'adName': _adNameController.text.trim(),
       'identity': {
-        'pageId': _selectedPageId,
+        'pageId': effectivePageId,
       },
       'format': _adFormat,
       'creative': {

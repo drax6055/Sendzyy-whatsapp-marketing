@@ -30,8 +30,10 @@ class MetaAdsRepository {
     }
   }
 
-  Future<void> connectAccount({
-    required String userAccessToken,
+  Future<Map<String, dynamic>> connectAccount({
+    String? userAccessToken,
+    String? code,
+    bool useTenantOnboarding = false,
     String? adAccountId,
     String? adAccountName,
     String? pageId,
@@ -40,8 +42,10 @@ class MetaAdsRepository {
     String? businessId,
   }) async {
     try {
-      await _dio.post('/api/meta/auth/connect', data: {
-        'userAccessToken': userAccessToken,
+      final response = await _dio.post('/api/meta/auth/connect', data: {
+        if (userAccessToken != null && userAccessToken.isNotEmpty) 'userAccessToken': userAccessToken,
+        if (code != null && code.isNotEmpty) 'code': code,
+        if (useTenantOnboarding) 'useTenantOnboarding': true,
         if (adAccountId != null) 'adAccountId': adAccountId,
         if (adAccountName != null) 'adAccountName': adAccountName,
         if (pageId != null) 'pageId': pageId,
@@ -49,8 +53,27 @@ class MetaAdsRepository {
         if (instagramActorId != null) 'instagramActorId': instagramActorId,
         if (businessId != null) 'businessId': businessId,
       });
+      return response.data is Map ? Map<String, dynamic>.from(response.data as Map) : {};
     } on DioException catch (e) {
       throw Exception(_extractError(e) ?? 'Failed to connect Meta account');
+    }
+  }
+
+  Future<void> selectAssets({
+    required String adAccountId,
+    String? adAccountName,
+    required String pageId,
+    String? pageName,
+  }) async {
+    try {
+      await _dio.post('/api/meta/auth/select-assets', data: {
+        'adAccountId': adAccountId,
+        if (adAccountName != null) 'adAccountName': adAccountName,
+        'pageId': pageId,
+        if (pageName != null) 'pageName': pageName,
+      });
+    } on DioException catch (e) {
+      throw Exception(_extractError(e) ?? 'Failed to update active assets');
     }
   }
 

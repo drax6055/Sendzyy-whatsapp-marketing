@@ -437,23 +437,14 @@ class _DashboardShellState extends State<DashboardShell> {
                 _buildNavItem(8, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
                 _buildNavItem(18, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
                 _buildNavItem(20, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
-                _buildNavItem(21, Icons.campaign_rounded, 'Meta Ads', isDrawer: isDrawer),
+               _buildNavItem(21, Icons.campaign_rounded, 'Meta Ads', isDrawer: isDrawer),
                 _buildNavItem(9, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
-                const SizedBox(height: 16),
-                const Divider(
-                  color: AppTheme.secondaryColor,
-                  indent: 20,
-                  endIndent: 20,
-                ),
+                
                 _buildExpandableSettingsMenu(isDrawer: isDrawer),
-                const SizedBox(height: 16),
-                const Divider(
-                  color: AppTheme.secondaryColor,
-                  indent: 20,
-                  endIndent: 20,
-                ),
+                
+
                 _buildExpandableInstagramMenu(isDrawer: isDrawer),
-                const SizedBox(height: 24),
+                
               ],
             ),
           ),

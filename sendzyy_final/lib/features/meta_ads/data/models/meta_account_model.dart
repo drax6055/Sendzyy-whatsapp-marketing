@@ -8,6 +8,8 @@ class MetaAccountStatus {
   final String? instagramActorId;
   final DateTime? connectedAt;
   final DateTime? expiresAt;
+  final bool hasTenantOnboarding;
+  final String? tenantBusinessId;
 
   MetaAccountStatus({
     required this.connected,
@@ -19,13 +21,15 @@ class MetaAccountStatus {
     this.instagramActorId,
     this.connectedAt,
     this.expiresAt,
+    this.hasTenantOnboarding = false,
+    this.tenantBusinessId,
   });
 
   factory MetaAccountStatus.fromJson(Map<String, dynamic> json) {
     final data = json['data'] is Map ? json['data'] as Map<String, dynamic> : json;
     return MetaAccountStatus(
       connected: json['connected'] == true,
-      status: (data['status'] ?? 'disconnected').toString(),
+      status: (data['status'] ?? json['status'] ?? 'disconnected').toString(),
       adAccountId: data['adAccountId']?.toString(),
       adAccountName: data['adAccountName']?.toString(),
       pageId: data['pageId']?.toString(),
@@ -33,6 +37,8 @@ class MetaAccountStatus {
       instagramActorId: data['instagramActorId']?.toString(),
       connectedAt: data['connectedAt'] != null ? DateTime.tryParse(data['connectedAt'].toString()) : null,
       expiresAt: data['expiresAt'] != null ? DateTime.tryParse(data['expiresAt'].toString()) : null,
+      hasTenantOnboarding: json['hasTenantOnboarding'] == true || data['hasTenantOnboarding'] == true,
+      tenantBusinessId: (json['tenantBusinessId'] ?? data['tenantBusinessId'])?.toString(),
     );
   }
 }
