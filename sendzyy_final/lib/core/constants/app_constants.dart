@@ -37,5 +37,4 @@ class AppConstants {
   static const String keyIsLoggedIn = 'is_logged_in';
   static const String keyTenantId = 'tenant_id';
   static const String keyCampaigns = 'campaign_history';
-  static const String keyCatalogId = 'catalog_id';
 }

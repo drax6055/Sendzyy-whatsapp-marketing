@@ -12,6 +12,15 @@ class SocketService {
   final _callUpdateController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get callUpdateStream => _callUpdateController.stream;
 
+  final _instagramMessageController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get instagramMessageStream => _instagramMessageController.stream;
+
+  final _instagramConversationController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get instagramConversationStream => _instagramConversationController.stream;
+
+  final _instagramStatusController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get instagramStatusStream => _instagramStatusController.stream;
+
   void connect(String tenantId, String token, String serverUrl) {
     _socket = IO.io(serverUrl, {
       'transports': ['websocket'],
@@ -38,6 +47,24 @@ class SocketService {
     _socket!.on('whatsapp_call_event', (data) {
       if (data is Map) {
         _callUpdateController.add(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('instagram:message_received', (data) {
+      if (data is Map) {
+        _instagramMessageController.add(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('instagram:conversation_updated', (data) {
+      if (data is Map) {
+        _instagramConversationController.add(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('instagram:message_status', (data) {
+      if (data is Map) {
+        _instagramStatusController.add(Map<String, dynamic>.from(data));
       }
     });
   }
