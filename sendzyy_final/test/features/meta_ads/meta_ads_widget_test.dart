@@ -61,8 +61,29 @@ void main() {
     expect(find.text('Meta Ads Manager'), findsOneWidget);
   });
 
-  testWidgets('CreateCampaignWizardPage renders without throwing exception', (tester) async {
-    tester.view.physicalSize = const Size(1920, 1080);
+  testWidgets('CreateCampaignWizardPage renders on mobile and desktop without throwing exception', (tester) async {
+    for (final size in [const Size(360, 640), const Size(480, 800), const Size(1280, 800)]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+
+      final bloc = di.getIt<MetaAdsBloc>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BlocProvider<MetaAdsBloc>.value(
+            value: bloc,
+            child: const CreateCampaignWizardPage(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Create Meta Campaign Wizard'), findsOneWidget);
+      expect(find.text('Campaign Details'), findsOneWidget);
+    }
+    tester.view.resetPhysicalSize();
+  });
+
+  testWidgets('CreateCampaignWizardPage steps navigation renders correctly', (tester) async {
+    tester.view.physicalSize = const Size(800, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -75,8 +96,25 @@ void main() {
         ),
       ),
     );
-    await tester.pump();
-    expect(find.text('Create Meta Campaign Wizard'), findsOneWidget);
+    await tester.pumpAndSettle();
+
+    // Step 1: Campaign details visible
+    expect(find.text('Next Step'), findsOneWidget);
+
+    // Tap Next Step -> Step 2 (Ad Set)
+    await tester.tap(find.text('Next Step'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ad Set Name'), findsOneWidget);
+
+    // Tap Next Step -> Step 3 (Creative)
+    await tester.tap(find.text('Next Step'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ad Name & Identity'), findsOneWidget);
+
+    // Tap Next Step -> Step 4 (Review)
+    await tester.tap(find.text('Next Step'));
+    await tester.pumpAndSettle();
+    expect(find.text('Campaign Summary'), findsOneWidget);
   });
 
   testWidgets('MetaLeadsPage renders without throwing exception', (tester) async {

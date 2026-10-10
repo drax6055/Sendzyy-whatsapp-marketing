@@ -326,12 +326,14 @@ class Step3bLeadFormWidget extends StatelessWidget {
                 children: [
                   Icon(icon, color: const Color(0xFF1877F2), size: 22),
                   const SizedBox(width: 10),
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                      ),
                     ),
                   ),
                 ],

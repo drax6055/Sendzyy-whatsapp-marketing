@@ -168,71 +168,74 @@ class Step1CampaignLevelWidget extends StatelessWidget {
             title: 'Campaign Objective (ODAX)',
             icon: Icons.track_changes_rounded,
             subtitle: 'Choose an objective. Meta will optimize delivery to get the most results for your goal.',
-            child: GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _objectives.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: 1.35,
-              ),
-              itemBuilder: (context, index) {
-                final obj = _objectives[index];
-                final isSelected = selectedObjective == obj['id'];
-                return InkWell(
-                  onTap: () => onObjectiveChanged(obj['id']),
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: isSelected ? (obj['color'] as Color).withValues(alpha: 0.08) : Colors.white,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 450;
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _objectives.length,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: isNarrow ? 1 : 2,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    childAspectRatio: isNarrow ? 1.9 : 1.35,
+                  ),
+                  itemBuilder: (context, index) {
+                    final obj = _objectives[index];
+                    final isSelected = selectedObjective == obj['id'];
+                    return InkWell(
+                      onTap: () => onObjectiveChanged(obj['id']),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: isSelected ? (obj['color'] as Color) : Colors.grey.shade300,
-                        width: isSelected ? 2 : 1,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: isSelected ? (obj['color'] as Color).withValues(alpha: 0.08) : Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isSelected ? (obj['color'] as Color) : Colors.grey.shade300,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: (obj['color'] as Color).withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Icon(obj['icon'] as IconData, color: obj['color'] as Color, size: 20),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: (obj['color'] as Color).withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Icon(obj['icon'] as IconData, color: obj['color'] as Color, size: 20),
+                                ),
+                                if (isSelected)
+                                  Icon(Icons.check_circle_rounded, color: obj['color'] as Color, size: 20),
+                              ],
                             ),
-                            if (isSelected)
-                              Icon(Icons.check_circle_rounded, color: obj['color'] as Color, size: 20),
+                            const SizedBox(height: 8),
+                            Text(
+                              obj['title'] as String,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                                color: isSelected ? (obj['color'] as Color) : const Color(0xFF1E293B),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              obj['description'] as String,
+                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.2),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          obj['title'] as String,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                            color: isSelected ? (obj['color'] as Color) : const Color(0xFF1E293B),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Expanded(
-                          child: Text(
-                            obj['description'] as String,
-                            style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.2),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                      ),
+                    );
+                  },
                 );
               },
             ),
@@ -370,12 +373,14 @@ class Step1CampaignLevelWidget extends StatelessWidget {
                 children: [
                   Icon(icon, color: const Color(0xFF1877F2), size: 22),
                   const SizedBox(width: 10),
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                      ),
                     ),
                   ),
                 ],

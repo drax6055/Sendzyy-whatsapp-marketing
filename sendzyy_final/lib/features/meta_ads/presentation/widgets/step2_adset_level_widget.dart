@@ -118,16 +118,19 @@ class Step2AdSetLevelWidget extends StatelessWidget {
             title: 'Conversion Destination',
             icon: Icons.near_me_rounded,
             subtitle: 'Choose where you want to send people after they tap your ad.',
-            child: GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _destinations.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: 1.45,
-              ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 450;
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _destinations.length,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: isNarrow ? 1 : 2,
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 10,
+                    childAspectRatio: isNarrow ? 2.5 : 1.45,
+                  ),
               itemBuilder: (context, index) {
                 final dest = _destinations[index];
                 final isSelected = destinationType == dest['id'];
@@ -178,10 +181,12 @@ class Step2AdSetLevelWidget extends StatelessWidget {
                       ],
                     ),
                   ),
-                );
-              },
-            ),
+                  );
+                },
+              );
+            },
           ),
+        ),
           const SizedBox(height: 16),
 
           // Section 3: Performance Goal
@@ -482,12 +487,14 @@ class Step2AdSetLevelWidget extends StatelessWidget {
                 children: [
                   Icon(icon, color: const Color(0xFF1877F2), size: 22),
                   const SizedBox(width: 10),
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                      ),
                     ),
                   ),
                 ],

@@ -283,7 +283,7 @@ class _CreateCampaignWizardPageState extends State<CreateCampaignWizardPage> {
   Widget _buildStepperHeader() {
     final steps = ['Campaign', 'Ad Set', 'Creative', 'Review'];
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       color: Colors.white,
       child: Row(
         children: List.generate(steps.length, (index) {
@@ -294,32 +294,37 @@ class _CreateCampaignWizardPageState extends State<CreateCampaignWizardPage> {
               children: [
                 Expanded(
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       CircleAvatar(
-                        radius: 14,
+                        radius: 12,
                         backgroundColor: isCurrent
                             ? const Color(0xFF1877F2)
                             : isCompleted
                                 ? const Color(0xFF10B981)
                                 : Colors.grey.shade300,
                         child: isCompleted
-                            ? const Icon(Icons.check, size: 16, color: Colors.white)
+                            ? const Icon(Icons.check, size: 14, color: Colors.white)
                             : Text(
                                 '${index + 1}',
                                 style: TextStyle(
-                                  fontSize: 12,
+                                  fontSize: 11,
                                   fontWeight: FontWeight.bold,
                                   color: isCurrent ? Colors.white : Colors.grey.shade700,
                                 ),
                               ),
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        steps[index],
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
-                          color: isCurrent ? const Color(0xFF1877F2) : Colors.grey.shade600,
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          steps[index],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+                            color: isCurrent ? const Color(0xFF1877F2) : Colors.grey.shade600,
+                          ),
                         ),
                       ),
                     ],
@@ -327,8 +332,9 @@ class _CreateCampaignWizardPageState extends State<CreateCampaignWizardPage> {
                 ),
                 if (index < steps.length - 1)
                   Container(
-                    width: 24,
+                    width: 16,
                     height: 2,
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
                     color: isCompleted ? const Color(0xFF10B981) : Colors.grey.shade300,
                   ),
               ],
