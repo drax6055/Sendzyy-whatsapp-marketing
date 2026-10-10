@@ -48,38 +48,60 @@ class CommerceSettingsCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 14),
-                  const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Commerce Settings',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1A1D1E),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'WhatsApp Commerce Settings',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1A1D1E),
+                          ),
                         ),
-                      ),
-                      Text(
-                        'Control cart & catalog visibility',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Color(0xFF6B7280),
+                        Text(
+                          'Direct sync with Meta WhatsApp Manager',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Color(0xFF6B7280),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1877F2).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF1877F2).withValues(alpha: 0.2)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.sync_rounded, color: Color(0xFF1877F2), size: 14),
+                        SizedBox(width: 4),
+                        Text(
+                          'Meta API',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF1877F2)),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 24),
               _SettingToggleRow(
-                icon: Icons.shopping_cart_rounded,
-                iconColor: const Color(0xFF10B981),
-                title: 'Shopping Cart',
-                subtitle: 'Allow customers to add products to a cart and place orders',
-                value: settings.isCartEnabled,
+                icon: Icons.store_mall_directory_rounded,
+                iconColor: const Color(0xFF6366F1),
+                title: 'Show catalogue icon in chat header',
+                subtitle:
+                    'Adds an icon to your chat header and in your business profile for customers to easily access your catalogue.',
+                value: settings.isCatalogVisible,
                 onChanged: (val) {
                   context.read<CatalogBloc>().add(
-                        UpdateCommerceSettings(cartEnabled: val),
+                        UpdateCommerceSettings(catalogVisible: val),
                       );
                 },
               ),
@@ -87,14 +109,15 @@ class CommerceSettingsCard extends StatelessWidget {
               const Divider(height: 1),
               const SizedBox(height: 16),
               _SettingToggleRow(
-                icon: Icons.visibility_rounded,
-                iconColor: const Color(0xFF6366F1),
-                title: 'Catalog Visibility',
-                subtitle: 'Show the catalog storefront icon in WhatsApp chat view',
-                value: settings.isCatalogVisible,
+                icon: Icons.shopping_basket_rounded,
+                iconColor: const Color(0xFF10B981),
+                title: 'Show "Add to basket" button on product pages and chat',
+                subtitle:
+                    'Adds the basket button to product pages & the trolley icon in chat so customers can add items and order.',
+                value: settings.isCartEnabled,
                 onChanged: (val) {
                   context.read<CatalogBloc>().add(
-                        UpdateCommerceSettings(catalogVisible: val),
+                        UpdateCommerceSettings(cartEnabled: val),
                       );
                 },
               ),

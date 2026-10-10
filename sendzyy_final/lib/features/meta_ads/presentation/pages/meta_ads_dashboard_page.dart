@@ -482,7 +482,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const MetaLeadsPage()),
+                MaterialPageRoute(
+                  builder: (_) => BlocProvider.value(
+                    value: context.read<MetaAdsBloc>(),
+                    child: const MetaLeadsPage(),
+                  ),
+                ),
               );
             },
           ),
@@ -497,7 +502,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
         onPressed: () {
           Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const CreateCampaignWizardPage()),
+            MaterialPageRoute(
+              builder: (_) => BlocProvider.value(
+                value: context.read<MetaAdsBloc>(),
+                child: const CreateCampaignWizardPage(),
+              ),
+            ),
           );
         },
         backgroundColor: const Color(0xFF1877F2),
@@ -531,7 +541,7 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Meta Connection Banner
-                  _buildConnectionBanner(context, state, isConnected),
+                  _buildConnectionBanner(context, state, isConnected),        
                   const SizedBox(height: 20),
 
                   // Overall KPIs Grid
@@ -734,7 +744,10 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => CampaignDetailsAnalyticsPage(campaign: campaign),
+            builder: (_) => BlocProvider.value(
+              value: context.read<MetaAdsBloc>(),
+              child: CampaignDetailsAnalyticsPage(campaign: campaign),
+            ),
           ),
         );
       },
@@ -852,7 +865,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const CreateCampaignWizardPage()),
+                  MaterialPageRoute(
+                    builder: (_) => BlocProvider.value(
+                      value: context.read<MetaAdsBloc>(),
+                      child: const CreateCampaignWizardPage(),
+                    ),
+                  ),
                 );
               },
               icon: const Icon(Icons.add_rounded),

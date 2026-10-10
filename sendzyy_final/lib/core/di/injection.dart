@@ -150,6 +150,6 @@ Future<void> init() async {
   getIt.registerFactory(() => InstagramChatBloc(getIt(), getIt()));
 
   // Features - Meta Ads
-  getIt.registerLazySingleton(() => MetaAdsRepository(getIt()));
-  getIt.registerFactory(() => MetaAdsBloc(getIt()));
+  getIt.registerLazySingleton(() => MetaAdsRepository(getIt<Dio>()));
+  getIt.registerFactory(() => MetaAdsBloc(getIt<MetaAdsRepository>()));
 }
