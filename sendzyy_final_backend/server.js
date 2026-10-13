@@ -7052,7 +7052,7 @@ app.get('/webhooks/meta-leads', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
-    const verifyToken = process.env.META_LEADS_WEBHOOK_VERIFY_TOKEN || process.env.WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'sendzyy_meta_webhook_verify_2024';
+    const verifyToken = process.env.WEBHOOK_VERIFY_TOKEN || process.env.META_LEADS_WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'sendzyy_meta_webhook_verify_2024';
     if (mode === 'subscribe' && token === verifyToken) {
         console.log('[MetaLeadsWebhook] Verification successful');
         return res.status(200).send(challenge);
