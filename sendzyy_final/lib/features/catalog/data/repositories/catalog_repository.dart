@@ -97,83 +97,6 @@ class CatalogRepository {
     }
   }
 
-  // ── Sample Test Products Fallback ─────────────────────────────────────────
-
-  static final List<CatalogProduct> _sampleTestProducts = [
-    CatalogProduct(
-      retailerId: 'HEADPHONE-01',
-      name: 'Wireless Noise-Canceling Headphones',
-      description:
-          'Premium over-ear Bluetooth headphones with active noise cancellation.',
-      price: 149.99,
-      currency: 'USD',
-      imageUrl:
-          'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500&q=80',
-      isAvailable: true,
-      brand: 'AudioPro',
-    ),
-    CatalogProduct(
-      retailerId: 'WATCH-02',
-      name: 'Smart Fitness Tracker Watch',
-      description:
-          'Heart rate monitor, GPS tracking, sleep analyzer, and 50m water resistance.',
-      price: 89.50,
-      currency: 'USD',
-      imageUrl:
-          'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&q=80',
-      isAvailable: true,
-      brand: 'FitPulse',
-    ),
-    CatalogProduct(
-      retailerId: 'BAG-03',
-      name: 'Urban Leather Laptop Backpack',
-      description:
-          'Handcrafted genuine leather backpack with padded 15.6-inch laptop compartment.',
-      price: 119.00,
-      currency: 'USD',
-      imageUrl:
-          'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=500&q=80',
-      isAvailable: true,
-      brand: 'CraftedGoods',
-    ),
-    CatalogProduct(
-      retailerId: 'SPEAKER-04',
-      name: 'Portable Waterproof Bluetooth Speaker',
-      description:
-          '360-degree sound, deep bass, IPX7 waterproof rating, 20-hour playtime.',
-      price: 59.99,
-      currency: 'USD',
-      imageUrl:
-          'https://images.unsplash.com/photo-1608043152269-423dbba4e7e1?w=500&q=80',
-      isAvailable: true,
-      brand: 'SoundWave',
-    ),
-    CatalogProduct(
-      retailerId: 'SHOES-05',
-      name: 'Ultra-Light Running Sneakers',
-      description:
-          'Breathable mesh upper with cushioned responsive foam sole for ultimate comfort.',
-      price: 79.99,
-      currency: 'USD',
-      imageUrl:
-          'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=500&q=80',
-      isAvailable: true,
-      brand: 'StrideStep',
-    ),
-    CatalogProduct(
-      retailerId: 'GLASSES-06',
-      name: 'Polarized UV400 Sunglasses',
-      description:
-          'Classic aviator frame with anti-glare polarized lenses and microfiber pouch.',
-      price: 34.99,
-      currency: 'USD',
-      imageUrl:
-          'https://images.unsplash.com/photo-1572635196237-14b3f281503f?w=500&q=80',
-      isAvailable: true,
-      brand: 'OpticStyle',
-    ),
-  ];
-
   static final List<CatalogProduct> _customAddedProducts = [];
 
   // ── Products ─────────────────────────────────────────────────────────────────
@@ -218,11 +141,7 @@ class CatalogRepository {
       // Fallback to test catalog products when backend API is not yet wired
     }
 
-    if (products.isEmpty) {
-      products = [..._customAddedProducts, ..._sampleTestProducts];
-    } else {
-      products = [..._customAddedProducts, ...products];
-    }
+    products = [..._customAddedProducts, ...products];
 
     if (searchQuery != null && searchQuery.trim().isNotEmpty) {
       final q = searchQuery.toLowerCase();

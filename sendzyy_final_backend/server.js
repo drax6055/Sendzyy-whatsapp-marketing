@@ -3967,7 +3967,7 @@ async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionI
                 `https://graph.facebook.com/${apiVersion}/${businessPortfolioId}/system_user_access_tokens`,
                 new URLSearchParams({
                     appsecret_proof: appSecretProof,
-                    scope: 'whatsapp_business_management,whatsapp_business_messaging,catalog_management',
+                    scope: 'whatsapp_business_management,whatsapp_business_messaging',
                     set_token_expires_in_60_days: 'false',  // ← KEY: generates a NEVER-EXPIRING token
                 }),
                 {
@@ -4146,13 +4146,14 @@ async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionI
             'whatsappConfig.nameApprovalStatus': nameApprovalStatus,
             'whatsappConfig.codeVerificationStatus': codeVerificationStatus,
             'whatsappConfig.phoneStatus': phoneStatus,
-            'whatsappConfig.registrationError': registrationError,
-            // Token health: system user tokens from this step never expire
-            'whatsappConfig.tokenType': businessToken ? 'system_user' : 'user',
-            'whatsappConfig.tokenExpiry': null,   // null = never expires
-            'whatsappConfig.tokenStatus': 'active',
         };
-        if (businessToken) updateFields['whatsappConfig.accessToken'] = businessToken;
+        // Token health: only update to permanent system user token if businessToken was successfully generated
+        if (businessToken) {
+            updateFields['whatsappConfig.accessToken'] = businessToken;
+            updateFields['whatsappConfig.tokenType'] = 'system_user';
+            updateFields['whatsappConfig.tokenExpiry'] = null;   // null = never expires
+            updateFields['whatsappConfig.tokenStatus'] = 'active';
+        }
         if (phoneNumberId) updateFields['whatsappConfig.phoneNumberId'] = phoneNumberId;
         if (displayPhone) updateFields['whatsappConfig.displayPhone'] = displayPhone;
         if (verifiedName) updateFields['whatsappConfig.verifiedName'] = verifiedName;
@@ -4436,7 +4437,7 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
                     const expiresAt = tokenData.expires_at; // Unix timestamp, 0 = never expires
                     const isNeverExpires = !expiresAt || expiresAt === 0;
                     const tokenExpiryDate = isNeverExpires ? null : new Date(expiresAt * 1000);
-                    const resolvedTokenType = (tokenData.type === 'SYSTEM_USER' || isNeverExpires) ? 'system_user' : 'user';
+                    const resolvedTokenType = isNeverExpires ? 'system_user' : 'user';
                     // Attach expiry info to tenant update fields (applied below at DB save)
                     tokenExpiryInfo = { tokenExpiry: tokenExpiryDate, tokenType: resolvedTokenType, tokenStatus: 'active' };
                     await saveOnboardingLog({
@@ -4506,7 +4507,7 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
             details: { resolvedWabaId, resolvedPhoneNumberId, resolvedBusinessId }
         });
 
-        if (!resolvedWabaId || !resolvedPhoneNumberId) {
+        if (!resolvedWabaId || !resolvedPhoneNumberId || !resolvedBusinessId) {
             await saveOnboardingLog({
                 tenantId,
                 sessionId,
@@ -4514,6 +4515,29 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
                 status: 'info',
                 message: 'Missing IDs. Querying Meta Graph API for WABA/business properties...'
             });
+
+            // Fast path: if resolvedWabaId is already known, query WABA directly to fetch owning business ID
+            if (resolvedWabaId && !resolvedBusinessId) {
+                try {
+                    const wabaDirectRes = await axios.get(`${WHATSAPP_API_URL}/${resolvedWabaId}`, {
+                        params: { access_token: accessToken, fields: 'id,name,business' }
+                    });
+                    if (wabaDirectRes.data?.business?.id) {
+                        resolvedBusinessId = wabaDirectRes.data.business.id;
+                        await saveOnboardingLog({
+                            tenantId,
+                            sessionId,
+                            wabaId: resolvedWabaId,
+                            businessPortfolioId: resolvedBusinessId,
+                            step: 'BACKEND_AUTO_RESOLVE_BIZ_FROM_WABA_SUCCESS',
+                            status: 'success',
+                            message: `Directly resolved Business Portfolio ID from WABA: ${resolvedBusinessId}`
+                        });
+                    }
+                } catch (wabaErr) {
+                    console.warn('[Embedded Signup] Could not resolve business from WABA directly:', wabaErr.message);
+                }
+            }
 
             try {
                 const wabaRes = await axios.get(`${WHATSAPP_API_URL}/me/whatsapp_business_accounts`, {
@@ -4877,6 +4901,25 @@ app.post('/refresh-meta-account', authenticate, async (req, res) => {
             message: 'Retrieved stored configs for refresh.',
             details: { resolvedWabaId, resolvedPhoneNumberId, resolvedBusinessId }
         });
+        // Auto-resolve businessPortfolioId if missing from tenant config
+        if (resolvedWabaId && !resolvedBusinessId && accessToken) {
+            try {
+                const wabaRes = await axios.get(`${WHATSAPP_API_URL}/${resolvedWabaId}`, {
+                    params: { access_token: accessToken, fields: 'id,name,business' }
+                });
+                if (wabaRes.data?.business?.id) {
+                    resolvedBusinessId = wabaRes.data.business.id;
+                    await Tenant.findByIdAndUpdate(tenantId, {
+                        $set: {
+                            'whatsappConfig.businessPortfolioId': resolvedBusinessId,
+                            'whatsappConfig.businessId': resolvedBusinessId,
+                        }
+                    });
+                }
+            } catch (wabaErr) {
+                console.warn('[Refresh Account] Could not resolve business portfolio ID from WABA:', wabaErr.message);
+            }
+        }
 
         // If we have a stored businessPortfolioId, run the official Steps 4→5→6
         if (resolvedWabaId && resolvedBusinessId) {
@@ -7009,11 +7052,12 @@ app.get('/webhooks/meta-leads', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
-    const verifyToken = process.env.META_LEADS_WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'sendzyy_meta_lead_verify_token';
+    const verifyToken = process.env.META_LEADS_WEBHOOK_VERIFY_TOKEN || process.env.WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'sendzyy_meta_webhook_verify_2024';
     if (mode === 'subscribe' && token === verifyToken) {
         console.log('[MetaLeadsWebhook] Verification successful');
         return res.status(200).send(challenge);
     }
+    console.warn(`[MetaLeadsWebhook] Verification failed: received '${token}', expected '${verifyToken}'`);
     return res.sendStatus(403);
 });
 
@@ -7076,6 +7120,28 @@ app.post('/webhooks/meta-leads', async (req, res) => {
                             cleanPhone = '91' + cleanPhone;
                         }
 
+                        // 1. Upsert Client document so lead directly appears in Sendzy Clients list
+                        let client = null;
+                        if (cleanPhone) {
+                            try {
+                                client = await Client.findOne({ tenantId, mobileNumber: cleanPhone });
+                                if (!client) {
+                                    client = await Client.create({
+                                        tenantId,
+                                        name: fullName || 'Meta Lead',
+                                        mobileNumber: cleanPhone,
+                                        emailId: email || '',
+                                        companyName: extraData['company_name'] || extraData['company'] || '',
+                                        venue: 'Meta Ads',
+                                        remark: `Lead from Form: ${form_id || 'Instant Form'}`
+                                    });
+                                    console.log(`[MetaLeadsWebhook] Created Client ${client._id} for tenant ${tenantId}`);
+                                }
+                            } catch (clientErr) {
+                                console.error(`[MetaLeadsWebhook] Client upsert error:`, clientErr.message);
+                            }
+                        }
+
                         const newLead = new Lead({
                             tenantId,
                             name: fullName || 'Meta Lead',
@@ -7083,6 +7149,7 @@ app.post('/webhooks/meta-leads', async (req, res) => {
                             email: email || '',
                             source: 'meta_ads',
                             formName: form_id || 'Meta Lead Form',
+                            clientId: client ? client._id : null,
                             metadata: {
                                 metaLeadgenId: leadgen_id,
                                 metaFormId: form_id,
@@ -7096,6 +7163,53 @@ app.post('/webhooks/meta-leads', async (req, res) => {
                         await newLead.save();
                         console.log(`[MetaLeadsWebhook] Saved lead ${newLead._id} for tenant ${tenantId}`);
 
+                        // 2. Wire directly into Sendzy Chat and broadcast in real time
+                        if (cleanPhone) {
+                            try {
+                                const initialMsg = `🎯 New Lead from Meta Ad!\n👤 Name: ${fullName || 'N/A'}\n📱 Phone: +${cleanPhone}${email ? `\n✉️ Email: ${email}` : ''}`;
+                                
+                                await Conversation.findOneAndUpdate(
+                                    { tenantId, contactId: cleanPhone },
+                                    {
+                                        $set: {
+                                            name: fullName || cleanPhone,
+                                            lastMessage: initialMsg,
+                                            lastActive: new Date(),
+                                            hasReply: true
+                                        }
+                                    },
+                                    { upsert: true, new: true }
+                                );
+
+                                await Message.create({
+                                    tenantId,
+                                    contactId: cleanPhone,
+                                    text: initialMsg,
+                                    isMe: false,
+                                    timestamp: new Date(),
+                                    time: formatTimeIST(new Date()),
+                                    source: 'meta_ads',
+                                    status: 'delivered'
+                                });
+
+                                // Broadcast live conversation and messages over Socket.IO
+                                await broadcastConversations(tenantId.toString());
+                                await broadcastMessages(tenantId.toString(), cleanPhone);
+                            } catch (chatErr) {
+                                console.error('[MetaLeadsWebhook] Chat update error:', chatErr.message);
+                            }
+                        }
+
+                        // 3. Emit real-time Socket.IO notification to tenant for Meta Leads page
+                        if (typeof io !== 'undefined' && io) {
+                            io.to(tenantId.toString()).emit('meta_lead_received', {
+                                lead: newLead,
+                                client: client || null,
+                                campaignId: campaign ? campaign._id.toString() : null
+                            });
+                        }
+
+                        // 4. Update campaign leads count
                         if (campaign) {
                             await MetaAdCampaign.updateOne(
                                 { _id: campaign._id },
@@ -7104,6 +7218,17 @@ app.post('/webhooks/meta-leads', async (req, res) => {
                                     $set: { 'insights.lastSyncedAt': new Date() }
                                 }
                             );
+                        }
+
+                        // 5. Evaluate Client Auto-Trigger if tenant has welcome template configured
+                        if (client && typeof evaluateClientTrigger === 'function') {
+                            try {
+                                evaluateClientTrigger(tenantId, client).catch(err => {
+                                    console.error('[MetaLeadsWebhook] evaluateClientTrigger error:', err.message);
+                                });
+                            } catch (autoErr) {
+                                console.error('[MetaLeadsWebhook] evaluateClientTrigger error:', autoErr.message);
+                            }
                         }
 
                         try {

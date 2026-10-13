@@ -17,8 +17,8 @@ async function requireMetaAuth(req, res, next) {
             });
         }
 
-        const tokenDoc = await MetaAdToken.findOne({ tenantId, status: 'connected' });
-        if (!tokenDoc) {
+        const tokenDoc = await MetaAdToken.findOne({ tenantId });
+        if (!tokenDoc || tokenDoc.status === 'disconnected') {
             return res.status(400).json({
                 success: false,
                 code: 'META_NOT_CONNECTED',
@@ -27,13 +27,24 @@ async function requireMetaAuth(req, res, next) {
         }
 
         // Check token expiration
-        if (tokenDoc.expiresAt && new Date() > tokenDoc.expiresAt) {
-            tokenDoc.status = 'expired';
-            await tokenDoc.save();
-            return res.status(400).json({
+        const isExpiredByDate = tokenDoc.expiresAt && new Date() > tokenDoc.expiresAt;
+        if (tokenDoc.status === 'expired' || isExpiredByDate) {
+            if (tokenDoc.status !== 'expired') {
+                tokenDoc.status = 'expired';
+                await tokenDoc.save();
+            }
+            return res.status(401).json({
                 success: false,
                 code: 'META_TOKEN_EXPIRED',
                 error: 'Meta access token has expired. Please reconnect your Facebook account.'
+            });
+        }
+
+        if (tokenDoc.status !== 'connected') {
+            return res.status(400).json({
+                success: false,
+                code: 'META_NOT_CONNECTED',
+                error: 'Meta Ad Account is not connected. Current status: ' + tokenDoc.status
             });
         }
 

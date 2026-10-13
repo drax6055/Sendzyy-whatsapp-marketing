@@ -32,6 +32,16 @@ class MetaAdsService {
             const err = new Error(errData.message || (typeof errData === 'string' ? errData : JSON.stringify(errData)));
             err.metaError = errData;
             err.statusCode = error.response?.status || 500;
+
+            // Detect expired / invalidated tokens (OAuthException code 190)
+            const errCode = errData?.code || errData?.error?.code;
+            const errType = errData?.type || errData?.error?.type;
+            const errSubcode = errData?.error_subcode || errData?.error?.error_subcode;
+            if (errCode === 190 || errType === 'OAuthException' || errSubcode === 490) {
+                err.isTokenExpired = true;
+                err.statusCode = 401;
+            }
+
             throw err;
         }
     }
@@ -111,10 +121,15 @@ class MetaAdsService {
 
         // Advantage+ Campaign Budget
         if (campaignData.advantageCampaignBudget && campaignData.campaignBudget?.amount) {
+            const rawBudget = Number(campaignData.campaignBudget.amount);
+            // Ensure minor units (paise for INR, cents for USD)
+            // Minimum daily budget on Meta for INR is ~85 INR (8500 paise), so anything < 1000 is major units.
+            const budgetInMinorUnits = rawBudget < 1000 ? Math.round(rawBudget * 100) : Math.round(rawBudget);
+
             if (campaignData.campaignBudget.type === 'lifetime') {
-                payload.lifetime_budget = campaignData.campaignBudget.amount;
+                payload.lifetime_budget = budgetInMinorUnits;
             } else {
-                payload.daily_budget = campaignData.campaignBudget.amount;
+                payload.daily_budget = budgetInMinorUnits;
             }
             if (campaignData.campaignBidStrategy) {
                 payload.bid_strategy = campaignData.campaignBidStrategy;
@@ -142,10 +157,14 @@ class MetaAdsService {
 
         // Budget if not Advantage+ at Campaign level
         if (!adSetData.advantageCampaignBudget && adSetData.adSetBudget?.amount) {
+            const rawBudget = Number(adSetData.adSetBudget.amount);
+            // Ensure minor units (paise for INR, cents for USD)
+            const budgetInMinorUnits = rawBudget < 1000 ? Math.round(rawBudget * 100) : Math.round(rawBudget);
+
             if (adSetData.adSetBudget.type === 'lifetime') {
-                payload.lifetime_budget = adSetData.adSetBudget.amount;
+                payload.lifetime_budget = budgetInMinorUnits;
             } else {
-                payload.daily_budget = adSetData.adSetBudget.amount;
+                payload.daily_budget = budgetInMinorUnits;
             }
         }
 
@@ -223,17 +242,25 @@ class MetaAdsService {
             // ALL leaves genders undefined
         }
 
-        // Interests & Behaviors
+        // Interests & Behaviors (only include entries with valid numeric Meta IDs)
         const flexibleSpec = [];
         if (adSetData.targeting?.interests && adSetData.targeting.interests.length > 0) {
-            flexibleSpec.push({
-                interests: adSetData.targeting.interests.map(i => ({ id: i.id, name: i.name }))
-            });
+            const validInterests = adSetData.targeting.interests
+                .filter(i => i && (i.id || (typeof i === 'string' && /^\d+$/.test(i))))
+                .map(i => typeof i === 'string' ? { id: i, name: i } : { id: String(i.id), name: i.name || '' });
+
+            if (validInterests.length > 0) {
+                flexibleSpec.push({ interests: validInterests });
+            }
         }
         if (adSetData.targeting?.behaviors && adSetData.targeting.behaviors.length > 0) {
-            flexibleSpec.push({
-                behaviors: adSetData.targeting.behaviors.map(b => ({ id: b.id, name: b.name }))
-            });
+            const validBehaviors = adSetData.targeting.behaviors
+                .filter(b => b && (b.id || (typeof b === 'string' && /^\d+$/.test(b))))
+                .map(b => typeof b === 'string' ? { id: b, name: b } : { id: String(b.id), name: b.name || '' });
+
+            if (validBehaviors.length > 0) {
+                flexibleSpec.push({ behaviors: validBehaviors });
+            }
         }
         if (flexibleSpec.length > 0) {
             targeting.flexible_spec = flexibleSpec;
@@ -499,6 +526,16 @@ class MetaAdsService {
         const res = await this._request('POST', `/${pageId}/subscribed_apps`, {}, {
             subscribed_fields: ['leadgen'],
             access_token: pageAccessToken
+        });
+        return res;
+    }
+
+    /**
+     * Delete Campaign from Meta
+     */
+    static async deleteCampaign(accessToken, campaignId) {
+        const res = await this._request('DELETE', `/${campaignId}`, {
+            access_token: accessToken
         });
         return res;
     }

@@ -1,10 +1,48 @@
 'use strict';
 
 const axios = require('axios');
+const fs = require('fs');
 const MetaAdCampaign = require('../models/MetaAdCampaign');
 const MetaAdToken = require('../models/MetaAdToken');
 const MetaAdsService = require('../services/MetaAdsService');
 const { encryptSecret, decryptSecret } = require('../cryptoUtils');
+
+/**
+ * Centralized Meta Error Responder
+ * Detects expired tokens (code 190 / OAuthException) and marks token status as 'expired'.
+ */
+async function handleMetaControllerError(res, err, tenantId, actionName) {
+    console.error(`[metaAdsController] ${actionName} error:`, err);
+    const metaCode = err.metaError?.code || err.metaError?.error?.code;
+    const metaType = err.metaError?.type || err.metaError?.error?.type;
+    const isTokenExpired = err.isTokenExpired || metaCode === 190 || metaType === 'OAuthException';
+
+    if (isTokenExpired) {
+        console.warn(`[metaAdsController] Token expired/invalid for tenant ${tenantId}. Updating status to 'expired'.`);
+        if (tenantId) {
+            try {
+                await MetaAdToken.updateOne(
+                    { tenantId },
+                    { $set: { status: 'expired', updatedAt: new Date() } }
+                );
+            } catch (updateErr) {
+                console.error('[metaAdsController] Failed to update token status to expired:', updateErr);
+            }
+        }
+        return res.status(401).json({
+            success: false,
+            code: 'META_TOKEN_EXPIRED',
+            error: 'Your Meta access token has expired. Please reconnect your Facebook account.',
+            metaError: err.metaError || null
+        });
+    }
+
+    return res.status(err.statusCode || 500).json({
+        success: false,
+        error: err.message,
+        metaError: err.metaError || null
+    });
+}
 
 function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
     return {
@@ -78,15 +116,41 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     return res.status(400).json({ success: false, error: 'User access token or OAuth code is required' });
                 }
 
-                // 3. Exchange for long-lived user token (~60 days)
+                // 3. Inspect token & exchange for long-lived if needed
                 let longLivedToken = userAccessToken;
                 let expiresAt = null;
+                let isPermanent = false;
+
                 try {
-                    const tokenExchange = await MetaAdsService.exchangeForLongLivedToken(userAccessToken);
-                    longLivedToken = tokenExchange.accessToken;
-                    expiresAt = tokenExchange.expiresAt;
-                } catch (tokenErr) {
-                    console.warn('[metaAdsController] Token exchange warning:', tokenErr.message);
+                    const appId = process.env.META_APP_ID;
+                    const appSecret = process.env.META_APP_SECRET;
+                    if (appId && appSecret) {
+                        const apiVersion = process.env.META_API_VERSION || 'v21.0';
+                        const debugRes = await axios.get(`https://graph.facebook.com/${apiVersion}/debug_token`, {
+                            params: {
+                                input_token: userAccessToken.trim(),
+                                access_token: `${appId}|${appSecret}`
+                            }
+                        });
+                        const tokenData = debugRes.data?.data;
+                        if (tokenData?.type === 'SYSTEM_USER' || tokenData?.expires_at === 0) {
+                            isPermanent = true;
+                            expiresAt = null;
+                            console.log(`[metaAdsController] Detected Permanent System User Token for tenant ${tenantId} (type: ${tokenData?.type}, expires_at: 0)`);
+                        }
+                    }
+                } catch (dbgErr) {
+                    console.warn('[metaAdsController] Debug token inspection warning:', dbgErr.message);
+                }
+
+                if (!isPermanent) {
+                    try {
+                        const tokenExchange = await MetaAdsService.exchangeForLongLivedToken(userAccessToken.trim());
+                        longLivedToken = tokenExchange.accessToken;
+                        expiresAt = tokenExchange.expiresAt;
+                    } catch (tokenErr) {
+                        console.warn('[metaAdsController] Token exchange warning:', tokenErr.message);
+                    }
                 }
 
                 // 4. Auto-fetch available Ad Accounts and Pages
@@ -146,7 +210,8 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                         businessId: businessId || null,
                         status: 'connected',
                         connectedAt: new Date(),
-                        expiresAt
+                        expiresAt,
+                        isPermanent
                     },
                     { upsert: true, new: true }
                 );
@@ -160,7 +225,8 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                         pageId: tokenDoc.pageId,
                         pageName: tokenDoc.pageName,
                         status: tokenDoc.status,
-                        expiresAt: tokenDoc.expiresAt
+                        expiresAt: tokenDoc.expiresAt,
+                        isPermanent: tokenDoc.isPermanent || (tokenDoc.expiresAt === null)
                     },
                     adAccounts,
                     pages
@@ -190,13 +256,32 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     console.warn('[metaAdsController] Tenant lookup warning:', tErr.message);
                 }
 
+                // Check if expired by date (only if not a permanent token)
+                if (tokenDoc && !tokenDoc.isPermanent && tokenDoc.expiresAt && new Date() > tokenDoc.expiresAt) {
+                    if (tokenDoc.status !== 'expired') {
+                        tokenDoc.status = 'expired';
+                        await tokenDoc.save();
+                    }
+                }
+
                 if (!tokenDoc || tokenDoc.status !== 'connected') {
                     return res.json({
                         success: true,
                         connected: false,
                         status: tokenDoc ? tokenDoc.status : 'disconnected',
                         hasTenantOnboarding,
-                        tenantBusinessId
+                        tenantBusinessId,
+                        data: tokenDoc ? {
+                            adAccountId: tokenDoc.adAccountId,
+                            adAccountName: tokenDoc.adAccountName,
+                            pageId: tokenDoc.pageId,
+                            pageName: tokenDoc.pageName,
+                            instagramActorId: tokenDoc.instagramActorId,
+                            status: tokenDoc.status,
+                            connectedAt: tokenDoc.connectedAt,
+                            expiresAt: tokenDoc.expiresAt,
+                            isPermanent: tokenDoc.isPermanent || (tokenDoc.expiresAt === null)
+                        } : null
                     });
                 }
 
@@ -213,7 +298,8 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                         instagramActorId: tokenDoc.instagramActorId,
                         status: tokenDoc.status,
                         connectedAt: tokenDoc.connectedAt,
-                        expiresAt: tokenDoc.expiresAt
+                        expiresAt: tokenDoc.expiresAt,
+                        isPermanent: tokenDoc.isPermanent || (tokenDoc.expiresAt === null)
                     }
                 });
             } catch (err) {
@@ -301,13 +387,13 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * GET /api/meta/ad-accounts
          */
         getAdAccounts: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
             try {
                 const accessToken = req.meta.accessToken;
                 const adAccounts = await MetaAdsService.getAdAccounts(accessToken);
                 return res.json({ success: true, data: adAccounts });
             } catch (err) {
-                console.error('[metaAdsController] getAdAccounts error:', err);
-                return res.status(500).json({ success: false, error: err.message });
+                return handleMetaControllerError(res, err, tenantId, 'getAdAccounts');
             }
         },
 
@@ -316,13 +402,13 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * GET /api/meta/pages
          */
         getPages: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
             try {
                 const accessToken = req.meta.accessToken;
                 const pages = await MetaAdsService.getPages(accessToken);
                 return res.json({ success: true, data: pages });
             } catch (err) {
-                console.error('[metaAdsController] getPages error:', err);
-                return res.status(500).json({ success: false, error: err.message });
+                return handleMetaControllerError(res, err, tenantId, 'getPages');
             }
         },
 
@@ -331,11 +417,13 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * POST /api/meta/creative/upload
          */
         uploadCreativeImage: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
             try {
                 const accessToken = req.meta.accessToken;
                 const adAccountId = req.body.adAccountId || req.meta.adAccountId;
 
                 if (!adAccountId) {
+                    if (req.file?.path) fs.unlink(req.file.path, () => {});
                     return res.status(400).json({ success: false, error: 'adAccountId is required' });
                 }
 
@@ -348,6 +436,13 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     fileName: req.file.originalname
                 });
 
+                // Clean up local temp file after upload to Meta
+                if (req.file?.path) {
+                    fs.unlink(req.file.path, (uErr) => {
+                        if (uErr) console.warn('[metaAdsController] Failed to unlink temp creative image:', uErr.message);
+                    });
+                }
+
                 return res.json({
                     success: true,
                     data: {
@@ -357,8 +452,10 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     }
                 });
             } catch (err) {
-                console.error('[metaAdsController] uploadCreativeImage error:', err);
-                return res.status(500).json({ success: false, error: err.message });
+                if (req.file?.path) {
+                    fs.unlink(req.file.path, () => {});
+                }
+                return handleMetaControllerError(res, err, tenantId, 'uploadCreativeImage');
             }
         },
 
@@ -367,9 +464,10 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * POST /api/meta/campaigns
          */
         createFullCampaign: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
+            const accessToken = req.meta.accessToken;
+            let metaCampaignId = null;
             try {
-                const tenantId = req.user?.tenantId || req.user?.id;
-                const accessToken = req.meta.accessToken;
                 const pageAccessToken = req.meta.pageAccessToken;
                 const payload = req.body;
 
@@ -383,7 +481,7 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                 // 1. Create Campaign
                 console.log(`[metaAdsController] Step 1: Creating campaign "${payload.name}"...`);
                 const campaignRes = await MetaAdsService.createCampaign(accessToken, adAccountId, payload);
-                const metaCampaignId = campaignRes.id;
+                metaCampaignId = campaignRes.id;
 
                 // 2. Create Ad Set
                 console.log(`[metaAdsController] Step 2: Creating ad set for campaign ${metaCampaignId}...`);
@@ -450,12 +548,17 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     data: newCampaign
                 });
             } catch (err) {
-                console.error('[metaAdsController] createFullCampaign error:', err);
-                return res.status(500).json({
-                    success: false,
-                    error: err.message,
-                    metaError: err.metaError || null
-                });
+                // Rollback dangling Meta campaign if creation failed partially
+                if (metaCampaignId && accessToken) {
+                    try {
+                        console.warn(`[metaAdsController] Partial failure in campaign creation. Rolling back Meta campaign ${metaCampaignId}...`);
+                        await MetaAdsService.deleteCampaign(accessToken, metaCampaignId);
+                        console.log(`[metaAdsController] Successfully cleaned up dangling campaign ${metaCampaignId} on Meta.`);
+                    } catch (rbErr) {
+                        console.warn('[metaAdsController] Rollback delete campaign warning:', rbErr.message);
+                    }
+                }
+                return handleMetaControllerError(res, err, tenantId, 'createFullCampaign');
             }
         },
 
@@ -521,14 +624,18 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * GET /api/meta/campaigns/:id/stats
          */
         syncCampaignStats: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
             try {
-                const tenantId = req.user?.tenantId || req.user?.id;
                 const campaign = await MetaAdCampaign.findOne({ _id: req.params.id, tenantId });
                 if (!campaign) {
                     return res.status(404).json({ success: false, error: 'Campaign not found' });
                 }
 
-                if (campaign.metaCampaignId && req.meta?.accessToken) {
+                // Rate limiting cache (60 seconds) to prevent Meta Graph API quota exhaustion
+                const lastSynced = campaign.insights?.lastSyncedAt;
+                const isCacheFresh = lastSynced && (Date.now() - new Date(lastSynced).getTime() < 60000);
+
+                if (!isCacheFresh && campaign.metaCampaignId && req.meta?.accessToken) {
                     try {
                         const insights = await MetaAdsService.getCampaignInsights(
                             req.meta.accessToken,
@@ -538,13 +645,15 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                         await campaign.save();
                     } catch (apiErr) {
                         console.warn('[metaAdsController] Sync insights error from Meta:', apiErr.message);
+                        if (apiErr.isTokenExpired) {
+                            return handleMetaControllerError(res, apiErr, tenantId, 'syncCampaignStats');
+                        }
                     }
                 }
 
                 return res.json({ success: true, data: campaign.insights });
             } catch (err) {
-                console.error('[metaAdsController] syncCampaignStats error:', err);
-                return res.status(500).json({ success: false, error: err.message });
+                return handleMetaControllerError(res, err, tenantId, 'syncCampaignStats');
             }
         },
 
@@ -553,8 +662,8 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * PATCH /api/meta/campaigns/:id/status
          */
         updateCampaignStatus: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
             try {
-                const tenantId = req.user?.tenantId || req.user?.id;
                 const { status } = req.body; // 'ACTIVE' or 'PAUSED'
                 if (!['ACTIVE', 'PAUSED'].includes(status)) {
                     return res.status(400).json({ success: false, error: 'Invalid status. Must be ACTIVE or PAUSED' });
@@ -579,8 +688,7 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     data: campaign
                 });
             } catch (err) {
-                console.error('[metaAdsController] updateCampaignStatus error:', err);
-                return res.status(500).json({ success: false, error: err.message });
+                return handleMetaControllerError(res, err, tenantId, 'updateCampaignStatus');
             }
         },
 
@@ -589,8 +697,8 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
          * DELETE /api/meta/campaigns/:id
          */
         deleteCampaign: async (req, res) => {
+            const tenantId = req.user?.tenantId || req.user?.id;
             try {
-                const tenantId = req.user?.tenantId || req.user?.id;
                 const campaign = await MetaAdCampaign.findOne({ _id: req.params.id, tenantId });
                 if (!campaign) {
                     return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -598,9 +706,12 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
 
                 if (campaign.metaCampaignId && req.meta?.accessToken) {
                     try {
-                        await MetaAdsService.updateCampaignStatus(req.meta.accessToken, campaign.metaCampaignId, 'DELETED');
+                        await MetaAdsService.deleteCampaign(req.meta.accessToken, campaign.metaCampaignId);
                     } catch (delErr) {
                         console.warn('[metaAdsController] Meta API delete campaign warning:', delErr.message);
+                        if (delErr.isTokenExpired) {
+                            return handleMetaControllerError(res, delErr, tenantId, 'deleteCampaign');
+                        }
                     }
                 }
 
@@ -609,8 +720,7 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
 
                 return res.json({ success: true, message: 'Campaign deleted successfully' });
             } catch (err) {
-                console.error('[metaAdsController] deleteCampaign error:', err);
-                return res.status(500).json({ success: false, error: err.message });
+                return handleMetaControllerError(res, err, tenantId, 'deleteCampaign');
             }
         },
 

@@ -20,6 +20,14 @@ class MetaAdsDashboardPage extends StatefulWidget {
 
 class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
   String _selectedFilter = 'ALL';
+  String _searchQuery = '';
+  final _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -268,7 +276,7 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                       const SizedBox(height: 14),
                       Divider(color: Colors.grey.shade200),
 
-                      // Option 4: Manual Access Token Expandable Fallback
+                      // Option 3: Permanent System User Token (Recommended for 24/7 Production)
                       InkWell(
                         onTap: () {
                           setDialogState(() => showManualToken = !showManualToken);
@@ -281,12 +289,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                               Icon(
                                 showManualToken ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
                                 size: 18,
-                                color: Colors.grey.shade600,
+                                color: const Color(0xFF059669),
                               ),
                               const SizedBox(width: 4),
-                              Text(
-                                'Advanced: Enter Access Token Manually',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
+                              const Text(
+                                'Permanent System Token (Recommended — Never Expires)',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
                               ),
                             ],
                           ),
@@ -294,33 +302,53 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                       ),
 
                       if (showManualToken) ...[
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: tokenController,
-                          decoration: InputDecoration(
-                            labelText: 'User Access Token',
-                            hintText: 'EAAB...',
-                            prefixIcon: const Icon(Icons.key_rounded, size: 20),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF0FDF4),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
                           ),
-                          maxLines: 2,
-                        ),
-                        const SizedBox(height: 10),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.grey.shade800,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Paste a System User Token with "Never" expiry generated from Meta Business Manager > Users > System Users. This token will run ads 24/7 without ever expiring.',
+                                style: TextStyle(fontSize: 11, color: Color(0xFF065F46)),
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: tokenController,
+                                decoration: InputDecoration(
+                                  labelText: 'System User / Access Token',
+                                  hintText: 'EAAB...',
+                                  prefixIcon: const Icon(Icons.vpn_key_rounded, size: 20, color: Color(0xFF059669)),
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                ),
+                                maxLines: 2,
+                              ),
+                              const SizedBox(height: 10),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF059669),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                ),
+                                icon: const Icon(Icons.lock_open_rounded, size: 16),
+                                label: const Text('Connect with Permanent Token', style: TextStyle(fontWeight: FontWeight.bold)),
+                                onPressed: () {
+                                  final token = tokenController.text.trim();
+                                  if (token.isNotEmpty) {
+                                    metaBloc.add(ConnectMetaAccountEvent(userAccessToken: token));
+                                    Navigator.pop(ctx);
+                                  }
+                                },
+                              ),
+                            ],
                           ),
-                          onPressed: () {
-                            final token = tokenController.text.trim();
-                            if (token.isNotEmpty) {
-                              metaBloc.add(ConnectMetaAccountEvent(userAccessToken: token));
-                              Navigator.pop(ctx);
-                            }
-                          },
-                          child: const Text('Connect with Manual Token'),
                         ),
                       ],
                     ],
@@ -605,6 +633,32 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 10),
+
+                  // Search bar
+                  TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Search campaigns by name...',
+                      prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      filled: true,
+                      fillColor: Colors.white,
+                      isDense: true,
+                    ),
+                    onChanged: (val) => setState(() => _searchQuery = val.trim().toLowerCase()),
+                  ),
                   const SizedBox(height: 14),
 
                   // Campaigns List
@@ -619,8 +673,9 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                     _buildEmptyState(context)
                   else ...[
                     ...state.campaigns.where((c) {
-                      if (_selectedFilter == 'ALL') return true;
-                      return c.status == _selectedFilter;
+                      if (_selectedFilter != 'ALL' && c.status != _selectedFilter) return false;
+                      if (_searchQuery.isNotEmpty && !c.name.toLowerCase().contains(_searchQuery)) return false;
+                      return true;
                     }).map((campaign) {
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12),
@@ -639,14 +694,52 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
   }
 
   Widget _buildConnectionBanner(BuildContext context, MetaAdsState state, bool isConnected) {
+    final isExpired = state.accountStatus?.isExpired == true;
+
+    Color borderColor;
+    Color avatarColor;
+    IconData avatarIcon;
+    String title;
+    String subtitle;
+    String actionLabel;
+    Color actionColor;
+    Color actionTextColor;
+
+    if (isExpired) {
+      borderColor = Colors.red.shade300;
+      avatarColor = const Color(0xFFDC2626);
+      avatarIcon = Icons.lock_clock_rounded;
+      title = 'Meta Session Expired';
+      subtitle = 'Your 60-day Meta token has expired. Reconnect your account to manage ads and receive leads.';
+      actionLabel = 'Reconnect';
+      actionColor = const Color(0xFFDC2626);
+      actionTextColor = Colors.white;
+    } else if (isConnected) {
+      borderColor = const Color(0xFF10B981).withValues(alpha: 0.3);
+      avatarColor = const Color(0xFF10B981);
+      avatarIcon = Icons.check;
+      title = 'Facebook Account Connected';
+      subtitle = 'Ad Account: ${state.accountStatus?.adAccountName ?? state.accountStatus?.adAccountId ?? 'Active'}${state.accountStatus?.pageName != null ? '  •  Page: ${state.accountStatus!.pageName}' : ''}';
+      actionLabel = 'Disconnect';
+      actionColor = Colors.grey.shade200;
+      actionTextColor = Colors.black87;
+    } else {
+      borderColor = Colors.amber.shade200;
+      avatarColor = Colors.amber;
+      avatarIcon = Icons.warning_amber_rounded;
+      title = 'Meta Account Not Connected';
+      subtitle = 'Connect your Facebook account to run ads, sync ad accounts, and collect leads.';
+      actionLabel = 'Connect';
+      actionColor = const Color(0xFF1877F2);
+      actionTextColor = Colors.white;
+    }
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isExpired ? const Color(0xFFFEF2F2) : Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isConnected ? const Color(0xFF10B981).withValues(alpha: 0.3) : Colors.amber.shade200,
-        ),
+        border: Border.all(color: borderColor),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.03),
@@ -658,9 +751,9 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
       child: Row(
         children: [
           CircleAvatar(
-            backgroundColor: isConnected ? const Color(0xFF10B981) : Colors.amber,
+            backgroundColor: avatarColor,
             radius: 20,
-            child: Icon(isConnected ? Icons.check : Icons.warning_amber_rounded, color: Colors.white, size: 20),
+            child: Icon(avatarIcon, color: Colors.white, size: 20),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -668,25 +761,47 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isConnected ? 'Facebook Account Connected' : 'Meta Account Not Connected',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: isExpired ? const Color(0xFFDC2626) : const Color(0xFF1E293B),
+                  ),
                 ),
                 const SizedBox(height: 2),
-                if (isConnected) ...[
-                  Text(
-                    'Ad Account: ${state.accountStatus?.adAccountName ?? state.accountStatus?.adAccountId ?? 'Active'}${state.accountStatus?.pageName != null ? '  •  Page: ${state.accountStatus!.pageName}' : ''}',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isExpired ? Colors.red.shade900 : (isConnected ? Colors.grey.shade700 : Colors.grey.shade600),
+                    fontWeight: isConnected ? FontWeight.w500 : FontWeight.normal,
                   ),
-                ] else ...[
-                  Text(
-                    'Connect your Facebook account to run ads, sync ad accounts, and collect leads.',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+                if (isConnected && state.accountStatus?.isPermanent == true) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.all_inclusive_rounded, size: 12, color: Color(0xFF059669)),
+                        SizedBox(width: 4),
+                        Text(
+                          'Permanent System Token (Never Expires)',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ],
             ),
           ),
-          if (isConnected) ...[
+          if (isConnected && !isExpired) ...[
             OutlinedButton.icon(
               onPressed: () => _showAssetSelectionDialog(context, state),
               style: OutlinedButton.styleFrom(
@@ -702,20 +817,20 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
           ],
           ElevatedButton(
             onPressed: () {
-              if (isConnected) {
+              if (isConnected && !isExpired) {
                 context.read<MetaAdsBloc>().add(const DisconnectMetaAccountEvent());
               } else {
                 _showConnectDialog(context);
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: isConnected ? Colors.grey.shade200 : const Color(0xFF1877F2),
-              foregroundColor: isConnected ? Colors.black87 : Colors.white,
+              backgroundColor: actionColor,
+              foregroundColor: actionTextColor,
               elevation: 0,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               minimumSize: const Size(80, 36),
             ),
-            child: Text(isConnected ? 'Disconnect' : 'Connect'),
+            child: Text(actionLabel),
           ),
         ],
       ),
@@ -812,16 +927,54 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                   campaign.insights.cpl > 0 ? '₹ ${campaign.insights.cpl.toStringAsFixed(0)}' : '—',
                 ),
                 _buildStatColumn('Reach', '${campaign.insights.reach}'),
-                IconButton(
-                  tooltip: isActive ? 'Pause' : 'Resume',
-                  icon: Icon(
-                    isActive ? Icons.pause_circle_outline : Icons.play_circle_outline,
-                    color: isActive ? Colors.grey.shade700 : const Color(0xFF10B981),
-                  ),
-                  onPressed: () {
-                    final nextStatus = isActive ? 'PAUSED' : 'ACTIVE';
-                    context.read<MetaAdsBloc>().add(UpdateMetaCampaignStatusEvent(campaign.id, nextStatus));
-                  },
+                Row(
+                  children: [
+                    // View Leads shortcut
+                    if (campaign.insights.leadsCount > 0)
+                      Tooltip(
+                        message: 'View ${campaign.insights.leadsCount} leads',
+                        child: InkWell(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => BlocProvider.value(
+                                  value: context.read<MetaAdsBloc>(),
+                                  child: MetaLeadsPage(campaignId: campaign.id),
+                                ),
+                              ),
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            margin: const EdgeInsets.only(right: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1877F2).withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.contact_phone_rounded, size: 13, color: Color(0xFF1877F2)),
+                                const SizedBox(width: 3),
+                                Text('${campaign.insights.leadsCount}', style: const TextStyle(fontSize: 11, color: Color(0xFF1877F2), fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    IconButton(
+                      tooltip: isActive ? 'Pause' : 'Resume',
+                      icon: Icon(
+                        isActive ? Icons.pause_circle_outline : Icons.play_circle_outline,
+                        color: isActive ? Colors.grey.shade700 : const Color(0xFF10B981),
+                      ),
+                      onPressed: () {
+                        final nextStatus = isActive ? 'PAUSED' : 'ACTIVE';
+                        context.read<MetaAdsBloc>().add(UpdateMetaCampaignStatusEvent(campaign.id, nextStatus));
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),

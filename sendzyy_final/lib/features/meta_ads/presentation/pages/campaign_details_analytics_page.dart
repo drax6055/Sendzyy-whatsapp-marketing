@@ -5,6 +5,7 @@ import '../bloc/meta_ads_bloc.dart';
 import '../bloc/meta_ads_event.dart';
 import '../bloc/meta_ads_state.dart';
 import '../widgets/campaign_kpi_card.dart';
+import 'meta_leads_page.dart';
 
 class CampaignDetailsAnalyticsPage extends StatelessWidget {
   final MetaCampaignModel campaign;
@@ -44,7 +45,17 @@ class CampaignDetailsAnalyticsPage extends StatelessWidget {
               ),
               PopupMenuButton<String>(
                 onSelected: (value) {
-                  if (value == 'toggle_status') {
+                  if (value == 'view_leads') {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BlocProvider.value(
+                          value: context.read<MetaAdsBloc>(),
+                          child: MetaLeadsPage(campaignId: currentCampaign.id),
+                        ),
+                      ),
+                    );
+                  } else if (value == 'toggle_status') {
                     final nextStatus = isActive ? 'PAUSED' : 'ACTIVE';
                     context.read<MetaAdsBloc>().add(UpdateMetaCampaignStatusEvent(currentCampaign.id, nextStatus));
                   } else if (value == 'delete') {
@@ -52,6 +63,16 @@ class CampaignDetailsAnalyticsPage extends StatelessWidget {
                   }
                 },
                 itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'view_leads',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.contact_phone_rounded, size: 20, color: Color(0xFF1877F2)),
+                        const SizedBox(width: 8),
+                        const Text('View Leads', style: TextStyle(color: Color(0xFF1877F2), fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'toggle_status',
                     child: Row(
@@ -222,6 +243,35 @@ class CampaignDetailsAnalyticsPage extends StatelessWidget {
                       if (currentCampaign.leadForm != null)
                         _buildSpecItem('Lead Form Attached', currentCampaign.leadForm!.formName),
                     ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // View Leads for This Campaign
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BlocProvider.value(
+                            value: context.read<MetaAdsBloc>(),
+                            child: MetaLeadsPage(campaignId: currentCampaign.id),
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.contact_phone_rounded, size: 18, color: Color(0xFF1877F2)),
+                    label: Text(
+                      'View Leads for this Campaign (${currentCampaign.insights.leadsCount})',
+                      style: const TextStyle(color: Color(0xFF1877F2), fontWeight: FontWeight.bold),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF1877F2)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
                   ),
                 ),
               ],

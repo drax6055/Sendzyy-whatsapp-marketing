@@ -10,6 +10,7 @@ class MetaAccountStatus {
   final DateTime? expiresAt;
   final bool hasTenantOnboarding;
   final String? tenantBusinessId;
+  final bool isPermanent;
 
   MetaAccountStatus({
     required this.connected,
@@ -23,10 +24,15 @@ class MetaAccountStatus {
     this.expiresAt,
     this.hasTenantOnboarding = false,
     this.tenantBusinessId,
+    this.isPermanent = false,
   });
 
   factory MetaAccountStatus.fromJson(Map<String, dynamic> json) {
     final data = json['data'] is Map ? json['data'] as Map<String, dynamic> : json;
+    final isPerm = json['isPermanent'] == true ||
+        data['isPermanent'] == true ||
+        (data['expiresAt'] == null && (json['connected'] == true || data['status'] == 'connected'));
+
     return MetaAccountStatus(
       connected: json['connected'] == true,
       status: (data['status'] ?? json['status'] ?? 'disconnected').toString(),
@@ -39,6 +45,42 @@ class MetaAccountStatus {
       expiresAt: data['expiresAt'] != null ? DateTime.tryParse(data['expiresAt'].toString()) : null,
       hasTenantOnboarding: json['hasTenantOnboarding'] == true || data['hasTenantOnboarding'] == true,
       tenantBusinessId: (json['tenantBusinessId'] ?? data['tenantBusinessId'])?.toString(),
+      isPermanent: isPerm,
+    );
+  }
+
+  bool get isExpired =>
+      !isPermanent &&
+      (status == 'expired' ||
+          (expiresAt != null && DateTime.now().isAfter(expiresAt!)));
+
+  MetaAccountStatus copyWith({
+    bool? connected,
+    String? status,
+    String? adAccountId,
+    String? adAccountName,
+    String? pageId,
+    String? pageName,
+    String? instagramActorId,
+    DateTime? connectedAt,
+    DateTime? expiresAt,
+    bool? hasTenantOnboarding,
+    String? tenantBusinessId,
+    bool? isPermanent,
+  }) {
+    return MetaAccountStatus(
+      connected: connected ?? this.connected,
+      status: status ?? this.status,
+      adAccountId: adAccountId ?? this.adAccountId,
+      adAccountName: adAccountName ?? this.adAccountName,
+      pageId: pageId ?? this.pageId,
+      pageName: pageName ?? this.pageName,
+      instagramActorId: instagramActorId ?? this.instagramActorId,
+      connectedAt: connectedAt ?? this.connectedAt,
+      expiresAt: expiresAt ?? this.expiresAt,
+      hasTenantOnboarding: hasTenantOnboarding ?? this.hasTenantOnboarding,
+      tenantBusinessId: tenantBusinessId ?? this.tenantBusinessId,
+      isPermanent: isPermanent ?? this.isPermanent,
     );
   }
 }
