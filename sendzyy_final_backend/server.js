@@ -896,7 +896,7 @@ app.get('/', (req, res) => {
 });
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'app.sendzyy_auth$token@1502200214082002%&asdavcwrgwwvtsrfw453rtbruyntyu';
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v25.0';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v26.0';
 
 console.log(` Server starting at: ${new Date().toLocaleString()}`);
 
@@ -3855,7 +3855,7 @@ app.post('/status-mappings', authenticate, async (req, res) => {
  * @param {string} pin           - 6-digit registration PIN (default: '123456')
  */
 async function registerPhoneNumber(phoneNumberId, accessToken, pin = '123456') {
-    const apiVersion = process.env.META_API_VERSION || 'v25.0';
+    const apiVersion = process.env.META_API_VERSION || 'v26.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/register`;
 
     console.log(`[registerPhoneNumber] Attempting Meta Cloud API registration for Phone ID: ${phoneNumberId}...`);
@@ -3900,7 +3900,7 @@ async function processOnboarding(wabaId, businessPortfolioId, tenantId, sessionI
     const tag = '[processOnboarding]';
     const systemToken = process.env.META_SYSTEM_TOKEN;
     const appSecret = process.env.META_APP_SECRET;
-    const apiVersion = process.env.META_API_VERSION || 'v25.0';
+    const apiVersion = process.env.META_API_VERSION || 'v26.0';
 
     await saveOnboardingLog({
         tenantId,
@@ -4295,7 +4295,7 @@ app.post('/api/whatsapp/register-phone', authenticate, async (req, res) => {
             // persisted immediately and the dashboard badge stops showing UNKNOWN.
             const metaFields = {};
             try {
-                const apiVersion = process.env.META_API_VERSION || 'v25.0';
+                const apiVersion = process.env.META_API_VERSION || 'v26.0';
                 const phoneRes = await axios.get(
                     `https://graph.facebook.com/${apiVersion}/${phoneNumberId}`,
                     {
@@ -4408,7 +4408,7 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
                 message: 'Exchanging auth code for user access token...'
             });
 
-            const apiVersion = process.env.META_API_VERSION || 'v25.0';
+            const apiVersion = process.env.META_API_VERSION || 'v26.0';
             const tokenUrl = `https://graph.facebook.com/${apiVersion}/oauth/access_token`;
 
             try {
@@ -4960,7 +4960,7 @@ app.post('/refresh-meta-account', authenticate, async (req, res) => {
                     message: `Subscribing WABA ${resolvedWabaId} to app webhooks...`
                 });
 
-                const apiVer = process.env.META_API_VERSION || 'v25.0';
+                const apiVer = process.env.META_API_VERSION || 'v26.0';
                 await axios.post(
                     `https://graph.facebook.com/${apiVer}/${resolvedWabaId}/subscribed_apps`,
                     null,
@@ -7823,7 +7823,7 @@ async function fetchTemplateComponents(tenant, templateName) {
 }
 
 /**
- * 7.2 — Send WhatsApp template via Meta Cloud API v25.0
+ * 7.2 — Send WhatsApp template via Meta Cloud API v26.0
  */
 async function dispatchTemplate(tenantId, lead, trigger) {
     // 7.6 — Skip if whatsappConfig is incomplete
@@ -8022,7 +8022,7 @@ async function evaluateClientTrigger(tenantId, client) {
         const { phoneNumberId, accessToken } = tenant.whatsappConfig;
         const url = `${WHATSAPP_API_URL}/${phoneNumberId}/messages`;
 
-        // Step 3: POST to Meta Cloud API v25.0
+        // Step 3: POST to Meta Cloud API v26.0
         const tplComponents = await fetchTemplateComponents(tenant, trigger.templateName);
         const varCount = extractVariableCount(tplComponents);
         const mapping = trigger.variableMapping || {};

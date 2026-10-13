@@ -91,7 +91,7 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                             error: 'META_APP_SECRET is not configured on the server environment.'
                         });
                     }
-                    const apiVersion = process.env.META_API_VERSION || 'v25.0';
+                    const apiVersion = process.env.META_API_VERSION || 'v26.0';
                     const tokenUrl = `https://graph.facebook.com/${apiVersion}/oauth/access_token`;
                     try {
                         const tokenRes = await axios.get(tokenUrl, {
@@ -125,7 +125,7 @@ function createMetaAdsController({ Lead, Tenant, triggerLeadAction }) {
                     const appId = process.env.META_APP_ID;
                     const appSecret = process.env.META_APP_SECRET;
                     if (appId && appSecret) {
-                        const apiVersion = process.env.META_API_VERSION || 'v21.0';
+                        const apiVersion = process.env.META_API_VERSION || 'v26.0';
                         const debugRes = await axios.get(`https://graph.facebook.com/${apiVersion}/debug_token`, {
                             params: {
                                 input_token: userAccessToken.trim(),

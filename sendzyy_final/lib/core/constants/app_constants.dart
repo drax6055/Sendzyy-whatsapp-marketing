@@ -3,7 +3,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 class AppConstants {
   static const String appName = 'Sendzyy';
 
-  static const String metaGraphUrl = 'https://graph.facebook.com/v25.0';
+  static const String metaGraphUrl = 'https://graph.facebook.com/v26.0';
 
   // Secrets loaded from .env
   static String get metaAccessToken => dotenv.env['META_ACCESS_TOKEN'] ?? '';

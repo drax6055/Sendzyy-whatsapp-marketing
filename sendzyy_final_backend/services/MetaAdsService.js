@@ -4,7 +4,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 
-const GRAPH_VERSION = process.env.META_API_VERSION || 'v21.0';
+const GRAPH_VERSION = process.env.META_API_VERSION || 'v26.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
 class MetaAdsService {
