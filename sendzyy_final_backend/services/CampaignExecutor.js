@@ -13,7 +13,7 @@
  * Dependencies are injected via the constructor so the class is fully unit-testable.
  */
 
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v25.0';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v26.0';
 
 class CampaignExecutor {
     /**

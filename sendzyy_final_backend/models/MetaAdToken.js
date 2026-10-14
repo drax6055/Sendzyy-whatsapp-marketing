@@ -57,6 +57,10 @@ const metaAdTokenSchema = new mongoose.Schema({
         type: Date,
         default: null
     },
+    isPermanent: {
+        type: Boolean,
+        default: false
+    },
     updatedAt: {
         type: Date,
         default: Date.now

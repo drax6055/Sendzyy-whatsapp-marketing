@@ -1,4 +1,5 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../data/models/meta_account_model.dart';
 import '../../data/models/meta_campaign_model.dart';
 import '../../data/repositories/meta_ads_repository.dart';
 import 'meta_ads_event.dart';
@@ -10,6 +11,7 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
   MetaAdsBloc(this._repository) : super(const MetaAdsState()) {
     on<LoadMetaAccountStatusEvent>(_onLoadAccountStatus);
     on<ConnectMetaAccountEvent>(_onConnectAccount);
+    on<SelectMetaAssetsEvent>(_onSelectAssets);
     on<DisconnectMetaAccountEvent>(_onDisconnectAccount);
     on<LoadMetaAdAccountsAndPagesEvent>(_onLoadAdAccountsAndPages);
     on<LoadMetaCampaignsEvent>(_onLoadCampaigns);
@@ -34,7 +36,15 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
         add(const LoadMetaCampaignsEvent());
       }
     } catch (e) {
-      emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+      if (_isExpiredError(e)) {
+        emit(state.copyWith(
+          isLoading: false,
+          accountStatus: _makeExpiredStatus(),
+          errorMessage: 'Meta session expired. Please reconnect your Facebook account.',
+        ));
+      } else {
+        emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+      }
     }
   }
 
@@ -44,8 +54,10 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
   ) async {
     emit(state.copyWith(isLoading: true, clearError: true));
     try {
-      await _repository.connectAccount(
+      final res = await _repository.connectAccount(
         userAccessToken: event.userAccessToken,
+        code: event.code,
+        useTenantOnboarding: event.useTenantOnboarding,
         adAccountId: event.adAccountId,
         adAccountName: event.adAccountName,
         pageId: event.pageId,
@@ -53,9 +65,47 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
         instagramActorId: event.instagramActorId,
         businessId: event.businessId,
       );
+
+      List<MetaAdAccountItem> adAccounts = List.from(state.adAccounts);
+      List<MetaPageItem> pages = List.from(state.pages);
+      if (res['adAccounts'] is List) {
+        adAccounts = (res['adAccounts'] as List)
+            .map((e) => MetaAdAccountItem.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      }
+      if (res['pages'] is List) {
+        pages = (res['pages'] as List)
+            .map((e) => MetaPageItem.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      }
+
       emit(state.copyWith(
         isLoading: false,
+        adAccounts: adAccounts,
+        pages: pages,
         successMessage: 'Facebook Business account connected successfully!',
+      ));
+      add(const LoadMetaAccountStatusEvent());
+    } catch (e) {
+      emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+    }
+  }
+
+  Future<void> _onSelectAssets(
+    SelectMetaAssetsEvent event,
+    Emitter<MetaAdsState> emit,
+  ) async {
+    emit(state.copyWith(isLoading: true, clearError: true));
+    try {
+      await _repository.selectAssets(
+        adAccountId: event.adAccountId,
+        adAccountName: event.adAccountName,
+        pageId: event.pageId,
+        pageName: event.pageName,
+      );
+      emit(state.copyWith(
+        isLoading: false,
+        successMessage: 'Active Ad Account & Page updated successfully!',
       ));
       add(const LoadMetaAccountStatusEvent());
     } catch (e) {
@@ -110,7 +160,15 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
       );
       emit(state.copyWith(isLoading: false, campaigns: campaigns));
     } catch (e) {
-      emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+      if (_isExpiredError(e)) {
+        emit(state.copyWith(
+          isLoading: false,
+          accountStatus: _makeExpiredStatus(),
+          errorMessage: 'Meta session expired. Please reconnect your Facebook account.',
+        ));
+      } else {
+        emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+      }
     }
   }
 
@@ -128,7 +186,15 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
         successMessage: 'Campaign "${created.name}" published successfully to Meta!',
       ));
     } catch (e) {
-      emit(state.copyWith(isPublishing: false, errorMessage: e.toString()));
+      if (_isExpiredError(e)) {
+        emit(state.copyWith(
+          isPublishing: false,
+          accountStatus: _makeExpiredStatus(),
+          errorMessage: 'Meta session expired. Please reconnect your Facebook account.',
+        ));
+      } else {
+        emit(state.copyWith(isPublishing: false, errorMessage: e.toString()));
+      }
     }
   }
 
@@ -215,7 +281,15 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
       }).toList();
       emit(state.copyWith(isSyncing: false, campaigns: updatedList));
     } catch (e) {
-      emit(state.copyWith(isSyncing: false, errorMessage: e.toString()));
+      if (_isExpiredError(e)) {
+        emit(state.copyWith(
+          isSyncing: false,
+          accountStatus: _makeExpiredStatus(),
+          errorMessage: 'Meta session expired. Please reconnect your Facebook account.',
+        ));
+      } else {
+        emit(state.copyWith(isSyncing: false, errorMessage: e.toString()));
+      }
     }
   }
 
@@ -228,7 +302,30 @@ class MetaAdsBloc extends Bloc<MetaAdsEvent, MetaAdsState> {
       final leads = await _repository.getMetaLeads(campaignId: event.campaignId);
       emit(state.copyWith(isLoading: false, leads: leads));
     } catch (e) {
-      emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+      if (_isExpiredError(e)) {
+        emit(state.copyWith(
+          isLoading: false,
+          accountStatus: _makeExpiredStatus(),
+          errorMessage: 'Meta session expired. Please reconnect your Facebook account.',
+        ));
+      } else {
+        emit(state.copyWith(isLoading: false, errorMessage: e.toString()));
+      }
     }
+  }
+
+  bool _isExpiredError(dynamic e) {
+    final str = e.toString().toLowerCase();
+    return str.contains('meta_token_expired') ||
+        str.contains('token has expired') ||
+        str.contains('reconnect your facebook') ||
+        str.contains('oauthexception') ||
+        str.contains('code 190') ||
+        str.contains('error 190');
+  }
+
+  MetaAccountStatus? _makeExpiredStatus() {
+    return (state.accountStatus ?? MetaAccountStatus(connected: false, status: 'expired'))
+        .copyWith(connected: false, status: 'expired');
   }
 }

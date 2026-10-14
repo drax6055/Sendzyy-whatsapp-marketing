@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/constants/app_constants.dart';
+import '../../../../core/js/meta_ads_auth_helper.dart';
+import '../../../../core/js/meta_signup_helper.dart';
 import '../bloc/meta_ads_bloc.dart';
 import '../bloc/meta_ads_event.dart';
 import '../bloc/meta_ads_state.dart';
@@ -17,6 +20,14 @@ class MetaAdsDashboardPage extends StatefulWidget {
 
 class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
   String _selectedFilter = 'ALL';
+  String _searchQuery = '';
+  final _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -27,45 +38,453 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
   }
 
   void _showConnectDialog(BuildContext context) {
+    final metaBloc = context.read<MetaAdsBloc>();
+    final accountStatus = metaBloc.state.accountStatus;
     final tokenController = TextEditingController();
+    bool isAuthenticating = false;
+    String? statusMessage;
+    bool showManualToken = false;
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Connect Meta Business Account'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Enter your Facebook User Access Token or System User Token with ads_management and pages_read_engagement permissions.',
-              style: TextStyle(fontSize: 13, color: Colors.grey),
+      barrierDismissible: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            titlePadding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            actionsPadding: const EdgeInsets.fromLTRB(24, 12, 24, 20),
+            title: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1877F2).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.campaign_rounded, color: Color(0xFF1877F2), size: 24),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'Connect Meta Ads',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: tokenController,
-              decoration: const InputDecoration(
-                labelText: 'User Access Token',
-                hintText: 'EAAB...',
-                prefixIcon: Icon(Icons.key_rounded),
+            content: SizedBox(
+              width: 480,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (isAuthenticating) ...[
+                      const SizedBox(height: 24),
+                      Center(
+                        child: Column(
+                          children: [
+                            const CircularProgressIndicator(),
+                            const SizedBox(height: 16),
+                            Text(
+                              statusMessage ?? 'Authorizing with Meta...',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                    ] else ...[
+                      const Text(
+                        'Connect your Facebook account to manage ads, sync ad accounts, and ingest lead generation forms automatically.',
+                        style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                      ),
+                      const SizedBox(height: 18),
+
+                      // Option 1: One-Click Sync from General Settings WhatsApp Onboarding
+                      if (accountStatus?.hasTenantOnboarding == true) ...[
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFECFDF5),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.4)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Row(
+                                children: [
+                                  Icon(Icons.verified_rounded, color: Color(0xFF059669), size: 18),
+                                  SizedBox(width: 6),
+                                  Text(
+                                    'Connected Meta Account Detected',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      color: Color(0xFF065F46),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Re-use your credentials verified during General Settings onboarding.${accountStatus?.tenantBusinessId != null ? ' Business ID: ${accountStatus!.tenantBusinessId}' : ''}',
+                                style: const TextStyle(fontSize: 12, color: Color(0xFF047857)),
+                              ),
+                              const SizedBox(height: 10),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF059669),
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                ),
+                                icon: const Icon(Icons.sync_rounded, size: 18),
+                                label: const Text('1-Click Connect with Onboarded Account', style: TextStyle(fontWeight: FontWeight.bold)),
+                                onPressed: () {
+                                  metaBloc.add(const ConnectMetaAccountEvent(useTenantOnboarding: true));
+                                  Navigator.pop(ctx);
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      // Option 2: Facebook Login OAuth Flow (Popup)
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1877F2),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        icon: const Icon(Icons.facebook_rounded, size: 22),
+                        label: const Text(
+                          'Continue with Facebook (Popup Login)',
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                        onPressed: () async {
+                          setDialogState(() {
+                            isAuthenticating = true;
+                            statusMessage = 'Opening Facebook OAuth popup...';
+                          });
+
+                          try {
+                            final res = await triggerFacebookAdsLogin(AppConstants.metaAppId);
+                            if (res != null && res['status'] == 'success') {
+                              final token = res['accessToken'] as String?;
+                              final code = res['code'] as String?;
+                              metaBloc.add(ConnectMetaAccountEvent(
+                                userAccessToken: token,
+                                code: code,
+                              ));
+                              if (dialogContext.mounted) {
+                                Navigator.pop(ctx);
+                              }
+                            } else if (res != null && res['status'] == 'cancelled') {
+                              setDialogState(() {
+                                isAuthenticating = false;
+                                statusMessage = null;
+                              });
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Facebook login was cancelled.')),
+                                );
+                              }
+                            } else {
+                              setDialogState(() {
+                                isAuthenticating = false;
+                                statusMessage = null;
+                              });
+                              final err = res?['error'] ?? 'Facebook SDK error';
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Facebook Login: $err'), backgroundColor: Colors.red),
+                                );
+                              }
+                            }
+                          } catch (e) {
+                            setDialogState(() {
+                              isAuthenticating = false;
+                              statusMessage = null;
+                            });
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Facebook error: $e'), backgroundColor: Colors.red),
+                              );
+                            }
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+
+                      // Option 3: Launch Embedded Onboarding Signup
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF1E293B),
+                          side: BorderSide(color: Colors.grey.shade300),
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                        label: const Text('Re-run Meta Embedded Signup Flow'),
+                        onPressed: () async {
+                          setDialogState(() {
+                            isAuthenticating = true;
+                            statusMessage = 'Opening Meta Embedded Signup popup...';
+                          });
+
+                          try {
+                            final res = await triggerMetaSignup(
+                              AppConstants.metaAppId,
+                              AppConstants.metaConfigId,
+                            );
+
+                            if (res != null && res['status'] == 'success') {
+                              final code = res['code'] as String?;
+                              final bizId = res['businessPortfolioId'] as String?;
+                              metaBloc.add(ConnectMetaAccountEvent(
+                                code: code,
+                                businessId: bizId,
+                              ));
+                              if (dialogContext.mounted) {
+                                Navigator.pop(ctx);
+                              }
+                            } else {
+                              setDialogState(() {
+                                isAuthenticating = false;
+                                statusMessage = null;
+                              });
+                            }
+                          } catch (e) {
+                            setDialogState(() {
+                              isAuthenticating = false;
+                              statusMessage = null;
+                            });
+                          }
+                        },
+                      ),
+
+                      const SizedBox(height: 14),
+                      Divider(color: Colors.grey.shade200),
+
+                      // Option 3: Permanent System User Token (Recommended for 24/7 Production)
+                      InkWell(
+                        onTap: () {
+                          setDialogState(() => showManualToken = !showManualToken);
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                          child: Row(
+                            children: [
+                              Icon(
+                                showManualToken ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                                size: 18,
+                                color: const Color(0xFF059669),
+                              ),
+                              const SizedBox(width: 4),
+                              const Text(
+                                'Permanent System Token (Recommended — Never Expires)',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      if (showManualToken) ...[
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF0FDF4),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Paste a System User Token with "Never" expiry generated from Meta Business Manager > Users > System Users. This token will run ads 24/7 without ever expiring.',
+                                style: TextStyle(fontSize: 11, color: Color(0xFF065F46)),
+                              ),
+                              const SizedBox(height: 10),
+                              TextField(
+                                controller: tokenController,
+                                decoration: InputDecoration(
+                                  labelText: 'System User / Access Token',
+                                  hintText: 'EAAB...',
+                                  prefixIcon: const Icon(Icons.vpn_key_rounded, size: 20, color: Color(0xFF059669)),
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                ),
+                                maxLines: 2,
+                              ),
+                              const SizedBox(height: 10),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF059669),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                ),
+                                icon: const Icon(Icons.lock_open_rounded, size: 16),
+                                label: const Text('Connect with Permanent Token', style: TextStyle(fontWeight: FontWeight.bold)),
+                                onPressed: () {
+                                  final token = tokenController.text.trim();
+                                  if (token.isNotEmpty) {
+                                    metaBloc.add(ConnectMetaAccountEvent(userAccessToken: token));
+                                    Navigator.pop(ctx);
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
               ),
-              maxLines: 2,
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1877F2)),
-            onPressed: () {
-              final token = tokenController.text.trim();
-              if (token.isNotEmpty) {
-                context.read<MetaAdsBloc>().add(ConnectMetaAccountEvent(userAccessToken: token));
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Connect'),
-          ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _showAssetSelectionDialog(BuildContext context, MetaAdsState state) {
+    final metaBloc = context.read<MetaAdsBloc>();
+    String? selectedAdAccountId = state.accountStatus?.adAccountId ?? (state.adAccounts.isNotEmpty ? state.adAccounts.first.id : null);
+    String? selectedPageId = state.accountStatus?.pageId ?? (state.pages.isNotEmpty ? state.pages.first.id : null);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          final selectedAccount = state.adAccounts.where((a) => a.id == selectedAdAccountId).firstOrNull;
+          final selectedPage = state.pages.where((p) => p.id == selectedPageId).firstOrNull;
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Row(
+              children: [
+                Icon(Icons.tune_rounded, color: Color(0xFF1877F2)),
+                SizedBox(width: 10),
+                Text('Active Ad Account & Page', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Select which Ad Account and Facebook Page to use for creating campaigns and tracking lead generation forms.',
+                    style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Ad Account Selector
+                  const Text('Ad Account', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 6),
+                  if (state.adAccounts.isEmpty)
+                    const Text('No ad accounts found for this Facebook account.', style: TextStyle(fontSize: 12, color: Colors.grey))
+                  else
+                    DropdownButtonFormField<String>(
+                      isExpanded: true,
+                      value: selectedAdAccountId,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      ),
+                      items: state.adAccounts.map((account) {
+                        return DropdownMenuItem<String>(
+                          value: account.id,
+                          child: Text(
+                            '${account.name} (${account.id})',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setDialogState(() => selectedAdAccountId = val);
+                        }
+                      },
+                    ),
+
+                  const SizedBox(height: 16),
+
+                  // Facebook Page Selector
+                  const Text('Facebook Page', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 6),
+                  if (state.pages.isEmpty)
+                    const Text('No Facebook pages found for this user.', style: TextStyle(fontSize: 12, color: Colors.grey))
+                  else
+                    DropdownButtonFormField<String>(
+                      isExpanded: true,
+                      value: selectedPageId,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      ),
+                      items: state.pages.map((page) {
+                        return DropdownMenuItem<String>(
+                          value: page.id,
+                          child: Text(
+                            '${page.name} (${page.category ?? 'Page'})',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setDialogState(() => selectedPageId = val);
+                        }
+                      },
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1877F2), foregroundColor: Colors.white),
+                onPressed: () {
+                  if (selectedAdAccountId != null && selectedPageId != null) {
+                    metaBloc.add(SelectMetaAssetsEvent(
+                      adAccountId: selectedAdAccountId!,
+                      adAccountName: selectedAccount?.name,
+                      pageId: selectedPageId!,
+                      pageName: selectedPage?.name,
+                    ));
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('Save Active Assets'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -91,7 +510,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const MetaLeadsPage()),
+                MaterialPageRoute(
+                  builder: (_) => BlocProvider.value(
+                    value: context.read<MetaAdsBloc>(),
+                    child: const MetaLeadsPage(),
+                  ),
+                ),
               );
             },
           ),
@@ -106,7 +530,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
         onPressed: () {
           Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const CreateCampaignWizardPage()),
+            MaterialPageRoute(
+              builder: (_) => BlocProvider.value(
+                value: context.read<MetaAdsBloc>(),
+                child: const CreateCampaignWizardPage(),
+              ),
+            ),
           );
         },
         backgroundColor: const Color(0xFF1877F2),
@@ -140,7 +569,7 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Meta Connection Banner
-                  _buildConnectionBanner(context, state, isConnected),
+                  _buildConnectionBanner(context, state, isConnected),        
                   const SizedBox(height: 20),
 
                   // Overall KPIs Grid
@@ -204,6 +633,32 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 10),
+
+                  // Search bar
+                  TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Search campaigns by name...',
+                      prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: Colors.grey.shade200)),
+                      filled: true,
+                      fillColor: Colors.white,
+                      isDense: true,
+                    ),
+                    onChanged: (val) => setState(() => _searchQuery = val.trim().toLowerCase()),
+                  ),
                   const SizedBox(height: 14),
 
                   // Campaigns List
@@ -218,8 +673,9 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                     _buildEmptyState(context)
                   else ...[
                     ...state.campaigns.where((c) {
-                      if (_selectedFilter == 'ALL') return true;
-                      return c.status == _selectedFilter;
+                      if (_selectedFilter != 'ALL' && c.status != _selectedFilter) return false;
+                      if (_searchQuery.isNotEmpty && !c.name.toLowerCase().contains(_searchQuery)) return false;
+                      return true;
                     }).map((campaign) {
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 12),
@@ -238,14 +694,52 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
   }
 
   Widget _buildConnectionBanner(BuildContext context, MetaAdsState state, bool isConnected) {
+    final isExpired = state.accountStatus?.isExpired == true;
+
+    Color borderColor;
+    Color avatarColor;
+    IconData avatarIcon;
+    String title;
+    String subtitle;
+    String actionLabel;
+    Color actionColor;
+    Color actionTextColor;
+
+    if (isExpired) {
+      borderColor = Colors.red.shade300;
+      avatarColor = const Color(0xFFDC2626);
+      avatarIcon = Icons.lock_clock_rounded;
+      title = 'Meta Session Expired';
+      subtitle = 'Your 60-day Meta token has expired. Reconnect your account to manage ads and receive leads.';
+      actionLabel = 'Reconnect';
+      actionColor = const Color(0xFFDC2626);
+      actionTextColor = Colors.white;
+    } else if (isConnected) {
+      borderColor = const Color(0xFF10B981).withValues(alpha: 0.3);
+      avatarColor = const Color(0xFF10B981);
+      avatarIcon = Icons.check;
+      title = 'Facebook Account Connected';
+      subtitle = 'Ad Account: ${state.accountStatus?.adAccountName ?? state.accountStatus?.adAccountId ?? 'Active'}${state.accountStatus?.pageName != null ? '  •  Page: ${state.accountStatus!.pageName}' : ''}';
+      actionLabel = 'Disconnect';
+      actionColor = Colors.grey.shade200;
+      actionTextColor = Colors.black87;
+    } else {
+      borderColor = Colors.amber.shade200;
+      avatarColor = Colors.amber;
+      avatarIcon = Icons.warning_amber_rounded;
+      title = 'Meta Account Not Connected';
+      subtitle = 'Connect your Facebook account to run ads, sync ad accounts, and collect leads.';
+      actionLabel = 'Connect';
+      actionColor = const Color(0xFF1877F2);
+      actionTextColor = Colors.white;
+    }
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isExpired ? const Color(0xFFFEF2F2) : Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isConnected ? const Color(0xFF10B981).withValues(alpha: 0.3) : Colors.amber.shade200,
-        ),
+        border: Border.all(color: borderColor),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.03),
@@ -257,9 +751,9 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
       child: Row(
         children: [
           CircleAvatar(
-            backgroundColor: isConnected ? const Color(0xFF10B981) : Colors.amber,
+            backgroundColor: avatarColor,
             radius: 20,
-            child: Icon(isConnected ? Icons.check : Icons.warning_amber_rounded, color: Colors.white, size: 20),
+            child: Icon(avatarIcon, color: Colors.white, size: 20),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -267,34 +761,76 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isConnected ? 'Facebook Account Connected' : 'Meta Account Not Connected',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  title,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: isExpired ? const Color(0xFFDC2626) : const Color(0xFF1E293B),
+                  ),
                 ),
+                const SizedBox(height: 2),
                 Text(
-                  isConnected
-                      ? 'Ad Account: ${state.accountStatus?.adAccountName ?? state.accountStatus?.adAccountId ?? 'Active'}'
-                      : 'Connect your Facebook Business account to manage ads and receive leads.',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isExpired ? Colors.red.shade900 : (isConnected ? Colors.grey.shade700 : Colors.grey.shade600),
+                    fontWeight: isConnected ? FontWeight.w500 : FontWeight.normal,
+                  ),
                 ),
+                if (isConnected && state.accountStatus?.isPermanent == true) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.all_inclusive_rounded, size: 12, color: Color(0xFF059669)),
+                        SizedBox(width: 4),
+                        Text(
+                          'Permanent System Token (Never Expires)',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
+          if (isConnected && !isExpired) ...[
+            OutlinedButton.icon(
+              onPressed: () => _showAssetSelectionDialog(context, state),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF1E293B),
+                side: BorderSide(color: Colors.grey.shade300),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                minimumSize: const Size(60, 36),
+              ),
+              icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+              label: const Text('Assets', style: TextStyle(fontSize: 12)),
+            ),
+            const SizedBox(width: 8),
+          ],
           ElevatedButton(
             onPressed: () {
-              if (isConnected) {
+              if (isConnected && !isExpired) {
                 context.read<MetaAdsBloc>().add(const DisconnectMetaAccountEvent());
               } else {
                 _showConnectDialog(context);
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: isConnected ? Colors.grey.shade200 : const Color(0xFF1877F2),
-              foregroundColor: isConnected ? Colors.black87 : Colors.white,
+              backgroundColor: actionColor,
+              foregroundColor: actionTextColor,
               elevation: 0,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               minimumSize: const Size(80, 36),
             ),
-            child: Text(isConnected ? 'Disconnect' : 'Connect'),
+            child: Text(actionLabel),
           ),
         ],
       ),
@@ -323,7 +859,10 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => CampaignDetailsAnalyticsPage(campaign: campaign),
+            builder: (_) => BlocProvider.value(
+              value: context.read<MetaAdsBloc>(),
+              child: CampaignDetailsAnalyticsPage(campaign: campaign),
+            ),
           ),
         );
       },
@@ -388,16 +927,54 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
                   campaign.insights.cpl > 0 ? '₹ ${campaign.insights.cpl.toStringAsFixed(0)}' : '—',
                 ),
                 _buildStatColumn('Reach', '${campaign.insights.reach}'),
-                IconButton(
-                  tooltip: isActive ? 'Pause' : 'Resume',
-                  icon: Icon(
-                    isActive ? Icons.pause_circle_outline : Icons.play_circle_outline,
-                    color: isActive ? Colors.grey.shade700 : const Color(0xFF10B981),
-                  ),
-                  onPressed: () {
-                    final nextStatus = isActive ? 'PAUSED' : 'ACTIVE';
-                    context.read<MetaAdsBloc>().add(UpdateMetaCampaignStatusEvent(campaign.id, nextStatus));
-                  },
+                Row(
+                  children: [
+                    // View Leads shortcut
+                    if (campaign.insights.leadsCount > 0)
+                      Tooltip(
+                        message: 'View ${campaign.insights.leadsCount} leads',
+                        child: InkWell(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => BlocProvider.value(
+                                  value: context.read<MetaAdsBloc>(),
+                                  child: MetaLeadsPage(campaignId: campaign.id),
+                                ),
+                              ),
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            margin: const EdgeInsets.only(right: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1877F2).withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.contact_phone_rounded, size: 13, color: Color(0xFF1877F2)),
+                                const SizedBox(width: 3),
+                                Text('${campaign.insights.leadsCount}', style: const TextStyle(fontSize: 11, color: Color(0xFF1877F2), fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    IconButton(
+                      tooltip: isActive ? 'Pause' : 'Resume',
+                      icon: Icon(
+                        isActive ? Icons.pause_circle_outline : Icons.play_circle_outline,
+                        color: isActive ? Colors.grey.shade700 : const Color(0xFF10B981),
+                      ),
+                      onPressed: () {
+                        final nextStatus = isActive ? 'PAUSED' : 'ACTIVE';
+                        context.read<MetaAdsBloc>().add(UpdateMetaCampaignStatusEvent(campaign.id, nextStatus));
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -441,7 +1018,12 @@ class _MetaAdsDashboardPageState extends State<MetaAdsDashboardPage> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const CreateCampaignWizardPage()),
+                  MaterialPageRoute(
+                    builder: (_) => BlocProvider.value(
+                      value: context.read<MetaAdsBloc>(),
+                      child: const CreateCampaignWizardPage(),
+                    ),
+                  ),
                 );
               },
               icon: const Icon(Icons.add_rounded),

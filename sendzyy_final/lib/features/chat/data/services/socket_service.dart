@@ -24,6 +24,9 @@ class SocketService {
   final _catalogOrderController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get catalogOrderStream => _catalogOrderController.stream;
 
+  final _metaLeadController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get metaLeadStream => _metaLeadController.stream;
+
   void connect(String tenantId, String token, String serverUrl) {
     _socket = IO.io(serverUrl, {
       'transports': ['websocket'],
@@ -33,6 +36,12 @@ class SocketService {
 
     _socket!.onConnect((_) {
       _socket!.emit('join', tenantId);
+    });
+
+    _socket!.on('meta_lead_received', (data) {
+      if (data is Map) {
+        _metaLeadController.add(Map<String, dynamic>.from(data));
+      }
     });
 
     _socket!.on('system_update', (data) {
