@@ -19,7 +19,6 @@ class CatalogDropdownField extends StatefulWidget {
     this.required = true,
     this.contentPadding,
   });
-
   @override
   State<CatalogDropdownField> createState() => _CatalogDropdownFieldState();
 }

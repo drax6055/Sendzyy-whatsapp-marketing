@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:iFloraBuzz/core/di/injection.dart';
+import 'package:iFloraBuzz/features/chat/data/services/socket_service.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/data/repositories/catalog_repository.dart';
 
@@ -114,11 +117,19 @@ class CatalogSettingsLoaded extends CatalogState {
   });
 
   CatalogInfo? get activeCatalog {
-    if (activeCatalogId == null || catalogs.isEmpty) return null;
+    if (activeCatalogId == null || activeCatalogId!.trim().isEmpty) {
+      return catalogs.isNotEmpty ? catalogs.first : null;
+    }
     try {
       return catalogs.firstWhere((c) => c.catalogId == activeCatalogId);
     } catch (_) {
-      return catalogs.isNotEmpty ? catalogs.first : null;
+      if (catalogs.isNotEmpty) return catalogs.first;
+      return CatalogInfo(
+        catalogId: activeCatalogId!,
+        name: 'Connected Meta Catalog',
+        vertical: 'commerce',
+        isDefault: true,
+      );
     }
   }
 
@@ -163,6 +174,7 @@ class CatalogError extends CatalogState {
 class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
   final CatalogRepository _repository;
   CatalogRepository get repository => _repository;
+  StreamSubscription? _orderSubscription;
 
   CatalogBloc(this._repository) : super(CatalogInitial()) {
     on<LoadCommerceSettings>(_onLoadCommerceSettings);
@@ -180,6 +192,20 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
     on<MarkOrderPaidEvent>(_onMarkOrderPaid);
     on<UpdateOrderStatusEvent>(_onUpdateOrderStatus);
     on<ClearCatalogStatus>(_onClearStatus);
+
+    try {
+      if (getIt.isRegistered<SocketService>()) {
+        _orderSubscription = getIt<SocketService>().catalogOrderStream.listen((_) {
+          add(LoadOrders());
+        });
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> close() {
+    _orderSubscription?.cancel();
+    return super.close();
   }
 
   Future<void> _onLoadCommerceSettings(
@@ -207,6 +233,11 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
       // Trigger initial product and order loads
       add(LoadProducts(catalogId: activeId));
       add(LoadOrders());
+
+      // Auto-connect with Meta if no catalog is currently loaded
+      if (catalogsList.isEmpty && (activeId == null || activeId.isEmpty)) {
+        add(SyncCatalogsWithMeta());
+      }
     } catch (e) {
       emit(CatalogError(e.toString().replaceAll('Exception: ', '')));
     }
@@ -223,11 +254,20 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
     try {
       final result = await _repository.syncCatalogs();
       if (state is CatalogSettingsLoaded) {
-        emit((state as CatalogSettingsLoaded).copyWith(
-          catalogs: result.catalogs,
-          activeCatalogId: result.activeCatalogId,
+        final currentLoaded = state as CatalogSettingsLoaded;
+        // Never wipe out existing catalogs if sync returns an empty list
+        final finalCatalogs = result.catalogs.isNotEmpty ? result.catalogs : currentLoaded.catalogs;
+        final finalActiveId = (result.activeCatalogId != null && result.activeCatalogId!.isNotEmpty)
+            ? result.activeCatalogId
+            : currentLoaded.activeCatalogId;
+
+        emit(currentLoaded.copyWith(
+          catalogs: finalCatalogs,
+          activeCatalogId: finalActiveId,
           isSyncingCatalogs: false,
-          successMessage: 'Successfully synced ${result.catalogs.length} catalog(s) with Meta!',
+          successMessage: finalCatalogs.isNotEmpty
+              ? 'Successfully synced ${finalCatalogs.length} catalog(s) with Meta!'
+              : 'Synced with Meta',
         ));
       }
       add(LoadProducts(catalogId: result.activeCatalogId));

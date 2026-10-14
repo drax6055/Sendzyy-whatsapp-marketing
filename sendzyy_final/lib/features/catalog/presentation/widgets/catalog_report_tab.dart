@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -10,6 +9,7 @@ import 'package:iFloraBuzz/core/utils/web_helper.dart';
 import 'package:iFloraBuzz/core/widgets/compact_date_range_picker.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/utils/catalog_report_export_helper.dart';
 
 /// Comprehensive Catalog Analytics & Orders Report Tab
 /// Displays high-level KPIs, revenue metrics, product sales performance,
@@ -120,52 +120,59 @@ class _CatalogReportTabState extends State<CatalogReportTab> {
     }).toList();
   }
 
-  Future<void> _exportCsv(List<WhatsAppOrder> orders) async {
+  bool _isExporting = false;
+
+  Future<void> _exportExcel(List<WhatsAppOrder> orders) async {
     if (orders.isEmpty) {
       SnackbarUtils.showWarning(context, 'No orders available to export.');
       return;
     }
 
-    final buffer = StringBuffer();
-    // CSV Header
-    buffer.writeln(
-        'Order ID,Date,Time,Customer Phone,Customer Name,Items Count,Products (SKU x Qty),Currency,Total Amount,Payment Status,Order Status,Payment Link ID,Payment ID,Customer Note');
+    setState(() => _isExporting = true);
+    try {
+      final fileName = await CatalogReportExportHelper.exportExcel(orders: orders);
+      if (mounted) {
+        SnackbarUtils.showSuccess(context, 'Excel report exported as $fileName');
+      }
+    } catch (e) {
+      if (mounted) {
+        SnackbarUtils.showError(context, 'Failed to export Excel report: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isExporting = false);
+      }
+    }
+  }
 
-    final dateFormat = DateFormat('yyyy-MM-dd');
-    final timeFormat = DateFormat('HH:mm:ss');
-
-    for (final o in orders) {
-      final dateStr = o.createdAt != null ? dateFormat.format(o.createdAt!) : '';
-      final timeStr = o.createdAt != null ? timeFormat.format(o.createdAt!) : '';
-      final itemsSummary = o.items
-          .map((i) => '${i.productRetailerId} (x${i.quantity})')
-          .join('; ');
-
-      buffer.writeln(
-        '"${o.id}",'
-        '"$dateStr",'
-        '"$timeStr",'
-        '"${o.contactId}",'
-        '"${o.contactName.replaceAll('"', '""')}",'
-        '${o.items.length},'
-        '"$itemsSummary",'
-        '"${o.currency}",'
-        '${o.totalAmount.toStringAsFixed(2)},'
-        '"${o.paymentStatus}",'
-        '"${o.status}",'
-        '"${o.paymentLinkId ?? ''}",'
-        '"${o.paymentId ?? ''}",'
-        '"${o.customerNote.replaceAll('"', '""')}"',
-      );
+  Future<void> _exportPdf(
+    List<WhatsAppOrder> orders,
+    List<CatalogProduct> products,
+  ) async {
+    if (orders.isEmpty) {
+      SnackbarUtils.showWarning(context, 'No orders available to export.');
+      return;
     }
 
-    final bytes = utf8.encode(buffer.toString());
-    final fileName =
-        'catalog_orders_report_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.csv';
-
-    await webDownloadBytes(bytes, fileName, mimeType: 'text/csv;charset=utf-8');
-    if (mounted) {
-      SnackbarUtils.showSuccess(context, 'Report exported as $fileName');
+    setState(() => _isExporting = true);
+    try {
+      final fileName = await CatalogReportExportHelper.exportPdf(
+        orders: orders,
+        products: products,
+        dateRange: _dateRange,
+        datePreset: _datePreset,
+      );
+      if (mounted) {
+        SnackbarUtils.showSuccess(context, 'PDF report exported as $fileName');
+      }
+    } catch (e) {
+      if (mounted) {
+        SnackbarUtils.showError(context, 'Failed to export PDF report: $e');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isExporting = false);
+      }
     }
   }
 
@@ -195,7 +202,7 @@ class _CatalogReportTabState extends State<CatalogReportTab> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // ── 1. Top Controls & Filters ────────────────────────────────
-                _buildHeaderControls(isMobile, filteredOrders),
+                _buildHeaderControls(isMobile, filteredOrders, catalogProducts),
                 const SizedBox(height: 16),
 
                 // ── 2. Hero KPI Metric Cards ─────────────────────────────────
@@ -219,7 +226,11 @@ class _CatalogReportTabState extends State<CatalogReportTab> {
 
   // ── Header Controls ──────────────────────────────────────────────────────────
 
-  Widget _buildHeaderControls(bool isMobile, List<WhatsAppOrder> filteredOrders) {
+  Widget _buildHeaderControls(
+    bool isMobile,
+    List<WhatsAppOrder> filteredOrders,
+    List<CatalogProduct> products,
+  ) {
     return Container(
       padding: EdgeInsets.all(isMobile ? 14 : 18),
       decoration: BoxDecoration(
@@ -279,18 +290,11 @@ class _CatalogReportTabState extends State<CatalogReportTab> {
                   color: AppTheme.secondaryColor,
                 ),
                 const SizedBox(width: 8),
-                // Export CSV Button
-                ElevatedButton.icon(
-                  onPressed: () => _exportCsv(filteredOrders),
-                  icon: const Icon(Icons.download_rounded, size: 16),
-                  label: const Text('Export CSV', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
+                // Export Menu Button (Excel & PDF)
+                _buildExportMenu(
+                  isMobile: false,
+                  filteredOrders: filteredOrders,
+                  products: products,
                 ),
               ],
             ],
@@ -300,17 +304,10 @@ class _CatalogReportTabState extends State<CatalogReportTab> {
             Row(
               children: [
                 Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _exportCsv(filteredOrders),
-                    icon: const Icon(Icons.download_rounded, size: 15),
-                    label: const Text('Export CSV', style: TextStyle(fontSize: 12)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primaryColor,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
+                  child: _buildExportMenu(
+                    isMobile: true,
+                    filteredOrders: filteredOrders,
+                    products: products,
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -465,6 +462,196 @@ class _CatalogReportTabState extends State<CatalogReportTab> {
       backgroundColor: Colors.grey.shade100,
       visualDensity: VisualDensity.compact,
       onSelected: (_) => _setDatePreset(preset),
+    );
+  }
+
+  Widget _buildExportMenu({
+    required bool isMobile,
+    required List<WhatsAppOrder> filteredOrders,
+    required List<CatalogProduct> products,
+  }) {
+    if (_isExporting) {
+      return Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: isMobile ? 12 : 16,
+          vertical: isMobile ? 8 : 10,
+        ),
+        decoration: BoxDecoration(
+          color: AppTheme.primaryColor.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(isMobile ? 8 : 10),
+          border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: isMobile ? MainAxisSize.max : MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.primaryColor),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Exporting...',
+              style: TextStyle(
+                fontSize: isMobile ? 12 : 13,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.primaryColor,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Theme(
+      data: Theme.of(context).copyWith(
+        hoverColor: Colors.transparent,
+      ),
+      child: PopupMenuButton<String>(
+        tooltip: 'Export Options',
+        offset: const Offset(0, 44),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Colors.grey.shade200),
+        ),
+        elevation: 6,
+        onSelected: (value) {
+          if (value == 'excel') {
+            _exportExcel(filteredOrders);
+          } else if (value == 'pdf') {
+            _exportPdf(filteredOrders, products);
+          }
+        },
+        itemBuilder: (context) => [
+          PopupMenuItem<String>(
+            value: 'excel',
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF107C41).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.table_view_rounded,
+                    color: Color(0xFF107C41),
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Download in Excel',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1D1E),
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Spreadsheet format (.csv)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const PopupMenuDivider(height: 1),
+          PopupMenuItem<String>(
+            value: 'pdf',
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE53935).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.picture_as_pdf_rounded,
+                    color: Color(0xFFE53935),
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Download in PDF',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1D1E),
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Printable report document (.pdf)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        child: Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 12 : 16,
+            vertical: isMobile ? 10 : 11,
+          ),
+          decoration: BoxDecoration(
+            color: AppTheme.primaryColor,
+            borderRadius: BorderRadius.circular(isMobile ? 8 : 10),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.primaryColor.withValues(alpha: 0.28),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: isMobile ? MainAxisSize.max : MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.download_rounded, color: Colors.white, size: isMobile ? 15 : 16),
+              const SizedBox(width: 8),
+              const Text(
+                'Export Report',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.arrow_drop_down, color: Colors.white, size: 20),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

@@ -35,6 +35,8 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
   bool _syncingMeta = false;
   bool _loadingSubmissions = true;
   String _searchQuery = '';
+  String? _selectedFlowFilterId;
+  String? _selectedFlowFilterName;
 
   @override
   void initState() {
@@ -89,12 +91,13 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
     }
   }
 
-  Future<void> _loadSubmissions() async {
+  Future<void> _loadSubmissions({String? flowId}) async {
+    final targetFlowId = flowId ?? _selectedFlowFilterId ?? 'all';
     if (!_loadingSubmissions && mounted) {
       setState(() => _loadingSubmissions = true);
     }
     try {
-      final subs = await _repository.getFlowResponses();
+      final subs = await _repository.getFlowResponses(flowId: targetFlowId);
       if (mounted) {
         setState(() {
           _submissions = subs;
@@ -112,6 +115,7 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
       MaterialPageRoute(
         builder: (_) => CreateFlowPage(
           repository: _repository,
+          existingFlows: _flows,
           onFlowCreated: () => _loadFlows(),
         ),
       ),
@@ -628,6 +632,8 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                     children: [
                       Text(
                         flow.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -637,9 +643,12 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                       const SizedBox(height: 4),
                       Row(
                         children: [
-                          Text(
-                            'ID: ${flow.flowId}',
-                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontFamily: 'monospace'),
+                          Flexible(
+                            child: Text(
+                              'ID: ${flow.flowId}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontFamily: 'monospace'),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                           IconButton(
                             icon: const Icon(Icons.copy, size: 14, color: Colors.grey),
@@ -685,91 +694,95 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                 ),
               ],
             ),
-            const Divider(height: 24, color: Color(0xFFF1F5F9)),
-            // Details summary and action buttons
+            const Divider(height: 20, color: Color(0xFFF1F5F9)),
+            // Metadata chips row
             Wrap(
-              spacing: 16,
-              runSpacing: 10,
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 12,
+              runSpacing: 6,
               children: [
-                Wrap(
-                  spacing: 16,
-                  runSpacing: 8,
-                  children: [
-                    _badgeInfo(Icons.category_outlined, flow.categories.join(', ')),
-                    _badgeInfo(Icons.touch_app_outlined, 'CTA: ${flow.ctaText}'),
-                    _badgeInfo(Icons.inbox_outlined, '${flow.submissionsCount} submissions'),
-                  ],
-                ),
-                Wrap(
-                  spacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: () => _confirmDeleteFlow(flow),
-                      icon: const Icon(Icons.delete_outline_rounded, size: 14, color: Color(0xFFEF4444)),
-                      label: const Text(
-                        'Delete',
-                        style: TextStyle(fontSize: 12, color: Color(0xFFEF4444), fontWeight: FontWeight.w600),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(0xFFFECACA)),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: () {
-                        _tabController.animateTo(1);
-                        _loadSubmissions();
-                      },
-                      icon: const Icon(Icons.visibility_outlined, size: 15, color: Color(0xFF16A34A)),
-                      label: const Text(
-                        'View Submissions',
-                        style: TextStyle(fontSize: 12, color: Color(0xFF16A34A), fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    if (!isPublished)
-                      OutlinedButton.icon(
-                        onPressed: () => _confirmPublishFlow(flow),
-                        icon: const Icon(Icons.rocket_launch_rounded, size: 14, color: Color(0xFF2563EB)),
-                        label: const Text(
-                          'Publish',
-                          style: TextStyle(fontSize: 12, color: Color(0xFF2563EB), fontWeight: FontWeight.w600),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Color(0xFF93C5FD)),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        ),
-                      ),
-                  ],
-                ),
+                _badgeInfo(Icons.category_outlined, flow.categories.join(', ')),
+                _badgeInfo(Icons.touch_app_outlined, 'CTA: ${flow.ctaText}'),
+                _badgeInfo(Icons.inbox_outlined, '${flow.submissionsCount} submissions'),
               ],
             ),
-            const SizedBox(height: 12),
-            // Full-width Send Test Button
-            Row(
+            const SizedBox(height: 14),
+
+            // Action Buttons (Responsive & Clean Wrap)
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Expanded(
-                  child: SizedBox(
-                    height: 40,
-                    child: ElevatedButton.icon(
-                      onPressed: () => _showTestSendDialog(flow),
-                      icon: const Icon(Icons.send_rounded, size: 15),
-                      label: const Text(
-                        'Send Test',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: Size.zero,
-                        backgroundColor: const Color(0xFF25D366),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        elevation: 0,
-                      ),
+                // Delete Button
+                IconButton(
+                  tooltip: 'Delete Flow',
+                  icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 18),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFFEF2F2),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    minimumSize: const Size(36, 36),
+                    padding: EdgeInsets.zero,
+                  ),
+                  onPressed: () => _confirmDeleteFlow(flow),
+                ),
+
+                // View Submissions Button
+                OutlinedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _selectedFlowFilterId = flow.flowId;
+                      _selectedFlowFilterName = flow.name;
+                    });
+                    _tabController.animateTo(1);
+                    _loadSubmissions(flowId: flow.flowId);
+                  },
+                  icon: const Icon(Icons.visibility_outlined, size: 14, color: Color(0xFF16A34A)),
+                  label: const Text(
+                    'Submissions',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF16A34A), fontWeight: FontWeight.w600),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFFBBF7D0)),
+                    backgroundColor: const Color(0xFFF0FDF4),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    minimumSize: const Size(0, 36),
+                  ),
+                ),
+
+                // Publish Button (if DRAFT)
+                if (!isPublished)
+                  OutlinedButton.icon(
+                    onPressed: () => _confirmPublishFlow(flow),
+                    icon: const Icon(Icons.rocket_launch_rounded, size: 14, color: Color(0xFF2563EB)),
+                    label: const Text(
+                      'Publish',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF2563EB), fontWeight: FontWeight.w600),
                     ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF93C5FD)),
+                      backgroundColor: const Color(0xFFEFF6FF),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      minimumSize: const Size(0, 36),
+                    ),
+                  ),
+
+                // Primary Send Test Button
+                ElevatedButton.icon(
+                  onPressed: () => _showTestSendDialog(flow),
+                  icon: const Icon(Icons.send_rounded, size: 14),
+                  label: const Text(
+                    'Send Test',
+                    style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(110, 36),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    backgroundColor: const Color(0xFF25D366),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    elevation: 0,
                   ),
                 ),
               ],
@@ -792,105 +805,318 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
   }
 
   Widget _buildSubmissionsTab() {
-    if (_loadingSubmissions) {
-      return const Center(child: CircularProgressIndicator());
-    }
+    return Column(
+      children: [
+        _buildSubmissionsFilterBar(),
+        Expanded(
+          child: _loadingSubmissions
+              ? const Center(child: CircularProgressIndicator())
+              : _submissions.isEmpty
+                  ? _buildEmptySubmissionsView()
+                  : RefreshIndicator(
+                      onRefresh: () => _loadSubmissions(),
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _submissions.length,
+                        itemBuilder: (ctx, index) {
+                          final sub = _submissions[index];
+                          final dateStr = sub.createdAt != null
+                              ? DateFormat('dd MMM yyyy, hh:mm a').format(sub.createdAt!)
+                              : 'Unknown date';
 
-    if (_submissions.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.inbox_outlined, size: 64, color: Colors.grey.shade400),
-              const SizedBox(height: 16),
-              const Text(
-                'No Form Submissions Yet',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'When customers fill out and submit your WhatsApp Flows, their responses will appear here in real-time.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: Colors.grey),
-              ),
-            ],
-          ),
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              side: const BorderSide(color: Color(0xFFE2E8F0)),
+                            ),
+                            child: ExpansionTile(
+                              leading: const CircleAvatar(
+                                backgroundColor: Color(0xFFDCFCE7),
+                                child: Icon(Icons.check, color: Color(0xFF16A34A), size: 18),
+                              ),
+                              title: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      sub.contactName.isNotEmpty ? sub.contactName : sub.contactId,
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                    ),
+                                  ),
+                                  if (sub.flowName.isNotEmpty)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEFF6FF),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                                      ),
+                                      child: Text(
+                                        sub.flowName,
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFF2563EB),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              subtitle: Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  'Phone: ${sub.contactId} • $dateStr',
+                                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                ),
+                              ),
+                              childrenPadding: const EdgeInsets.all(16),
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(14),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8FAFC),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(Icons.assignment_turned_in_rounded, size: 16, color: Color(0xFF16A34A)),
+                                          const SizedBox(width: 8),
+                                          const Text(
+                                            'Submitted Answers:',
+                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
+                                          ),
+                                          const Spacer(),
+                                          if (sub.flowName.isNotEmpty)
+                                            Text(
+                                              'Flow: ${sub.flowName}',
+                                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 10),
+                                      if (sub.responseData.isEmpty)
+                                        const Text(
+                                          'No response fields submitted.',
+                                          style: TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+                                        )
+                                      else
+                                        ...sub.responseData.entries.map((entry) {
+                                          return _buildAnswerItem(entry.key, entry.value);
+                                        }),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
         ),
-      );
-    }
+      ],
+    );
+  }
 
-    return RefreshIndicator(
-      onRefresh: () => _loadSubmissions(),
-      child: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _submissions.length,
-        itemBuilder: (ctx, index) {
-          final sub = _submissions[index];
-          final dateStr = sub.createdAt != null
-              ? DateFormat('dd MMM yyyy, hh:mm a').format(sub.createdAt!)
-              : 'Unknown date';
+  Widget _buildSubmissionsFilterBar() {
+    final hasFilter = _selectedFlowFilterId != null;
+    final bool filterMatchesFlow = hasFilter && _flows.any((f) => f.flowId == _selectedFlowFilterId);
+    final dropdownValue = hasFilter && filterMatchesFlow ? _selectedFlowFilterId! : 'all';
 
-          return Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: Color(0xFFE2E8F0)),
-            ),
-            child: ExpansionTile(
-              leading: const CircleAvatar(
-                backgroundColor: Color(0xFFDCFCE7),
-                child: Icon(Icons.check, color: Color(0xFF16A34A), size: 18),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            hasFilter ? Icons.filter_alt_rounded : Icons.filter_alt_outlined,
+            size: 18,
+            color: hasFilter ? const Color(0xFF16A34A) : Colors.grey.shade600,
+          ),
+          const SizedBox(width: 8),
+          const Text(
+            'Filter by Template:',
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF475569)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: hasFilter ? const Color(0xFF86EFAC) : const Color(0xFFE2E8F0),
+                ),
               ),
-              title: Text(
-                sub.contactName.isNotEmpty ? sub.contactName : sub.contactId,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-              ),
-              subtitle: Text(
-                'Phone: ${sub.contactId} • $dateStr',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-              childrenPadding: const EdgeInsets.all(16),
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: dropdownValue,
+                  isExpanded: true,
+                  icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF64748B)),
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF1E293B)),
+                  items: [
+                    DropdownMenuItem<String>(
+                      value: 'all',
+                      child: Row(
                         children: [
-                          Icon(Icons.assignment_turned_in_rounded, size: 16, color: Color(0xFF16A34A)),
-                          SizedBox(width: 8),
-                          Text(
-                            'Submitted Answers:',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
+                          const Text('All Templates / Flows', style: TextStyle(fontWeight: FontWeight.w600)),
+                          const Spacer(),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade200,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '${_flows.fold<int>(0, (sum, f) => sum + f.submissionsCount)}',
+                              style: TextStyle(fontSize: 11, color: Colors.grey.shade700, fontWeight: FontWeight.bold),
+                            ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 10),
-                      if (sub.responseData.isEmpty)
-                        const Text(
-                          'No response fields submitted.',
-                          style: TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
-                        )
-                      else
-                        ...sub.responseData.entries.map((entry) {
-                          return _buildAnswerItem(entry.key, entry.value);
-                        }),
-                    ],
-                  ),
+                    ),
+                    ..._flows.map((flow) {
+                      final isSelected = _selectedFlowFilterId == flow.flowId;
+                      return DropdownMenuItem<String>(
+                        value: flow.flowId,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                flow.name,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                  color: isSelected ? const Color(0xFF16A34A) : const Color(0xFF1E293B),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: flow.submissionsCount > 0 ? const Color(0xFFDCFCE7) : Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                '${flow.submissionsCount}',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: flow.submissionsCount > 0 ? const Color(0xFF16A34A) : Colors.grey.shade600,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                  onChanged: (newFlowId) {
+                    if (newFlowId == null) return;
+                    setState(() {
+                      if (newFlowId == 'all') {
+                        _selectedFlowFilterId = null;
+                        _selectedFlowFilterName = null;
+                      } else {
+                        _selectedFlowFilterId = newFlowId;
+                        final matched = _flows.where((f) => f.flowId == newFlowId).firstOrNull;
+                        _selectedFlowFilterName = matched?.name ?? newFlowId;
+                      }
+                    });
+                    _loadSubmissions(flowId: newFlowId);
+                  },
                 ),
-              ],
+              ),
             ),
-          );
-        },
+          ),
+          if (hasFilter) ...[
+            const SizedBox(width: 8),
+            TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  _selectedFlowFilterId = null;
+                  _selectedFlowFilterName = null;
+                });
+                _loadSubmissions(flowId: 'all');
+              },
+              icon: const Icon(Icons.clear, size: 14, color: Color(0xFFEF4444)),
+              label: const Text('Show All', style: TextStyle(fontSize: 12, color: Color(0xFFEF4444), fontWeight: FontWeight.w600)),
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0xFFFEF2F2),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                minimumSize: const Size(0, 36),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptySubmissionsView() {
+    final isFiltered = _selectedFlowFilterId != null;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isFiltered ? Icons.filter_alt_off_rounded : Icons.inbox_outlined,
+              size: 64,
+              color: Colors.grey.shade400,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              isFiltered
+                  ? 'No Submissions for "${_selectedFlowFilterName ?? 'this Template'}"'
+                  : 'No Form Submissions Yet',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              isFiltered
+                  ? 'No customer has submitted responses for this specific flow template yet.'
+                  : 'When customers fill out and submit your WhatsApp Flows, their responses will appear here in real-time.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+            if (isFiltered) ...[
+              const SizedBox(height: 20),
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _selectedFlowFilterId = null;
+                    _selectedFlowFilterName = null;
+                  });
+                  _loadSubmissions(flowId: 'all');
+                },
+                icon: const Icon(Icons.clear_all_rounded, size: 16, color: Color(0xFF2563EB)),
+                label: const Text(
+                  'View All Submissions',
+                  style: TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.w600),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFFBFDBFE)),
+                  backgroundColor: const Color(0xFFEFF6FF),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

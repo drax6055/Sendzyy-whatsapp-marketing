@@ -87,7 +87,10 @@ function createFlowController(dependencies = {}) {
                 res.status(201).json({ success: true, flow: created });
             } catch (err) {
                 console.error('[FlowController] createFlow error:', err.response?.data || err);
-                const metaErr = err.response?.data?.error?.message || err.message;
+                const metaErr = err.response?.data?.error?.error_user_msg
+                    || err.response?.data?.error?.error_data?.details
+                    || err.response?.data?.error?.message 
+                    || err.message;
                 res.status(400).json({ success: false, error: metaErr });
             }
         },

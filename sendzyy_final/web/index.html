@@ -70,11 +70,11 @@
   // 2. Listen for postMessage from Meta embedded signup popup/iframe
   // This fires when user completes setup and carries waba_id + phone_number_id + code
   window.addEventListener('message', (event) => {
-    console.log('[MetaSignup-GlobalMessage] Message event received from origin:', event.origin);
-    if (!allowedOrigins.includes(event.origin)) {
-      console.warn('[MetaSignup-GlobalMessage] Ignored message from unauthorized origin:', event.origin);
+    // Silently ignore messages from non-Meta origins (e.g. localhost, Razorpay, Flutter internal)
+    if (!event.origin || !allowedOrigins.includes(event.origin)) {
       return;
     }
+    console.log('[MetaSignup-GlobalMessage] Message event received from Meta origin:', event.origin);
     try {
       const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
       console.log('[MetaSignup-GlobalMessage] Parsed message payload:', JSON.stringify(data, null, 2));

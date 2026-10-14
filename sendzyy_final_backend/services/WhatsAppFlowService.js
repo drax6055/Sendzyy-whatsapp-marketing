@@ -168,7 +168,7 @@ function compileFieldsToFlowJson({ title = 'Quick Form', description = '', field
     });
 
     return {
-        version: '3.1',
+        version: '7.3',
         screens: [
             {
                 id: screenId,
@@ -187,10 +187,7 @@ function compileFieldsToFlowJson({ title = 'Quick Form', description = '', field
                     ]
                 }
             }
-        ],
-        routing_model: {
-            [screenId]: []
-        }
+        ]
     };
 }
 
@@ -289,15 +286,39 @@ class WhatsAppFlowService {
         }
 
         // 2. Step 1: Create Flow on Meta
-        console.log(`[WhatsAppFlow] Creating Flow "${name}" on Meta WABA ${wabaId}...`);
+        let flowId = null;
+        let finalName = name;
         const createFlowUrl = `${GRAPH_BASE_URL}/${wabaId}/flows`;
-        const createRes = await axios.post(
-            createFlowUrl,
-            { name, categories },
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
 
-        const flowId = createRes.data?.id;
+        try {
+            console.log(`[WhatsAppFlow] Creating Flow "${finalName}" on Meta WABA ${wabaId}...`);
+            const createRes = await axios.post(
+                createFlowUrl,
+                { name: finalName, categories },
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            flowId = createRes.data?.id;
+        } catch (createErr) {
+            const errData = createErr.response?.data?.error;
+            if (errData?.error_subcode === 4016019 || errData?.error_user_title?.includes('Flow name is not unique') || errData?.error_user_msg?.includes('Flow name should be unique')) {
+                const count = await WhatsAppFlow.countDocuments({
+                    tenantId: tenant._id.toString(),
+                    name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+                });
+                const suffix = ` (${count + 1 || 2})`;
+                finalName = `${name.substring(0, Math.max(10, 50 - suffix.length))}${suffix}`;
+                console.log(`[WhatsAppFlow] Duplicate name detected, auto-retrying with unique name "${finalName}"...`);
+                const retryRes = await axios.post(
+                    createFlowUrl,
+                    { name: finalName, categories },
+                    { headers: { Authorization: `Bearer ${accessToken}` } }
+                );
+                flowId = retryRes.data?.id;
+            } else {
+                throw createErr;
+            }
+        }
+
         if (!flowId) {
             throw new Error('Failed to obtain Flow ID from Meta');
         }
@@ -352,7 +373,7 @@ class WhatsAppFlowService {
             {
                 tenantId: tenant._id.toString(),
                 flowId,
-                name,
+                name: finalName,
                 categories,
                 status,
                 flowJson: finalFlowJson,

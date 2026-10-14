@@ -114,6 +114,8 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
                 title: 'Catalog Message',
                 description:
                     'Sends a message with a "View Catalog" button that allows customers to browse your full product inventory on WhatsApp.',
+                note:
+                    'WhatsApp 24-Hour Rule: Meta allows free-form catalog messages only if the recipient messaged your business in the last 24 hours. If they haven\'t, Meta rejects delivery (Error 131047). Send an approved Template first or ask the customer to reply.',
               ),
               const SizedBox(height: 20),
               _buildField(
@@ -353,6 +355,8 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
                 title: 'Single Product Message',
                 description:
                     'Highlights one specific product with its image, price, and description. Customers can view details and add to cart.',
+                note:
+                    'WhatsApp 24-Hour Rule: Recipient must have messaged this business number within the last 24 hours. Outside 24h, Meta rejects interactive messages (Error 131047).',
               ),
               const SizedBox(height: 20),
               _buildField(_toCtrl, 'Recipient Phone *', '+919876543210',
@@ -449,12 +453,14 @@ class _ComposerInfoBanner extends StatelessWidget {
   final Color color;
   final String title;
   final String description;
+  final String? note;
 
   const _ComposerInfoBanner({
     required this.icon,
     required this.color,
     required this.title,
     required this.description,
+    this.note,
   });
 
   @override
@@ -466,41 +472,75 @@ class _ComposerInfoBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: color.withValues(alpha: 0.2)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.15),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    color: color,
-                  ),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  description,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade700,
-                    height: 1.4,
-                  ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: color,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      description,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
+          if (note != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.amber.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.amber.shade300),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline_rounded, size: 16, color: Colors.amber.shade900),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      note!,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: Colors.amber.shade900,
+                        height: 1.35,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/core/utils/snackbar_utils.dart';
+import 'package:iFloraBuzz/features/whatsapp_flows/data/models/meta_flow_template.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/models/whatsapp_flow_model.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/repositories/whatsapp_flow_repository.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/widgets/flow_mobile_preview.dart';
@@ -8,11 +9,13 @@ import 'package:iFloraBuzz/features/whatsapp_flows/presentation/widgets/flow_mob
 class CreateFlowPage extends StatefulWidget {
   final WhatsAppFlowRepository repository;
   final VoidCallback? onFlowCreated;
+  final List<WhatsAppFlowModel>? existingFlows;
 
   const CreateFlowPage({
     super.key,
     required this.repository,
     this.onFlowCreated,
+    this.existingFlows,
   });
 
   @override
@@ -30,11 +33,20 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
   String _selectedCategory = 'LEAD_GENERATION';
   bool _isPublishing = false;
 
-  final List<FlowFormField> _fields = [
-    FlowFormField(name: 'full_name', label: 'Full Name', type: 'text', required: true),
-    FlowFormField(name: 'email', label: 'Email Address', type: 'email', required: true),
-    FlowFormField(name: 'phone', label: 'Phone Number', type: 'phone', required: false),
-  ];
+  MetaFlowEndpointType _selectedEndpointTab = MetaFlowEndpointType.withoutEndpoint;
+  String _selectedTemplateId = 'default';
+
+  final List<FlowFormField> _fields = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final initialTemplate = kAllMetaFlowTemplates.firstWhere(
+      (t) => t.id == 'default',
+      orElse: () => kAllMetaFlowTemplates.first,
+    );
+    _applyTemplateData(initialTemplate, notify: false);
+  }
 
   @override
   void dispose() {
@@ -46,64 +58,38 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
     super.dispose();
   }
 
-  void _applyTemplate(String templateName) {
-    setState(() {
-      if (templateName == 'lead') {
-        _nameController.text = 'Lead Capture Form';
-        _bodyController.text = 'Please provide your contact details so our team can reach out:';
-        _ctaController.text = 'Get in Touch';
-        _selectedCategory = 'LEAD_GENERATION';
-        _fields.clear();
-        _fields.addAll([
-          FlowFormField(name: 'full_name', label: 'Full Name', type: 'text', required: true),
-          FlowFormField(name: 'email', label: 'Work Email', type: 'email', required: true),
-          FlowFormField(name: 'phone', label: 'Phone Number', type: 'phone', required: true),
-          FlowFormField(name: 'company', label: 'Company Name', type: 'text', required: false),
-          FlowFormField(
-            name: 'interest',
-            label: 'Service of Interest',
-            type: 'dropdown',
-            required: true,
-            options: ['Marketing Automation', 'WhatsApp API', 'CRM Integration', 'Custom Bot'],
-          ),
-        ]);
-      } else if (templateName == 'appointment') {
-        _nameController.text = 'Book Appointment';
-        _bodyController.text = 'Select your preferred consultation date and slot:';
-        _ctaController.text = 'Book Now';
-        _selectedCategory = 'APPOINTMENT_BOOKING';
-        _fields.clear();
-        _fields.addAll([
-          FlowFormField(name: 'client_name', label: 'Your Name', type: 'text', required: true),
-          FlowFormField(name: 'phone_num', label: 'WhatsApp Number', type: 'phone', required: true),
-          FlowFormField(
-            name: 'service_type',
-            label: 'Appointment Type',
-            type: 'radio',
-            required: true,
-            options: ['Online Consultation', 'In-Person Meeting', 'Product Demo'],
-          ),
-          FlowFormField(name: 'pref_date', label: 'Preferred Date', type: 'date', required: true),
-          FlowFormField(name: 'notes', label: 'Special Requests / Notes', type: 'textarea', required: false),
-        ]);
-      } else if (templateName == 'feedback') {
-        _nameController.text = 'Customer Feedback';
-        _bodyController.text = 'Help us improve by rating your recent experience:';
-        _ctaController.text = 'Submit Review';
-        _selectedCategory = 'SURVEY';
-        _fields.clear();
-        _fields.addAll([
-          FlowFormField(
-            name: 'rating',
-            label: 'How was your experience?',
-            type: 'radio',
-            required: true,
-            options: ['⭐⭐⭐⭐⭐ Excellent', '⭐⭐⭐⭐ Good', '⭐⭐⭐ Average', '⭐ Needs Improvement'],
-          ),
-          FlowFormField(name: 'comments', label: 'Feedback / Suggestions', type: 'textarea', required: false),
-          FlowFormField(name: 'recommend', label: 'Would you recommend us?', type: 'dropdown', required: true, options: ['Definitely', 'Maybe', 'No']),
-        ]);
+  void _applyTemplateData(MetaFlowTemplate template, {bool notify = true}) {
+    _selectedTemplateId = template.id;
+    _selectedEndpointTab = template.endpointType;
+
+    // Auto-generate unique name if a flow with this name already exists
+    String computedTitle = template.flowTitle;
+    final existingNames = (widget.existingFlows ?? [])
+        .map((f) => f.name.toLowerCase().trim())
+        .toSet();
+    if (existingNames.contains(computedTitle.toLowerCase().trim())) {
+      int counter = 2;
+      while (existingNames.contains('$computedTitle ($counter)'.toLowerCase().trim())) {
+        counter++;
       }
+      computedTitle = '$computedTitle ($counter)';
+    }
+
+    _nameController.text = computedTitle;
+    _bodyController.text = template.bodyText;
+    _ctaController.text = template.ctaText;
+    _selectedCategory = template.category;
+    _fields.clear();
+    _fields.addAll(template.cloneFields());
+
+    if (notify && mounted) {
+      SnackbarUtils.showSuccess(context, 'Applied Meta template: ${template.title}');
+    }
+  }
+
+  void _selectMetaTemplate(MetaFlowTemplate template) {
+    setState(() {
+      _applyTemplateData(template, notify: true);
     });
   }
 
@@ -136,7 +122,9 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                     _fieldTypeChip(ctx, 'Paragraph / Notes', 'textarea', Icons.notes_rounded),
                     _fieldTypeChip(ctx, 'Dropdown Menu', 'dropdown', Icons.arrow_drop_down_circle_outlined),
                     _fieldTypeChip(ctx, 'Single Choice (Radio)', 'radio', Icons.radio_button_checked),
+                    _fieldTypeChip(ctx, 'Multiple Choice (Checkbox)', 'checkbox', Icons.check_box_outlined),
                     _fieldTypeChip(ctx, 'Date Picker', 'date', Icons.calendar_today_rounded),
+                    _fieldTypeChip(ctx, 'Terms & Opt-in Consent', 'opt_in', Icons.verified_user_outlined),
                   ],
                 ),
               ],
@@ -161,13 +149,125 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
             name: 'field_$count',
             label: label,
             type: type,
-            required: true,
-            options: (type == 'dropdown' || type == 'radio')
+            required: type != 'textarea',
+            options: (type == 'dropdown' || type == 'radio' || type == 'checkbox')
                 ? ['Option 1', 'Option 2', 'Option 3']
                 : [],
           ));
         });
       },
+    );
+  }
+
+  void _showTemplateInfoDialog(MetaFlowTemplate template) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE0F2FE),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(template.icon, color: const Color(0xFF0284C7), size: 20),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                template.title,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              template.description,
+              style: const TextStyle(fontSize: 13, color: Color(0xFF475569), height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        'Category: ',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          template.category,
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Pre-configured Questions (${template.fields.length}):',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  const SizedBox(height: 6),
+                  ...template.fields.map(
+                    (f) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.check_circle_outline, size: 14, color: Color(0xFF25D366)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              '${f.label} (${f.type})',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF334155)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _selectMetaTemplate(template);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryColor,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Apply Template'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -240,34 +340,78 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
   }
 
   Widget _buildDesktopLayout() {
+    final screenHeight = MediaQuery.of(context).size.height;
+    // Compute responsive preview dimensions so the entire phone frame always fits nicely
+    final previewHeight = (screenHeight - 130).clamp(480.0, 600.0);
+    final previewWidth = (previewHeight * 0.52).clamp(270.0, 310.0);
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Left Column: Builder Form
+        // Left Column: Builder Form & Meta Template Selector
         Expanded(
           flex: 6,
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
             child: _buildFormContent(),
           ),
         ),
         // Divider
         const VerticalDivider(width: 1, color: Color(0xFFE2E8F0)),
-        // Right Column: Mobile Screen Preview
+        // Right Column: Mobile Screen Preview (Sticky in Viewport)
         Expanded(
           flex: 4,
           child: Container(
+            height: screenHeight - 64, // Exact viewport height below AppBar
             color: const Color(0xFFF8FAFC),
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: FlowMobilePreview(
-                  title: _nameController.text.isEmpty ? 'WhatsApp Flow' : _nameController.text,
-                  description: _bodyController.text,
-                  fields: _fields,
-                  submitButtonText: 'Submit',
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.phone_android_rounded, size: 16, color: Color(0xFF64748B)),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'Live WhatsApp Preview',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF334155),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF25D366).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'Interactive',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF16A34A)),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+                Expanded(
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: FlowMobilePreview(
+                        width: previewWidth,
+                        height: previewHeight,
+                        title: _nameController.text.isEmpty ? 'WhatsApp Flow' : _nameController.text,
+                        description: _bodyController.text,
+                        fields: _fields,
+                        submitButtonText: _ctaController.text.isEmpty ? 'Submit' : _ctaController.text,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -303,7 +447,7 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                       title: _nameController.text.isEmpty ? 'WhatsApp Flow' : _nameController.text,
                       description: _bodyController.text,
                       fields: _fields,
-                      submitButtonText: 'Submit',
+                      submitButtonText: _ctaController.text.isEmpty ? 'Submit' : _ctaController.text,
                     ),
                   ),
                 ),
@@ -315,60 +459,39 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
     );
   }
 
+  InputDecoration _buildInputDecoration({
+    required String labelText,
+    String? hintText,
+  }) {
+    return InputDecoration(
+      labelText: labelText,
+      hintText: hintText,
+      filled: true,
+      fillColor: const Color(0xFFF8FAFC),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFF25D366), width: 1.5),
+      ),
+    );
+  }
+
   Widget _buildFormContent() {
     return Form(
       key: _formKey,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Quick Templates Banner
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [AppTheme.primaryColor.withValues(alpha: 0.08), Colors.blue.withValues(alpha: 0.04)],
-              ),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.auto_awesome, color: AppTheme.primaryColor, size: 20),
-                    SizedBox(width: 8),
-                    Text(
-                      'Quick Start Templates',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 8,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: () => _applyTemplate('lead'),
-                      icon: const Icon(Icons.person_add_alt_1_rounded, size: 16),
-                      label: const Text('Lead Generation'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => _applyTemplate('appointment'),
-                      icon: const Icon(Icons.event_available_rounded, size: 16),
-                      label: const Text('Book Appointment'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => _applyTemplate('feedback'),
-                      icon: const Icon(Icons.rate_review_outlined, size: 16),
-                      label: const Text('Customer Feedback'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
+          // Meta WhatsApp Flow Templates Section (Without endpoint / With endpoint)
+          _buildMetaTemplateSection(),
           const SizedBox(height: 24),
 
           // Flow Details Section
@@ -377,10 +500,9 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
           TextFormField(
             controller: _nameController,
             onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
+            decoration: _buildInputDecoration(
               labelText: 'Flow Title *',
               hintText: 'e.g. Consultation Booking Form',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             ),
             validator: (v) => (v == null || v.trim().isEmpty) ? 'Please enter a title' : null,
           ),
@@ -389,16 +511,17 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
             children: [
               Expanded(
                 child: DropdownButtonFormField<String>(
+                  key: ValueKey('category_dropdown_$_selectedCategory'),
                   initialValue: _selectedCategory,
-                  decoration: InputDecoration(
-                    labelText: 'Category',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
+                  decoration: _buildInputDecoration(labelText: 'Category'),
                   items: const [
                     DropdownMenuItem(value: 'LEAD_GENERATION', child: Text('Lead Generation')),
                     DropdownMenuItem(value: 'APPOINTMENT_BOOKING', child: Text('Appointment Booking')),
                     DropdownMenuItem(value: 'CUSTOMER_SUPPORT', child: Text('Customer Support')),
                     DropdownMenuItem(value: 'SURVEY', child: Text('Survey / Feedback')),
+                    DropdownMenuItem(value: 'SIGN_UP', child: Text('Sign Up / Registration')),
+                    DropdownMenuItem(value: 'SIGN_IN', child: Text('Sign In / Authentication')),
+                    DropdownMenuItem(value: 'CONTACT_US', child: Text('Contact Us')),
                     DropdownMenuItem(value: 'OTHER', child: Text('Other')),
                   ],
                   onChanged: (val) {
@@ -410,10 +533,10 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
               Expanded(
                 child: TextFormField(
                   controller: _ctaController,
-                  decoration: InputDecoration(
+                  onChanged: (_) => setState(() {}),
+                  decoration: _buildInputDecoration(
                     labelText: 'Button Label (CTA)',
                     hintText: 'e.g. Open Form / Book Now',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                 ),
               ),
@@ -424,10 +547,9 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
             controller: _bodyController,
             maxLines: 2,
             onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
+            decoration: _buildInputDecoration(
               labelText: 'Introduction / Instruction Text',
               hintText: 'e.g. Please fill out your details below:',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
             ),
           ),
           const SizedBox(height: 28),
@@ -436,7 +558,16 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Form Questions & Fields', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Form Questions & Fields', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  Text(
+                    '${_fields.length} questions in this flow (drag handle to reorder)',
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
               ElevatedButton.icon(
                 onPressed: _addNewField,
                 icon: const Icon(Icons.add, size: 18),
@@ -453,7 +584,9 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
           ),
           const SizedBox(height: 12),
 
+          // Reorderable list with default drag handles disabled (fixing duplicate handles on web/desktop)
           ReorderableListView.builder(
+            buildDefaultDragHandles: false,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: _fields.length,
@@ -474,39 +607,304 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
     );
   }
 
+  /// Meta Official Flow Templates Selector (Without endpoint / With endpoint)
+  Widget _buildMetaTemplateSection() {
+    final templates = _selectedEndpointTab == MetaFlowEndpointType.withoutEndpoint
+        ? kMetaTemplatesWithoutEndpoint
+        : kMetaTemplatesWithEndpoint;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Section Title
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+            child: Row(
+              children: [
+                const Text(
+                  'Template',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE0F2FE),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text(
+                    'Meta WhatsApp Flows',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0284C7)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Tabs: [ Without endpoint ] | [ With endpoint ]
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                _buildEndpointTabButton(
+                  title: 'Without endpoint',
+                  type: MetaFlowEndpointType.withoutEndpoint,
+                ),
+                const SizedBox(width: 8),
+                _buildEndpointTabButton(
+                  title: 'With endpoint',
+                  type: MetaFlowEndpointType.withEndpoint,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Divider(height: 1, color: Color(0xFFE2E8F0)),
+
+          // Radio Selection List for Templates
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: templates.length,
+            separatorBuilder: (_, __) => const Divider(height: 1, indent: 48, color: Color(0xFFF1F5F9)),
+            itemBuilder: (ctx, index) {
+              final template = templates[index];
+              final isSelected = _selectedTemplateId == template.id;
+              return _buildTemplateListItem(template, isSelected);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEndpointTabButton({
+    required String title,
+    required MetaFlowEndpointType type,
+  }) {
+    final isSelected = _selectedEndpointTab == type;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _selectedEndpointTab = type;
+        });
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFE0F2FE) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? const Color(0xFFBAE6FD) : Colors.transparent,
+          ),
+        ),
+        child: Text(
+          title,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+            color: isSelected ? const Color(0xFF0284C7) : const Color(0xFF334155),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTemplateListItem(MetaFlowTemplate template, bool isSelected) {
+    return InkWell(
+      onTap: () => _selectMetaTemplate(template),
+      child: Container(
+        color: isSelected ? const Color(0xFFF0FDF4) : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Circular Radio Button (Styled like Meta's screenshot)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, right: 14),
+              child: Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: isSelected ? const Color(0xFF0284C7) : const Color(0xFF94A3B8),
+                    width: isSelected ? 6 : 1.5,
+                  ),
+                  color: Colors.white,
+                ),
+              ),
+            ),
+
+            // Content
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          template.title,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                            color: isSelected ? const Color(0xFF0F172A) : const Color(0xFF334155),
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '${template.fields.length} fields',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  if (template.hasEndpointInfo) ...[
+                    Row(
+                      children: [
+                        Text(
+                          'Endpoint template available. ',
+                          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                        ),
+                        InkWell(
+                          onTap: () => _showTemplateInfoDialog(template),
+                          child: const Text(
+                            'More info',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF0284C7),
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.underline,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                  ],
+                  Text(
+                    template.description,
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _getFieldTypeColor(String type) {
+    switch (type.toLowerCase()) {
+      case 'email':
+        return const Color(0xFF0891B2);
+      case 'phone':
+        return const Color(0xFF0284C7);
+      case 'textarea':
+        return const Color(0xFFD97706);
+      case 'dropdown':
+        return const Color(0xFF9333EA);
+      case 'radio':
+        return const Color(0xFF059669);
+      case 'checkbox':
+        return const Color(0xFF0D9488);
+      case 'date':
+        return const Color(0xFFE11D48);
+      case 'opt_in':
+        return const Color(0xFF7C3AED);
+      case 'text':
+      default:
+        return const Color(0xFF2563EB);
+    }
+  }
+
   Widget _buildFieldEditorCard(FlowFormField field, int index) {
+    final typeColor = _getFieldTypeColor(field.type);
+
     return Card(
-      key: ValueKey(field.name + index.toString()),
-      margin: const EdgeInsets.only(bottom: 12),
+      key: ValueKey('field_card_${field.name}_$index'),
+      margin: const EdgeInsets.only(bottom: 14),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: const BorderSide(color: Color(0xFFE2E8F0)),
       ),
       elevation: 0,
+      color: Colors.white,
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Card Top Row: Drag listener, Badge, Index, Required toggle, Delete button
             Row(
               children: [
-                const Icon(Icons.drag_handle, color: Colors.grey),
-                const SizedBox(width: 8),
+                ReorderableDragStartListener(
+                  index: index,
+                  child: Tooltip(
+                    message: 'Drag to reorder question',
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.grab,
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(Icons.drag_indicator_rounded, size: 18, color: Color(0xFF64748B)),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFEFF6FF),
+                    color: typeColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
                     field.type.toUpperCase(),
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.blue),
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: typeColor),
                   ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '#${index + 1}',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8)),
                 ),
                 const Spacer(),
                 Row(
                   children: [
-                    const Text('Required', style: TextStyle(fontSize: 12)),
+                    const Text('Required', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF475569))),
+                    const SizedBox(width: 4),
                     Switch(
                       value: field.required,
                       activeThumbColor: AppTheme.primaryColor,
@@ -514,8 +912,10 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                         setState(() => field.required = val);
                       },
                     ),
+                    const SizedBox(width: 4),
                     IconButton(
-                      icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                      tooltip: 'Delete field',
+                      icon: const Icon(Icons.delete_outline, color: Color(0xFFEF4444), size: 20),
                       onPressed: () {
                         setState(() => _fields.removeAt(index));
                       },
@@ -524,26 +924,47 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
+
+            // Question / Field Label
             TextFormField(
+              key: ValueKey('field_label_${field.name}_$index'),
               initialValue: field.label,
               onChanged: (val) {
                 field.label = val;
                 setState(() {});
               },
-              decoration: InputDecoration(
+              decoration: _buildInputDecoration(
                 labelText: 'Question / Field Label',
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                hintText: 'e.g. Full Name, Email, Preferred Date...',
               ),
             ),
-            if (field.type == 'dropdown' || field.type == 'radio') ...[
-              const SizedBox(height: 12),
-              const Text('Options (one per line):', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 4),
+
+            // Options Input for dropdown / radio / checkbox
+            if (field.type == 'dropdown' || field.type == 'radio' || field.type == 'checkbox') ...[
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  const Text('Answer Choices (one per line):', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF334155))),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '${field.options.length} options',
+                      style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
               TextFormField(
+                key: ValueKey('field_options_${field.name}_$index'),
                 initialValue: field.options.join('\n'),
-                maxLines: 3,
+                maxLines: 4,
                 onChanged: (val) {
                   field.options = val
                       .split('\n')
@@ -552,10 +973,9 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                       .toList();
                   setState(() {});
                 },
-                decoration: InputDecoration(
+                decoration: _buildInputDecoration(
+                  labelText: 'Choices',
                   hintText: 'Option 1\nOption 2\nOption 3',
-                  contentPadding: const EdgeInsets.all(12),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                 ),
               ),
             ],

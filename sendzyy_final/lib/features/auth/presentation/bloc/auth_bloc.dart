@@ -239,27 +239,30 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           return;
         }
         if (e.response?.statusCode == 403) {
-          final errCode = e.response?.data?['error'];
-          if (errCode == 'subscription_expired') {
-            emit(AuthSubscriptionExpired(
-              e.response?.data?['message'] ??
-                  'Your subscription has expired. Please renew your plan.',
-            ));
-            return;
-          }
-          if (errCode == 'account_inactive') {
-            emit(AuthAccountInactive(
-              e.response?.data?['message'] ??
-                  'Your account is inactivre. Please contact support.',
-            ));
-            return;
-          } 
-          if (errCode == 'no_subscription') {
-            emit(AuthFailure(
-              e.response?.data?['message'] ??
-                  'No active subscription. Please complete your plan purchase.',
-            ));
-            return;
+          final data = e.response?.data;
+          if (data is Map) {
+            final errCode = data['error'];
+            if (errCode == 'subscription_expired') {
+              emit(AuthSubscriptionExpired(
+                data['message']?.toString() ??
+                    'Your subscription has expired. Please renew your plan.',
+              ));
+              return;
+            }
+            if (errCode == 'account_inactive') {
+              emit(AuthAccountInactive(
+                data['message']?.toString() ??
+                    'Your account is inactive. Please contact support.',
+              ));
+              return;
+            } 
+            if (errCode == 'no_subscription') {
+              emit(AuthFailure(
+                data['message']?.toString() ??
+                    'No active subscription. Please complete your plan purchase.',
+              ));
+              return;
+            }
           }
         }
         // Extract friendly error from response if available
@@ -365,28 +368,34 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       try {
         final response = await _dio.get('/me');
         if (response.statusCode == 200) {
-          final sub = response.data['subscription'];
-          // Support both expiresAt (functions server) and expiryDate (webhook server)
-          final expiryRaw = sub?['expiresAt'] ?? sub?['expiryDate'];
-          if (expiryRaw != null) {
-            final expiresAt = DateTime.tryParse(expiryRaw.toString());
-            if (expiresAt != null && DateTime.now().isAfter(expiresAt)) {
-              await _clearSession();
-              emit(AuthSubscriptionExpired(
-                'Your subscription expired on ${_formatDate(expiresAt)}. Please renew to continue.',
-              ));
+          final data = response.data;
+          if (data is Map) {
+            final sub = data['subscription'];
+            // Support both expiresAt (functions server) and expiryDate (webhook server)
+            final expiryRaw = sub?['expiresAt'] ?? sub?['expiryDate'];
+            if (expiryRaw != null) {
+              final expiresAt = DateTime.tryParse(expiryRaw.toString());
+              if (expiresAt != null && DateTime.now().isAfter(expiresAt)) {
+                await _clearSession();
+                emit(AuthSubscriptionExpired(
+                  'Your subscription expired on ${_formatDate(expiresAt)}. Please renew to continue.',
+                ));
+              }
             }
           }
         }
       } on DioException catch (e) {
-        if (e.response?.statusCode == 403) {
-          final errCode = e.response?.data?['error'];
-          if (errCode == 'subscription_expired') {
+        final data = e.response?.data;
+        if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
+          if (data is Map && data['error'] == 'subscription_expired') {
             await _clearSession();
             emit(AuthSubscriptionExpired(
-              e.response?.data?['message'] ?? 'Your subscription has expired.',
+              data['message']?.toString() ?? 'Your subscription has expired.',
             ));
+            return;
           }
+          await _clearSession();
+          emit(AuthUnauthenticated());
         }
       } catch (_) {}
     });

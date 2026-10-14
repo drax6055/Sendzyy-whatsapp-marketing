@@ -112,6 +112,10 @@ const tenantSchema = new mongoose.Schema({
         tokenType: { type: String, default: 'user' }, // 'user' | 'system_user'
         tokenStatus: { type: String, default: 'active', enum: ['active', 'expiring_soon', 'expired', 'unknown'] },
         reportingTimezone: { type: String, default: 'Asia/Kolkata' }, // WABA timezone for daily analytics reconciliation
+        // ── Meta Commerce Catalog settings ────────────────────────────────────
+        catalogId: { type: String, default: null },
+        catalogs: { type: Array, default: [] },
+        commerceSettings: { type: mongoose.Schema.Types.Mixed, default: {} },
     },
     webhookSecret: { type: String, default: '' },  // AES-256 encrypted hex string
     openaiApiKey: { type: String, default: '' },
@@ -1184,9 +1188,9 @@ async function sendInvoiceEmail(email, businessName, paymentId, pkg, amount) {
 const authenticate = (req, res, next) => {
     // Accept token from Authorization header OR ?token= query param (for browser window.open requests)
     const token = req.headers['authorization']?.split(' ')[1] || req.query.token;
-    if (!token) return res.sendStatus(401);
+    if (!token) return res.status(401).json({ error: 'unauthorized', message: 'No authentication token provided' });
     jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403);
+        if (err) return res.status(401).json({ error: 'token_expired', message: 'Session expired or invalid token' });
         if (!user.tenantId) return res.status(401).json({ error: 'Invalid session' });
         req.user = user;
         next();
@@ -1601,7 +1605,7 @@ app.post('/login', async (req, res) => {
         const token = jwt.sign(
             { tenantId: tenant._id.toString(), email: tenant.email },
             jwtSecret,
-            { expiresIn: '24h' }
+            { expiresIn: '30d' }
         );
 
         res.json({
@@ -6468,6 +6472,20 @@ async function handleLiveChat(tenantId, message, profileName, from) {
                 title: interactive.list_reply?.title || '',
                 id: interactive.list_reply?.id || '',
             };
+        } else if (interactive.type === 'nfm_reply') {
+            const nfm = interactive.nfm_reply || {};
+            let resp = {};
+            try {
+                resp = typeof nfm.response_json === 'string' ? JSON.parse(nfm.response_json) : (nfm.response_json || {});
+            } catch (_) {
+                resp = { raw: nfm.response_json };
+            }
+            interactivePayload = {
+                type: 'nfm_reply',
+                body: nfm.body || 'Form Submitted',
+                responseData: resp,
+            };
+            msgText = `📋 Form Response: ${nfm.body || 'Submitted'}`;
         }
     } else if (msgType === 'button') {
         msgText = message.button?.text || message.button?.payload || '⚠️ Unsupported message type';
@@ -6690,52 +6708,187 @@ webhookIngestionService.setHandler(async (body, ctx) => {
                 if (message.type === 'order') {
                     try {
                         const order = message.order || {};
-                        const catalogId = order.catalog_id || '';
+                        const catalogId = order.catalog_id || tenant?.whatsappConfig?.catalogId || '';
                         const productItems = (order.product_items || []).map(item => ({
                             productRetailerId: item.product_retailer_id,
-                            quantity: item.quantity || 1,
-                            itemPrice: (item.item_price || 0),
+                            quantity: Number(item.quantity) || 1,
+                            itemPrice: Number(item.item_price) || 0,
                             currency: item.currency || 'INR',
                         }));
 
-                        // Resolve product names from DB
-                        for (const item of productItems) {
-                            const prod = await CatalogProduct.findOne({ tenantId, retailerId: item.productRetailerId }).lean();
-                            if (prod) {
-                                item.productName = prod.name || '';
-                                item.imageUrl = prod.imageUrl || '';
-                            }
-                        }
-
                         const totalAmount = productItems.reduce((sum, i) => sum + (i.itemPrice * i.quantity), 0);
-                        const newOrder = await CatalogOrder.create({
+                        const newOrder = await WhatsAppOrder.create({
                             tenantId,
+                            contactId: from,
+                            contactName: profileName || '',
                             catalogId,
-                            customerPhone: from,
-                            customerName: profileName || '',
-                            productItems,
-                            orderText: order.text || '',
+                            wamid: message.id || '',
+                            customerNote: order.text || '',
+                            items: productItems,
                             totalAmount,
                             currency: productItems[0]?.currency || 'INR',
-                            status: 'new',
+                            status: 'received',
+                            paymentStatus: 'pending',
+                            rawOrderPayload: order,
                         });
 
                         // Emit real-time notification to tenant's socket room
                         io.to(tenantId).emit('catalog_order_received', {
                             orderId: newOrder._id.toString(),
+                            contactId: from,
+                            contactName: profileName,
                             customerPhone: from,
                             customerName: profileName,
                             totalAmount,
                             currency: newOrder.currency,
                             productCount: productItems.length,
                             receivedAt: newOrder.createdAt,
+                            status: newOrder.status,
                         });
+
+                        // Also save incoming order message to chat history so it displays in live chat
+                        saveChatbotMessageToDB({
+                            tenantId,
+                            contactId: from,
+                            text: `🛍️ New Catalog Order (${productItems.length} items, Total: ${newOrder.currency} ${totalAmount.toFixed(2)})${order.text ? `\nNote: ${order.text}` : ''}`,
+                            isMe: false,
+                            messageType: 'order',
+                            source: 'catalog_order',
+                            wamid: message.id,
+                            previewText: `🛍️ Order: ${newOrder.currency} ${totalAmount.toFixed(2)}`,
+                            name: profileName,
+                        }).catch(e => console.warn('[Catalog] Error logging order to chat:', e.message));
 
                         console.log(`[Catalog] ✅ Order from ${from} saved for tenant ${tenantId}, total: ${totalAmount}`);
                     } catch (orderErr) {
                         console.error('[Catalog] ❌ Order processing error:', orderErr.message);
                     }
                     return; // Order handled — do not pass to chatbot engine
+                }
+                // ─────────────────────────────────────────────────────────────────────────
+
+                // ── WhatsApp Flow: handle completed Flow (nfm_reply) submissions from customers ──
+                if (message.type === 'interactive' && message.interactive?.type === 'nfm_reply') {
+                    try {
+                        const nfmReply = message.interactive.nfm_reply || {};
+                        let responseData = {};
+                        if (typeof nfmReply.response_json === 'string') {
+                            try {
+                                responseData = JSON.parse(nfmReply.response_json);
+                            } catch (_) {
+                                responseData = { raw: nfmReply.response_json };
+                            }
+                        } else if (nfmReply.response_json) {
+                            responseData = nfmReply.response_json;
+                        }
+
+                        const flowToken = responseData.flow_token || nfmReply.flow_token || '';
+
+                        // Identify which Flow was submitted using the context message WAMID or flowToken
+                        const contextWamid = message.context?.id || '';
+                        let flowDoc = null;
+                        if (contextWamid) {
+                            const sentMsg = await Message.findOne({ tenantId, wamid: contextWamid }).lean();
+                            if (sentMsg?.interactivePayload?.flowId) {
+                                flowDoc = await WhatsAppFlow.findOne({ tenantId, flowId: sentMsg.interactivePayload.flowId }).lean();
+                            }
+                        }
+                        if (!flowDoc && flowToken) {
+                            const sentMsg = await Message.findOne({ tenantId, 'interactivePayload.flowToken': flowToken }).lean();
+                            if (sentMsg?.interactivePayload?.flowId) {
+                                flowDoc = await WhatsAppFlow.findOne({ tenantId, flowId: sentMsg.interactivePayload.flowId }).lean();
+                            }
+                        }
+                        if (!flowDoc) {
+                            flowDoc = await WhatsAppFlow.findOne({ tenantId }).sort({ updatedAt: -1 }).lean();
+                        }
+
+                        const flowId = flowDoc?.flowId || 'unknown_flow';
+                        const flowName = flowDoc?.name || 'WhatsApp Flow';
+
+                        // Save or upsert the flow submission
+                        const flowSubmission = await WhatsAppFlowResponse.findOneAndUpdate(
+                            { tenantId, wamid: message.id },
+                            {
+                                $setOnInsert: {
+                                    tenantId,
+                                    flowId,
+                                    flowName,
+                                    contactId: from,
+                                    contactName: profileName || '',
+                                    wamid: message.id || '',
+                                    flowToken,
+                                    responseData,
+                                    source: 'chat'
+                                }
+                            },
+                            { upsert: true, new: true }
+                        );
+
+                        // Format summary text for live chat and notifications (exclude internal flow_token)
+                        const fieldsSummary = Object.entries(responseData)
+                            .filter(([k]) => k !== 'flow_token')
+                            .map(([k, v]) => `• ${k.replace(/_/g, ' ')}: ${Array.isArray(v) ? v.join(', ') : v}`)
+                            .join('\n');
+
+                        const chatText = `📋 Flow Response Received: *${flowName}*\n${fieldsSummary}`;
+
+                        // Save or update incoming flow response in chat history
+                        const existingChatMsg = await Message.findOne({ tenantId, wamid: message.id });
+                        if (existingChatMsg) {
+                            await Message.updateOne(
+                                { _id: existingChatMsg._id },
+                                {
+                                    $set: {
+                                        text: chatText,
+                                        messageType: 'interactive',
+                                        source: 'flow_response',
+                                        interactivePayload: {
+                                            type: 'nfm_reply',
+                                            flowId,
+                                            flowName,
+                                            responseData
+                                        },
+                                        previewText: `📋 Form: ${flowName}`
+                                    }
+                                }
+                            );
+                        } else {
+                            await saveChatbotMessageToDB({
+                                tenantId,
+                                contactId: from,
+                                text: chatText,
+                                isMe: false,
+                                messageType: 'interactive',
+                                source: 'flow_response',
+                                wamid: message.id,
+                                interactivePayload: {
+                                    type: 'nfm_reply',
+                                    flowId,
+                                    flowName,
+                                    responseData
+                                },
+                                previewText: `📋 Form: ${flowName}`,
+                                name: profileName
+                            }).catch(e => console.warn('[Flow] Error logging submission to chat:', e.message));
+                        }
+
+                        // Real-time Socket.IO broadcast to web app
+                        io.to(tenantId).emit('flow_response_received', {
+                            id: flowSubmission._id.toString(),
+                            flowId,
+                            flowName,
+                            contactId: from,
+                            contactName: profileName,
+                            responseData,
+                            createdAt: flowSubmission.createdAt
+                        });
+
+                        console.log(`[Flow] ✅ Flow "${flowName}" submission from ${from} saved for tenant ${tenantId}`);
+                    } catch (flowErr) {
+                        console.error('[Flow] ❌ Error processing flow nfm_reply:', flowErr.message);
+                    }
+                    return; // Flow submission handled — do not pass to generic chatbot engine
                 }
                 // ─────────────────────────────────────────────────────────────────────────
 
@@ -6959,6 +7112,8 @@ app.get('/api/catalog/orders', authenticate, catalogController.getOrders);
 app.patch('/api/catalog/orders/:id/status', authenticate, catalogController.updateOrderStatus);
 app.post('/api/catalog/orders/:id/send-payment-link', authenticate, catalogController.sendPaymentLink);
 app.post('/api/catalog/orders/:id/mark-paid', authenticate, catalogController.markOrderPaid);
+app.post('/api/catalog/orders/:id/verify-payment', authenticate, catalogController.verifyOrderPayment);
+app.get('/catalog/order-success', catalogController.handleOrderSuccessCallback);
 app.post('/api/catalog/payment-webhook', catalogController.handlePaymentWebhook);
 
 // ── Meta Ads Management Module ──────────────────────────────────────────────

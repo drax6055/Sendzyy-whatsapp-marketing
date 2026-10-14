@@ -277,7 +277,8 @@ class _ConnectedCatalogBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final activeCat = state.activeCatalog;
-    final hasCatalogs = state.catalogs.isNotEmpty;
+    final hasCatalogs = state.catalogs.isNotEmpty ||
+        (state.activeCatalogId != null && state.activeCatalogId!.trim().isNotEmpty);
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -301,11 +302,15 @@ class _ConnectedCatalogBanner extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                  color: (hasCatalogs ? const Color(0xFF10B981) : Colors.amber.shade700)
+                      .withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.storefront_rounded,
-                    color: Color(0xFF10B981), size: 24),
+                child: Icon(
+                  hasCatalogs ? Icons.storefront_rounded : Icons.storefront_outlined,
+                  color: hasCatalogs ? const Color(0xFF10B981) : Colors.amber.shade700,
+                  size: 24,
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -319,7 +324,9 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                             activeCat?.name ??
                                 (hasCatalogs
                                     ? 'Connected Meta Catalog'
-                                    : 'No Meta Catalog Connected'),
+                                    : (state.isSyncingCatalogs
+                                        ? 'Connecting Meta Catalog...'
+                                        : 'No Meta Catalog Connected')),
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
@@ -339,7 +346,9 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            hasCatalogs ? 'Connected' : 'Unlinked',
+                            hasCatalogs
+                                ? 'Connected'
+                                : (state.isSyncingCatalogs ? 'Connecting...' : 'Unlinked'),
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
@@ -354,8 +363,10 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       hasCatalogs
-                          ? 'Catalog ID: ${state.activeCatalogId ?? "N/A"} • ${activeCat?.vertical ?? "commerce"}'
-                          : 'Connect your catalog via Meta Commerce Manager or click Sync below',
+                          ? 'Catalog ID: ${state.activeCatalogId ?? activeCat?.catalogId ?? "Connected"} • ${activeCat?.vertical ?? "commerce"}'
+                          : (state.isSyncingCatalogs
+                              ? 'Auto-connecting your catalog with Meta Commerce Manager...'
+                              : 'Connect your catalog via Meta Commerce Manager or click Sync below'),
                       style: const TextStyle(
                           fontSize: 12, color: Color(0xFF6B7280)),
                       overflow: TextOverflow.ellipsis,
@@ -406,7 +417,9 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                 Expanded(
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
-                      value: state.activeCatalogId,
+                      value: state.catalogs.any((c) => c.catalogId == state.activeCatalogId)
+                          ? state.activeCatalogId
+                          : (state.catalogs.isNotEmpty ? state.catalogs.first.catalogId : null),
                       isDense: true,
                       borderRadius: BorderRadius.circular(12),
                       items: state.catalogs.map((c) {
@@ -955,6 +968,22 @@ class _OrderCard extends StatelessWidget {
                     },
                   ),
                 ),
+                if (order.paymentLinkUrl != null && order.paymentLinkUrl!.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF2563EB),
+                      side: const BorderSide(color: Color(0xFF3B82F6)),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    icon: const Icon(Icons.sync_rounded, size: 14),
+                    label: const Text('Check Payment', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      context.read<CatalogBloc>().add(LoadOrders());
+                    },
+                  ),
+                ],
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(

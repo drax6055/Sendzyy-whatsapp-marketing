@@ -85,12 +85,38 @@ const CatalogService = {
         }
 
         const currentActiveId = tenant.whatsappConfig.catalogId;
+        const currentCatalogs = Array.isArray(tenant.whatsappConfig.catalogs) ? tenant.whatsappConfig.catalogs : [];
         const distinctCatalogs = Array.from(catalogMap.values());
 
-        // Preserve current active catalog if still valid, otherwise default to first
+        // If Meta returned 0 catalogs (due to transient network error, rate limit, or permissions),
+        // NEVER disconnect an existing catalog! Preserve previous catalog configuration.
+        if (distinctCatalogs.length === 0 && (currentActiveId || currentCatalogs.length > 0)) {
+            console.log('[CatalogService] Preserving existing catalog configuration to prevent disconnection.');
+            return {
+                success: true,
+                catalogId: currentActiveId,
+                catalogs: currentCatalogs,
+                count: currentCatalogs.length,
+            };
+        }
+
+        // If a catalog was already active but not returned in the raw query (e.g. linked via partner),
+        // preserve it in the catalog list so it doesn't get unlinked
+        if (currentActiveId && !distinctCatalogs.some(c => c.catalogId === currentActiveId)) {
+            const existingEntry = currentCatalogs.find(c => c.catalogId === currentActiveId);
+            distinctCatalogs.unshift(existingEntry || {
+                catalogId: currentActiveId,
+                name: `Connected Catalog (${currentActiveId})`,
+                vertical: 'commerce',
+                productCount: 0,
+                discoveredAt: new Date(),
+            });
+        }
+
+        // Preserve current active catalog if valid, otherwise default to first
         let defaultActiveId = currentActiveId;
-        if (!defaultActiveId || !catalogMap.has(defaultActiveId)) {
-            defaultActiveId = distinctCatalogs[0]?.catalogId || null;
+        if (!defaultActiveId || !distinctCatalogs.some(c => c.catalogId === defaultActiveId)) {
+            defaultActiveId = distinctCatalogs[0]?.catalogId || currentActiveId || null;
         }
 
         const updatedCatalogs = distinctCatalogs.map(c => ({
@@ -98,9 +124,11 @@ const CatalogService = {
             isDefault: c.catalogId === defaultActiveId,
         }));
 
-        tenant.whatsappConfig.catalogs = updatedCatalogs;
-        tenant.whatsappConfig.catalogId = defaultActiveId;
-        await tenant.save();
+        if (updatedCatalogs.length > 0 || defaultActiveId) {
+            tenant.whatsappConfig.catalogs = updatedCatalogs;
+            tenant.whatsappConfig.catalogId = defaultActiveId;
+            await tenant.save();
+        }
 
         return {
             success: true,
@@ -214,7 +242,17 @@ const CatalogService = {
      */
     async getProducts(tenant, { catalogId, limit = 50, after, searchQuery } = {}) {
         const { accessToken, activeCatalogId } = this.ensureConfig(tenant);
-        const targetCatalogId = catalogId || activeCatalogId;
+        let targetCatalogId = catalogId || activeCatalogId;
+
+        // Auto-discover if targetCatalogId is not set
+        if (!targetCatalogId) {
+            try {
+                const syncRes = await this.syncCatalogs(tenant);
+                targetCatalogId = syncRes.catalogId || (syncRes.catalogs && syncRes.catalogs[0]?.catalogId);
+            } catch (autoErr) {
+                console.warn('[CatalogService] Auto-sync in getProducts failed:', autoErr.message);
+            }
+        }
 
         if (!targetCatalogId) {
             return {
@@ -689,6 +727,13 @@ const CatalogService = {
         const amountInPaise = Math.round(order.totalAmount * 100);
         const currency = order.currency || 'INR';
 
+        const cleanName = (order.contactName || 'Customer')
+            .replace(/[^\w\s.-]/gi, '')
+            .trim() || 'Customer';
+
+        const cleanPhone = String(order.contactId || '').replace(/[^0-9]/g, '');
+        const formattedContact = cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`;
+
         // 1. Generate Razorpay Payment Link
         const paymentLink = await razorpayInstance.paymentLink.create({
             amount: amountInPaise,
@@ -696,8 +741,8 @@ const CatalogService = {
             accept_partial: false,
             description: `Payment for Order #${orderCode}`,
             customer: {
-                name: order.contactName || 'Valued Customer',
-                contact: order.contactId.startsWith('+') ? order.contactId : `+${order.contactId}`,
+                name: cleanName,
+                contact: formattedContact,
             },
             notify: {
                 sms: false,
@@ -706,10 +751,10 @@ const CatalogService = {
             reminder_enable: false,
             notes: {
                 orderId: order._id.toString(),
-                tenantId: order.tenantId.toString(),
-                contactId: order.contactId,
+                tenantId: order.tenantId ? order.tenantId.toString() : '',
+                contactId: String(order.contactId || ''),
             },
-            callback_url: `${process.env.APP_URL || 'https://sendzyy.com'}/catalog/order-success?orderId=${order._id}`,
+            callback_url: `${process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`}/catalog/order-success?orderId=${order._id}`,
             callback_method: 'get',
         });
 
@@ -728,7 +773,7 @@ const CatalogService = {
         const ctaPayload = {
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: String(order.contactId).replace(/[^0-9]/g, ''),
+            to: cleanPhone,
             type: 'interactive',
             interactive: {
                 type: 'cta_url',
@@ -754,6 +799,7 @@ const CatalogService = {
 
         const previewText = `💳 Payment Link (${currency} ${order.totalAmount.toFixed(2)}): ${paymentLink.short_url}`;
 
+        let deliveryWarning = null;
         try {
             await this.dispatchInteractiveMessage(dependencies, tenant, ctaPayload, {
                 previewText,
@@ -769,32 +815,37 @@ const CatalogService = {
                 }
             });
         } catch (metaErr) {
-            console.warn('[CatalogService] cta_url interactive send failed, falling back to text with link:', metaErr.message);
+            console.warn('[CatalogService] cta_url interactive send failed, falling back to text with link:', metaErr.response?.data || metaErr.message);
             // Fallback to text message with link
-            await axios.post(
-                `${GRAPH_BASE_URL}/${phoneNumberId}/messages`,
-                {
-                    messaging_product: 'whatsapp',
-                    to: String(order.contactId).replace(/[^0-9]/g, ''),
-                    type: 'text',
-                    text: {
-                        preview_url: true,
-                        body: `${bodyText}\n\n👉 *Pay Now:* ${paymentLink.short_url}`
-                    }
-                },
-                { headers: { Authorization: `Bearer ${accessToken}` } }
-            );
+            try {
+                await axios.post(
+                    `${GRAPH_BASE_URL}/${phoneNumberId}/messages`,
+                    {
+                        messaging_product: 'whatsapp',
+                        to: cleanPhone,
+                        type: 'text',
+                        text: {
+                            preview_url: true,
+                            body: `${bodyText}\n\n👉 *Pay Now:* ${paymentLink.short_url}`
+                        }
+                    },
+                    { headers: { Authorization: `Bearer ${accessToken}` } }
+                );
 
-            if (Message) {
-                await Message.create({
-                    tenantId: tenant._id.toString(),
-                    contactId: order.contactId,
-                    text: `${bodyText}\n\n👉 Pay Now: ${paymentLink.short_url}`,
-                    isMe: true,
-                    time: new Date().toISOString(),
-                    messageType: 'text',
-                    status: 'sent',
-                }).catch(() => {});
+                if (Message) {
+                    await Message.create({
+                        tenantId: tenant._id.toString(),
+                        contactId: order.contactId,
+                        text: `${bodyText}\n\n👉 Pay Now: ${paymentLink.short_url}`,
+                        isMe: true,
+                        time: new Date().toISOString(),
+                        messageType: 'text',
+                        status: 'sent',
+                    }).catch(() => {});
+                }
+            } catch (fallbackErr) {
+                console.warn('[CatalogService] WhatsApp message fallback also failed (e.g. 24h window closed):', fallbackErr.response?.data || fallbackErr.message);
+                deliveryWarning = fallbackErr.response?.data?.error?.message || fallbackErr.message;
             }
         }
 

@@ -21,6 +21,9 @@ class SocketService {
   final _instagramStatusController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get instagramStatusStream => _instagramStatusController.stream;
 
+  final _catalogOrderController = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get catalogOrderStream => _catalogOrderController.stream;
+
   void connect(String tenantId, String token, String serverUrl) {
     _socket = IO.io(serverUrl, {
       'transports': ['websocket'],
@@ -65,6 +68,18 @@ class SocketService {
     _socket!.on('instagram:message_status', (data) {
       if (data is Map) {
         _instagramStatusController.add(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('catalog_order_received', (data) {
+      if (data is Map) {
+        _catalogOrderController.add(Map<String, dynamic>.from(data));
+      }
+    });
+
+    _socket!.on('catalog_order_paid', (data) {
+      if (data is Map) {
+        _catalogOrderController.add(Map<String, dynamic>.from(data));
       }
     });
   }
