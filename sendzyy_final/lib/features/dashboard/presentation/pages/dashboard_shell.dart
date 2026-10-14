@@ -1543,16 +1543,15 @@ class _DashboardShellState extends State<DashboardShell> {
                                     backgroundImage: _metaProfileImageUrl != null
                                         ? NetworkImage(_metaProfileImageUrl!)
                                         : null,
-                                    child: _metaProfileImageUrl == null
-                                        ? Text(
-                                            firstLetter,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 16,
-                                            ),
-                                          )
-                                        : null,
+                                    onBackgroundImageError: _metaProfileImageUrl != null ? (_, __) {} : null,
+                                    child: Text(
+                                      firstLetter,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    ),
                                   ),
                                   const SizedBox(width: 12),
                                   Expanded(
@@ -1656,16 +1655,15 @@ class _DashboardShellState extends State<DashboardShell> {
                                 backgroundImage: _metaProfileImageUrl != null
                                     ? NetworkImage(_metaProfileImageUrl!)
                                     : null,
-                                child: _metaProfileImageUrl == null
-                                    ? Text(
-                                        firstLetter,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 13,
-                                        ),
-                                      )
-                                    : null,
+                                onBackgroundImageError: _metaProfileImageUrl != null ? (_, __) {} : null,
+                                child: Text(
+                                  firstLetter,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                  ),
+                                ),
                               )
                             : Row(
                                 children: [
@@ -1674,15 +1672,14 @@ class _DashboardShellState extends State<DashboardShell> {
                                     backgroundImage: _metaProfileImageUrl != null
                                         ? NetworkImage(_metaProfileImageUrl!)
                                         : null,
-                                    child: _metaProfileImageUrl == null
-                                        ? Text(
-                                            firstLetter,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          )
-                                        : null,
+                                    onBackgroundImageError: _metaProfileImageUrl != null ? (_, __) {} : null,
+                                    child: Text(
+                                      firstLetter,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                   ),
                                   const SizedBox(width: 12),
                                   Text(

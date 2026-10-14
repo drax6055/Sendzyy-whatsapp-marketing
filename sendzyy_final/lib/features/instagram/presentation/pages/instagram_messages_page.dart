@@ -446,18 +446,17 @@ class _InstagramMessagesViewState extends State<_InstagramMessagesView> {
                     radius: 22,
                     backgroundColor: Colors.white,
                     backgroundImage: conv.profilePic.isNotEmpty ? NetworkImage(conv.profilePic) : null,
-                    child: conv.profilePic.isEmpty
-                        ? Text(
-                            conv.name.isNotEmpty
-                                ? conv.name[0].toUpperCase()
-                                : (conv.username.isNotEmpty ? conv.username[0].toUpperCase() : 'U'),
-                            style: const TextStyle(
-                              color: Color(0xFF8000FF),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          )
-                        : null,
+                    onBackgroundImageError: conv.profilePic.isNotEmpty ? (_, __) {} : null,
+                    child: Text(
+                      conv.name.isNotEmpty
+                          ? conv.name[0].toUpperCase()
+                          : (conv.username.isNotEmpty ? conv.username[0].toUpperCase() : 'U'),
+                      style: const TextStyle(
+                        color: Color(0xFF8000FF),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
                   ),
                 ),
                 // 24-hr window status indicator dot
@@ -669,14 +668,13 @@ class _InstagramMessagesViewState extends State<_InstagramMessagesView> {
             radius: 20,
             backgroundColor: const Color(0xFF8000FF).withValues(alpha: 0.1),
             backgroundImage: conv.profilePic.isNotEmpty ? NetworkImage(conv.profilePic) : null,
-            child: conv.profilePic.isEmpty
-                ? Text(
-                    conv.name.isNotEmpty
-                        ? conv.name[0].toUpperCase()
-                        : (conv.username.isNotEmpty ? conv.username[0].toUpperCase() : 'U'),
-                    style: const TextStyle(color: Color(0xFF8000FF), fontWeight: FontWeight.bold),
-                  )
-                : null,
+            onBackgroundImageError: conv.profilePic.isNotEmpty ? (_, __) {} : null,
+            child: Text(
+              conv.name.isNotEmpty
+                  ? conv.name[0].toUpperCase()
+                  : (conv.username.isNotEmpty ? conv.username[0].toUpperCase() : 'U'),
+              style: const TextStyle(color: Color(0xFF8000FF), fontWeight: FontWeight.bold),
+            ),
           ),
           const SizedBox(width: 12),
 

@@ -821,9 +821,8 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                           backgroundImage: _insightsProfile!['profile_picture_url'] != null
                               ? NetworkImage(_insightsProfile!['profile_picture_url'])
                               : null,
-                          child: _insightsProfile!['profile_picture_url'] == null
-                              ? const Icon(Icons.person, size: 42, color: Colors.grey)
-                              : null,
+                          onBackgroundImageError: _insightsProfile!['profile_picture_url'] != null ? (_, __) {} : null,
+                          child: const Icon(Icons.person, size: 42, color: Colors.grey),
                         ),
                       ),
                       const SizedBox(height: 12),
