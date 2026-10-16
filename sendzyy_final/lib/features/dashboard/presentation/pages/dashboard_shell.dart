@@ -9,7 +9,7 @@ import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/messages/presentation/pages/bulk_send_page.dart';
 import 'package:iFloraBuzz/features/templates/presentation/pages/template_list_page.dart';
 import 'package:iFloraBuzz/features/reports/presentation/pages/reports_page.dart';
-import 'package:iFloraBuzz/features/reports/presentation/pages/meta_analytics_page.dart';
+
 import 'package:iFloraBuzz/features/auth/presentation/pages/package_selection_page.dart';
 import 'package:iFloraBuzz/features/chat/presentation/pages/chat_page.dart';
 import 'package:iFloraBuzz/features/chat/presentation/bloc/chat_bloc.dart';
@@ -31,8 +31,6 @@ import 'package:iFloraBuzz/features/calling/presentation/pages/calling_settings_
 import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
-import 'package:iFloraBuzz/features/meta_ads/presentation/pages/meta_ads_dashboard_page.dart';
-import 'package:iFloraBuzz/features/meta_ads/presentation/bloc/meta_ads_bloc.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
 import 'package:iFloraBuzz/core/services/renewal_reminder_service.dart';
 import 'package:iFloraBuzz/core/constants/app_constants.dart';
@@ -207,16 +205,16 @@ class _DashboardShellState extends State<DashboardShell> {
           _navigationHistory.add(index);
         }
       }
-      if (index >= 5 && index <= 7) {
+      if (index == 5 || index == 6) {
         _isReportsExpanded = true;
       }
-      if (index >= 10 && index <= 12) {
+      if (index >= 9 && index <= 11) {
         _isSettingsExpanded = true;
       }
-      if (index == 4 || index == 13) {
+      if (index == 4 || index == 12) {
         _isLeadsExpanded = true;
       }
-      if (index == 14 || index == 15 || index == 19) {
+      if (index == 13 || index == 14 || index == 18) {
         _isInstagramExpanded = true;
       }
     });
@@ -381,7 +379,6 @@ class _DashboardShellState extends State<DashboardShell> {
     const ClientsPage(),
     const LeadManagementPage(),
     const ReportsPage(),
-    const MetaAnalyticsPage(),
     const ScheduledCampaignsPage(),
     const ChatbotListPage(),
     const HelpPage(),
@@ -396,14 +393,13 @@ class _DashboardShellState extends State<DashboardShell> {
     const IndiaMartLeadsPage(),
     const InstagramProfileSetupPage(),
     InstagramAutomationPage(
-      onNavigateToProfile: () => _setSelectedIndex(14),
+      onNavigateToProfile: () => _setSelectedIndex(13),
     ),
     const CallLogPage(),
     const CallingSettingsPage(phoneNumberId: ''),
     const CatalogPage(),
     const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
-    const MetaAdsDashboardPage(),
   ];
 
   Widget _buildSidebarContent({bool isDrawer = false}) {
@@ -434,17 +430,12 @@ class _DashboardShellState extends State<DashboardShell> {
                 _buildNavItem(3, Icons.people_alt_rounded, 'Clients', isDrawer: isDrawer),
                 _buildExpandableLeadsMenu(isDrawer: isDrawer),
                 _buildExpandableReportsMenu(isDrawer: isDrawer),
-                _buildNavItem(8, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
-                _buildNavItem(18, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
-                _buildNavItem(20, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
-               _buildNavItem(21, Icons.campaign_rounded, 'Meta Ads', isDrawer: isDrawer),
-                _buildNavItem(9, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
-                
+                _buildNavItem(7, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
+                _buildNavItem(17, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
+                _buildNavItem(19, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
+                _buildNavItem(8, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
                 _buildExpandableSettingsMenu(isDrawer: isDrawer),
-                
-
                 _buildExpandableInstagramMenu(isDrawer: isDrawer),
-                
               ],
             ),
           ),
@@ -493,7 +484,7 @@ class _DashboardShellState extends State<DashboardShell> {
           BlocProvider(create: (context) => getIt<ChatBloc>()),
           BlocProvider(create: (context) => getIt<ChatbotBloc>()),
           BlocProvider(create: (context) => getIt<CatalogBloc>()),
-          BlocProvider(create: (context) => getIt<MetaAdsBloc>()),
+
         ],
         child: Scaffold(
           key: _scaffoldKey,
@@ -584,7 +575,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _buildExpandableSettingsMenu({bool isDrawer = false}) {
     final bool isAnySettingsSelected =
-        (_selectedIndex >= 10 && _selectedIndex <= 12) || _selectedIndex == 14;
+        (_selectedIndex >= 9 && _selectedIndex <= 11) || _selectedIndex == 13;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -643,21 +634,21 @@ class _DashboardShellState extends State<DashboardShell> {
             child: Column(
               children: [
                 _buildNavItem(
-                  10,
+                  9,
                   Icons.tune_rounded,
                   'General Settings',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
                 _buildNavItem(
-                  11,
+                  10,
                   Icons.integration_instructions_rounded,
                   'Integrations',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
                 _buildNavItem(
-                  12,
+                  11,
                   Icons.replay_circle_filled_outlined,
                   'Retry System',
                   isSubItem: true,
@@ -665,7 +656,7 @@ class _DashboardShellState extends State<DashboardShell> {
                 ),
                 // TODO: Work on this module later
                 // _buildNavItem(
-                //   14,
+                //   13,
                 //   Icons.phone_in_talk_rounded,
                 //   'Call Settings',
                 //   isSubItem: true,
@@ -685,7 +676,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _buildExpandableInstagramMenu({bool isDrawer = false}) {
     final bool isAnyInstagramSelected =
-        _selectedIndex == 14 || _selectedIndex == 15 || _selectedIndex == 19;
+        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -745,21 +736,21 @@ class _DashboardShellState extends State<DashboardShell> {
             child: Column(
               children: [
                 _buildNavItem(
-                  14,
+                  13,
                   Icons.account_circle_outlined,
                   'Profile & Setup',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
                 _buildNavItem(
-                  15,
+                  14,
                   Icons.auto_awesome_outlined,
                   'Automation',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
                 _buildNavItem(
-                  19,
+                  18,
                   Icons.chat_bubble_outline_rounded,
                   'Message',
                   isSubItem: true,
@@ -778,7 +769,7 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   Widget _buildExpandableReportsMenu({bool isDrawer = false}) {
-    final bool isAnyReportSelected = _selectedIndex >= 5 && _selectedIndex <= 7;
+    final bool isAnyReportSelected = _selectedIndex == 5 || _selectedIndex == 6;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -843,15 +834,9 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
+
                 _buildNavItem(
                   6,
-                  Icons.insights_rounded,
-                  'Meta Analytics',
-                  isSubItem: true,
-                  isDrawer: isDrawer,
-                ),
-                _buildNavItem(
-                  7,
                   Icons.schedule_rounded,
                   'Scheduled',
                   isSubItem: true,
@@ -870,7 +855,7 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   Widget _buildExpandableLeadsMenu({bool isDrawer = false}) {
-    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 13;
+    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 12;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -936,7 +921,7 @@ class _DashboardShellState extends State<DashboardShell> {
                   isDrawer: isDrawer,
                 ),
                 _buildNavItem(
-                  13,
+                  12,
                   Icons.store_rounded,
                   'IndiaMART',
                   isSubItem: true,
@@ -1732,7 +1717,7 @@ class _DashboardShellState extends State<DashboardShell> {
           const SizedBox(width: 16),
           TextButton(
             onPressed: () {
-              _setSelectedIndex(9);
+              _setSelectedIndex(8);
             },
             style: TextButton.styleFrom(
               backgroundColor: Colors.orange.shade800,
