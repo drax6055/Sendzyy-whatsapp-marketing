@@ -35,8 +35,6 @@ import 'package:iFloraBuzz/features/catalog/data/repositories/catalog_repository
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/instagram/data/repositories/instagram_chat_repository.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/bloc/instagram_chat_bloc.dart';
-import 'package:iFloraBuzz/features/meta_ads/data/repositories/meta_ads_repository.dart';
-import 'package:iFloraBuzz/features/meta_ads/presentation/bloc/meta_ads_bloc.dart';
 
 final getIt = GetIt.instance;
 
@@ -148,8 +146,4 @@ Future<void> init() async {
 
   // Features - Instagram Messages
   getIt.registerFactory(() => InstagramChatBloc(getIt(), getIt()));
-
-  // Features - Meta Ads
-  getIt.registerLazySingleton(() => MetaAdsRepository(getIt<Dio>()));
-  getIt.registerFactory(() => MetaAdsBloc(getIt<MetaAdsRepository>()));
 }

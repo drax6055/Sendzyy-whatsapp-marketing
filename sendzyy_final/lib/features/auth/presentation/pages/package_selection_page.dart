@@ -6,6 +6,7 @@ import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/auth/presentation/pages/login_page.dart';
 import 'package:iFloraBuzz/features/credits/data/models/panel_plan.dart';
 import 'package:iFloraBuzz/features/whatsapp/data/repositories/whatsapp_repository.dart';
+import 'package:iFloraBuzz/core/constants/app_constants.dart';
 import 'package:dio/dio.dart';
 
 class PackageSelectionPage extends StatefulWidget {
@@ -94,7 +95,7 @@ class _PackageSelectionPageState extends State<PackageSelectionPage> {
           key: _razorpayKey ?? '',
           amount: (orderData['amount'] as num).toInt(),
           currency: orderData['currency'] ?? 'INR',
-          name: 'Send-O Panel',
+          name: AppConstants.appName,
           description: '${plan.name} - ${plan.durationLabel} Access',
           orderId: orderData['id'].toString(),
         );

@@ -22,15 +22,11 @@ try {
 } catch (err) {
     console.warn('Unable to set custom DNS servers:', err);
 }
+const { generateAppSecretProof } = require('./cryptoUtils');
 const { verifyMetaWebhookSignature } = require('./middleware/verifyMetaSignature');
 const WebhookRawLog = require('./models/WebhookRawLog');
 const webhookIngestionService = require('./services/WebhookIngestionService');
 const { processIncomingWebhookPayload } = require('./services/WebhookRouter');
-const MetaAdCampaign = require('./models/MetaAdCampaign');
-const MetaAdToken = require('./models/MetaAdToken');
-const MetaAdsService = require('./services/MetaAdsService');
-const { requireMetaAuth } = require('./middleware/metaAuth');
-const { createMetaAdsController } = require('./controllers/metaAdsController');
 
 // ── WhatsApp Flows & Catalog Controller Imports ──────────────────────────────
 const WhatsAppFlow = require('./models/WhatsAppFlow');
@@ -493,7 +489,7 @@ const leadSchema = new mongoose.Schema({
     mobileNumber: { type: String, required: true },   // normalised, e.g. "919876543210"
     email: { type: String, default: '' },
     companyName: { type: String, default: '' },
-    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'meta_ads'], required: true },
+    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart'], required: true },
     formName: { type: String, default: '' },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     status: { type: String, enum: ['new', 'contacted', 'converted', 'failed'], default: 'new' },
@@ -506,7 +502,7 @@ const Lead = mongoose.model('Lead', leadSchema);
 
 const leadTriggerSchema = new mongoose.Schema({
     tenantId: { type: String, required: true },
-    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'meta_ads', 'any'], default: 'any' },
+    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'any'], default: 'any' },
     formName: { type: String, default: '' },
     action: { type: String, enum: ['send_template', 'start_chatbot'], required: true },
     templateName: { type: String, default: '' },
@@ -1265,19 +1261,52 @@ app.post('/api/admin/regenerate-permanent-tokens', async (req, res) => {
             }
 
             try {
-                const result = await processOnboarding(
-                    cfg.businessAccountId,
-                    cfg.businessPortfolioId,
-                    tenant._id.toString(),
-                    null
-                );
+                // 1. First try exchanging existing token for a permanent token via fb_exchange_token
+                let tokenUpgraded = false;
+                if (cfg.accessToken) {
+                    try {
+                        const exchangeRes = await axios.get(`https://graph.facebook.com/v26.0/oauth/access_token`, {
+                            params: {
+                                grant_type: 'fb_exchange_token',
+                                client_id: process.env.META_APP_ID,
+                                client_secret: process.env.META_APP_SECRET,
+                                fb_exchange_token: cfg.accessToken,
+                            }
+                        });
+                        if (exchangeRes.data?.access_token) {
+                            const newToken = exchangeRes.data.access_token;
+                            await Tenant.findByIdAndUpdate(tenant._id, {
+                                $set: {
+                                    'whatsappConfig.accessToken': newToken,
+                                    'whatsappConfig.tokenExpiry': null,
+                                    'whatsappConfig.tokenType': 'system_user',
+                                    'whatsappConfig.tokenStatus': 'active'
+                                }
+                            });
+                            upgraded++;
+                            tokenUpgraded = true;
+                            console.log(`[Admin] ✅ Upgraded tenant ${tenant._id} (${tenant.email}) to permanent token via fb_exchange_token`);
+                        }
+                    } catch (fbErr) {
+                        console.warn(`[Admin] fb_exchange_token attempt failed for ${tenant.email}:`, fbErr.message);
+                    }
+                }
 
-                if (result?.businessToken) {
-                    upgraded++;
-                    console.log(`[Admin] ✅ Upgraded tenant ${tenant._id} (${tenant.email}) to permanent token`);
-                } else {
-                    failed++;
-                    console.warn(`[Admin] ⚠️ Tenant ${tenant._id} (${tenant.email}) — processOnboarding returned no business token`);
+                if (!tokenUpgraded) {
+                    const result = await processOnboarding(
+                        cfg.businessAccountId,
+                        cfg.businessPortfolioId,
+                        tenant._id.toString(),
+                        null
+                    );
+
+                    if (result?.businessToken) {
+                        upgraded++;
+                        console.log(`[Admin] ✅ Upgraded tenant ${tenant._id} (${tenant.email}) to permanent token via processOnboarding`);
+                    } else {
+                        failed++;
+                        console.warn(`[Admin] ⚠️ Tenant ${tenant._id} (${tenant.email}) — processOnboarding returned no business token`);
+                    }
                 }
             } catch (err) {
                 failed++;
@@ -4428,6 +4457,30 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
                     message: 'Successfully exchanged auth code for access token.'
                 });
 
+                // ── Exchange token for permanent never-expiring token ─────────
+                try {
+                    const exchangeRes = await axios.get(tokenUrl, {
+                        params: {
+                            grant_type: 'fb_exchange_token',
+                            client_id: appId,
+                            client_secret: appSecret,
+                            fb_exchange_token: accessToken,
+                        }
+                    });
+                    if (exchangeRes.data?.access_token) {
+                        accessToken = exchangeRes.data.access_token;
+                        await saveOnboardingLog({
+                            tenantId,
+                            sessionId,
+                            step: 'BACKEND_PERMANENT_EXCHANGE_SUCCESS',
+                            status: 'success',
+                            message: 'Successfully exchanged Embedded Signup token for permanent never-expiring token.'
+                        });
+                    }
+                } catch (exchangeErr) {
+                    console.warn('[Embedded Signup] fb_exchange_token exchange error:', exchangeErr.message);
+                }
+
                 // ── Inspect token expiry via /debug_token ─────────────────────
                 // User tokens from Embedded Signup code exchange are long-lived (~60 days).
                 // System User tokens (Step 5) can be set to never expire.
@@ -4524,10 +4577,11 @@ app.post('/facebook-embedded-signup', authenticate, async (req, res) => {
             if (resolvedWabaId && !resolvedBusinessId) {
                 try {
                     const wabaDirectRes = await axios.get(`${WHATSAPP_API_URL}/${resolvedWabaId}`, {
-                        params: { access_token: accessToken, fields: 'id,name,business' }
+                        params: { access_token: accessToken, fields: 'id,name,business,owner_business_info' }
                     });
-                    if (wabaDirectRes.data?.business?.id) {
-                        resolvedBusinessId = wabaDirectRes.data.business.id;
+                    const bizId = wabaDirectRes.data?.owner_business_info?.id || wabaDirectRes.data?.business?.id;
+                    if (bizId) {
+                        resolvedBusinessId = bizId;
                         await saveOnboardingLog({
                             tenantId,
                             sessionId,
@@ -4909,10 +4963,11 @@ app.post('/refresh-meta-account', authenticate, async (req, res) => {
         if (resolvedWabaId && !resolvedBusinessId && accessToken) {
             try {
                 const wabaRes = await axios.get(`${WHATSAPP_API_URL}/${resolvedWabaId}`, {
-                    params: { access_token: accessToken, fields: 'id,name,business' }
+                    params: { access_token: accessToken, fields: 'id,name,business,owner_business_info' }
                 });
-                if (wabaRes.data?.business?.id) {
-                    resolvedBusinessId = wabaRes.data.business.id;
+                const bizId = wabaRes.data?.owner_business_info?.id || wabaRes.data?.business?.id;
+                if (bizId) {
+                    resolvedBusinessId = bizId;
                     await Tenant.findByIdAndUpdate(tenantId, {
                         $set: {
                             'whatsappConfig.businessPortfolioId': resolvedBusinessId,
@@ -7159,246 +7214,6 @@ app.post('/api/catalog/orders/:id/verify-payment', authenticate, catalogControll
 app.get('/catalog/order-success', catalogController.handleOrderSuccessCallback);
 app.post('/api/catalog/payment-webhook', catalogController.handlePaymentWebhook);
 
-// ── Meta Ads Management Module ──────────────────────────────────────────────
-const metaAdsController = createMetaAdsController({ Lead, Tenant, triggerLeadAction: evaluateTriggers });
-const metaCreativeUpload = multer({
-    storage: multer.diskStorage({
-        destination: (req, file, cb) => {
-            const uploadDir = path.join(__dirname, 'uploads');
-            if (!fs.existsSync(uploadDir)) {
-                fs.mkdirSync(uploadDir, { recursive: true });
-            }
-            cb(null, uploadDir);
-        },
-        filename: (req, file, cb) => {
-            const ext = path.extname(file.originalname);
-            cb(null, `meta_creative_${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`);
-        }
-    }),
-    limits: { fileSize: 30 * 1024 * 1024 }
-});
-
-// Meta Auth
-app.post('/api/meta/auth/connect', authenticate, metaAdsController.connectAccount);
-app.get('/api/meta/auth/status', authenticate, metaAdsController.getAccountStatus);
-app.post('/api/meta/auth/select-assets', authenticate, requireMetaAuth, metaAdsController.selectAssets);
-app.post('/api/meta/auth/disconnect', authenticate, metaAdsController.disconnectAccount);
-
-// Meta Ad Accounts & Pages
-app.get('/api/meta/ad-accounts', authenticate, requireMetaAuth, metaAdsController.getAdAccounts);
-app.get('/api/meta/pages', authenticate, requireMetaAuth, metaAdsController.getPages);
-
-// Creative upload
-app.post('/api/meta/creative/upload', authenticate, requireMetaAuth, metaCreativeUpload.single('image'), metaAdsController.uploadCreativeImage);
-
-// Campaigns
-app.get('/api/meta/campaigns', authenticate, metaAdsController.getCampaigns);
-app.post('/api/meta/campaigns', authenticate, requireMetaAuth, metaAdsController.createFullCampaign);
-app.get('/api/meta/campaigns/:id', authenticate, metaAdsController.getCampaignById);
-app.get('/api/meta/campaigns/:id/stats', authenticate, requireMetaAuth, metaAdsController.syncCampaignStats);
-app.patch('/api/meta/campaigns/:id/status', authenticate, requireMetaAuth, metaAdsController.updateCampaignStatus);
-app.delete('/api/meta/campaigns/:id', authenticate, requireMetaAuth, metaAdsController.deleteCampaign);
-
-// Meta Leads
-app.get('/api/meta/leads', authenticate, metaAdsController.getMetaLeads);
-
-// Meta Leads Webhook verification & ingestion
-app.get('/webhooks/meta-leads', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-    const verifyToken = process.env.WEBHOOK_VERIFY_TOKEN || process.env.META_LEADS_WEBHOOK_VERIFY_TOKEN || process.env.VERIFY_TOKEN || 'sendzyy_meta_webhook_verify_2024';
-    if (mode === 'subscribe' && token === verifyToken) {
-        console.log('[MetaLeadsWebhook] Verification successful');
-        return res.status(200).send(challenge);
-    }
-    console.warn(`[MetaLeadsWebhook] Verification failed: received '${token}', expected '${verifyToken}'`);
-    return res.sendStatus(403);
-});
-
-app.post('/webhooks/meta-leads', async (req, res) => {
-    // Acknowledge Meta immediately
-    res.status(200).send('EVENT_RECEIVED');
-    try {
-        const body = req.body;
-        if (body.object === 'page' && Array.isArray(body.entry)) {
-            for (const entry of body.entry) {
-                const pageId = entry.id;
-                for (const change of (entry.changes || [])) {
-                    if (change.field === 'leadgen') {
-                        const { leadgen_id, form_id, ad_id } = change.value || {};
-                        if (!leadgen_id) continue;
-
-                        let tokenDoc = await MetaAdToken.findOne({ pageId, status: 'connected' });
-                        let campaign = null;
-                        if (form_id) {
-                            campaign = await MetaAdCampaign.findOne({ metaLeadFormId: form_id });
-                        }
-                        if (!tokenDoc && campaign) {
-                            tokenDoc = await MetaAdToken.findOne({ tenantId: campaign.tenantId, status: 'connected' });
-                        }
-
-                        if (!tokenDoc) {
-                            console.warn(`[MetaLeadsWebhook] No connected tenant found for page ${pageId} or form ${form_id}`);
-                            continue;
-                        }
-
-                        const tenantId = tokenDoc.tenantId;
-                        const pageAccessToken = tokenDoc.pageAccessToken
-                            ? decryptSecret(tokenDoc.pageAccessToken)
-                            : decryptSecret(tokenDoc.accessToken);
-
-                        const leadDetails = await MetaAdsService.getLeadDetails(pageAccessToken, leadgen_id);
-                        const fieldData = leadDetails.field_data || [];
-
-                        let fullName = '';
-                        let phone = '';
-                        let email = '';
-                        const extraData = {};
-
-                        for (const item of fieldData) {
-                            const val = Array.isArray(item.values) ? item.values[0] : item.values;
-                            const nameLower = (item.name || '').toLowerCase();
-                            if (nameLower.includes('full_name') || nameLower === 'name') {
-                                fullName = val;
-                            } else if (nameLower.includes('phone') || nameLower.includes('mobile')) {
-                                phone = val;
-                            } else if (nameLower.includes('email')) {
-                                email = val;
-                            } else {
-                                extraData[item.name] = val;
-                            }
-                        }
-
-                        let cleanPhone = (phone || '').replace(/\D/g, '');
-                        if (cleanPhone.length === 10) {
-                            cleanPhone = '91' + cleanPhone;
-                        }
-
-                        // 1. Upsert Client document so lead directly appears in Sendzy Clients list
-                        let client = null;
-                        if (cleanPhone) {
-                            try {
-                                client = await Client.findOne({ tenantId, mobileNumber: cleanPhone });
-                                if (!client) {
-                                    client = await Client.create({
-                                        tenantId,
-                                        name: fullName || 'Meta Lead',
-                                        mobileNumber: cleanPhone,
-                                        emailId: email || '',
-                                        companyName: extraData['company_name'] || extraData['company'] || '',
-                                        venue: 'Meta Ads',
-                                        remark: `Lead from Form: ${form_id || 'Instant Form'}`
-                                    });
-                                    console.log(`[MetaLeadsWebhook] Created Client ${client._id} for tenant ${tenantId}`);
-                                }
-                            } catch (clientErr) {
-                                console.error(`[MetaLeadsWebhook] Client upsert error:`, clientErr.message);
-                            }
-                        }
-
-                        const newLead = new Lead({
-                            tenantId,
-                            name: fullName || 'Meta Lead',
-                            mobileNumber: cleanPhone || `meta_${leadgen_id}`,
-                            email: email || '',
-                            source: 'meta_ads',
-                            formName: form_id || 'Meta Lead Form',
-                            clientId: client ? client._id : null,
-                            metadata: {
-                                metaLeadgenId: leadgen_id,
-                                metaFormId: form_id,
-                                metaAdId: ad_id,
-                                metaCampaignId: campaign ? campaign._id.toString() : null,
-                                rawFieldData: fieldData,
-                                ...extraData
-                            }
-                        });
-
-                        await newLead.save();
-                        console.log(`[MetaLeadsWebhook] Saved lead ${newLead._id} for tenant ${tenantId}`);
-
-                        // 2. Wire directly into Sendzy Chat and broadcast in real time
-                        if (cleanPhone) {
-                            try {
-                                const initialMsg = `🎯 New Lead from Meta Ad!\n👤 Name: ${fullName || 'N/A'}\n📱 Phone: +${cleanPhone}${email ? `\n✉️ Email: ${email}` : ''}`;
-                                
-                                await Conversation.findOneAndUpdate(
-                                    { tenantId, contactId: cleanPhone },
-                                    {
-                                        $set: {
-                                            name: fullName || cleanPhone,
-                                            lastMessage: initialMsg,
-                                            lastActive: new Date(),
-                                            hasReply: true
-                                        }
-                                    },
-                                    { upsert: true, new: true }
-                                );
-
-                                await Message.create({
-                                    tenantId,
-                                    contactId: cleanPhone,
-                                    text: initialMsg,
-                                    isMe: false,
-                                    timestamp: new Date(),
-                                    time: formatTimeIST(new Date()),
-                                    source: 'meta_ads',
-                                    status: 'delivered'
-                                });
-
-                                // Broadcast live conversation and messages over Socket.IO
-                                await broadcastConversations(tenantId.toString());
-                                await broadcastMessages(tenantId.toString(), cleanPhone);
-                            } catch (chatErr) {
-                                console.error('[MetaLeadsWebhook] Chat update error:', chatErr.message);
-                            }
-                        }
-
-                        // 3. Emit real-time Socket.IO notification to tenant for Meta Leads page
-                        if (typeof io !== 'undefined' && io) {
-                            io.to(tenantId.toString()).emit('meta_lead_received', {
-                                lead: newLead,
-                                client: client || null,
-                                campaignId: campaign ? campaign._id.toString() : null
-                            });
-                        }
-
-                        // 4. Update campaign leads count
-                        if (campaign) {
-                            await MetaAdCampaign.updateOne(
-                                { _id: campaign._id },
-                                {
-                                    $inc: { 'insights.leadsCount': 1 },
-                                    $set: { 'insights.lastSyncedAt': new Date() }
-                                }
-                            );
-                        }
-
-                        // 5. Evaluate Client Auto-Trigger if tenant has welcome template configured
-                        if (client && typeof evaluateClientTrigger === 'function') {
-                            try {
-                                evaluateClientTrigger(tenantId, client).catch(err => {
-                                    console.error('[MetaLeadsWebhook] evaluateClientTrigger error:', err.message);
-                                });
-                            } catch (autoErr) {
-                                console.error('[MetaLeadsWebhook] evaluateClientTrigger error:', autoErr.message);
-                            }
-                        }
-
-                        try {
-                            await evaluateTriggers(tenantId, newLead);
-                        } catch (trigErr) {
-                            console.error('[MetaLeadsWebhook] Error in evaluateTriggers:', trigErr.message);
-                        }
-                    }
-                }
-            }
-        }
-    } catch (err) {
-        console.error('[MetaLeadsWebhook] Ingestion error:', err.message);
-    }
-});
 //  Scheduled Campaign Runner (checks every minute) 
 async function runScheduledCampaigns() {
     try {

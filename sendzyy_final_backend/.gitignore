@@ -30,3 +30,4 @@ serviceAccountKey.json
 
 # Zip files
 *.zip
+.vercel

@@ -15,7 +15,8 @@ import 'package:iFloraBuzz/features/chat/presentation/bloc/chat_bloc.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:flutter/services.dart'
+    show Clipboard, ClipboardData, LogicalKeyboardKey;
 // import 'package:iFloraBuzz/features/calling/presentation/bloc/call_control_bloc.dart';
 // import 'package:iFloraBuzz/features/calling/presentation/pages/active_call_page.dart';
 
@@ -753,22 +754,31 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: TextField(
-                        controller: _messageController,
-                        decoration: InputDecoration(
-                          hintText: 'Type a message...',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(30),
-                            borderSide: BorderSide.none,
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade100,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
+                      child: CallbackShortcuts(
+                        bindings: {
+                          const SingleActivator(LogicalKeyboardKey.enter): () =>
+                              _handleSend(contactId, replyingToMessage),
+                        },
+                        child: TextField(
+                          controller: _messageController,
+                          minLines: 1,
+                          maxLines: 5,
+                          keyboardType: TextInputType.multiline,
+                          textInputAction: TextInputAction.newline,
+                          decoration: InputDecoration(
+                            hintText: 'Type a message...',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(24),
+                              borderSide: BorderSide.none,
+                            ),
+                            filled: true,
+                            fillColor: Colors.grey.shade100,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 12,
+                            ),
                           ),
                         ),
-                        onSubmitted: (_) => _handleSend(contactId, replyingToMessage),
                       ),
                     ),
                     const SizedBox(width: 16),
