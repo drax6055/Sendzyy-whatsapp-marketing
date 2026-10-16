@@ -4,7 +4,10 @@ import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_dropdown_field.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_recipient_selector.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
+import 'package:iFloraBuzz/features/messages/data/models/recipient_data.dart';
+import 'package:iFloraBuzz/features/messages/presentation/widgets/campaign_result_dialog.dart';
 
 /// Form to compose and send a Catalog Message.
 /// Shows full catalog thumbnail + "View Catalog" button on WhatsApp.
@@ -24,7 +27,8 @@ class CatalogMessageComposer extends StatefulWidget {
 
 class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _toCtrl;
+  final _recipientSelectorKey = GlobalKey<CatalogRecipientSelectorState>();
+  List<RecipientData> _recipients = [];
   late final TextEditingController _bodyCtrl;
   late final TextEditingController _footerCtrl;
   late final TextEditingController _thumbnailCtrl;
@@ -32,7 +36,9 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
   @override
   void initState() {
     super.initState();
-    _toCtrl = TextEditingController(text: widget.initialTo ?? '');
+    if (widget.initialTo != null && widget.initialTo!.trim().isNotEmpty) {
+      _recipients = [RecipientData.fromNumber(widget.initialTo!)];
+    }
     _bodyCtrl = TextEditingController();
     _footerCtrl = TextEditingController();
     _thumbnailCtrl = TextEditingController(text: widget.initialThumbnailId ?? '');
@@ -40,7 +46,6 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
 
   @override
   void dispose() {
-    _toCtrl.dispose();
     _bodyCtrl.dispose();
     _footerCtrl.dispose();
     _thumbnailCtrl.dispose();
@@ -48,11 +53,26 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
   }
 
   void _send() {
+    _recipientSelectorKey.currentState?.flushPendingInput();
+    if (_recipients.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter or select at least one recipient phone number.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
+
+    final phoneNumbers = _recipients.map((r) => r.mobileNumber).toList();
+
     context.read<CatalogBloc>().add(
           SendCatalogMessageEvent(
             CatalogMessageRequest(
-              to: _toCtrl.text.trim(),
+              to: phoneNumbers.first,
+              recipients: phoneNumbers,
               bodyText: _bodyCtrl.text.trim(),
               footerText: _footerCtrl.text.trim().isEmpty
                   ? null
@@ -93,15 +113,34 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
   Widget build(BuildContext context) {
     return BlocConsumer<CatalogBloc, CatalogState>(
       listener: (context, state) {
-        if (state is CatalogSettingsLoaded && state.successMessage != null) {
-          _bodyCtrl.clear();
-          _footerCtrl.clear();
-          _thumbnailCtrl.clear();
-          if (widget.initialTo == null) _toCtrl.clear();
+        if (state is CatalogSettingsLoaded) {
+          if (state.lastBulkResult != null && state.lastBulkResult!.total > 1) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => CampaignResultDialog(
+                successCount: state.lastBulkResult!.successCount,
+                failureCount: state.lastBulkResult!.failureCount,
+                campaignId: 'catalog_${DateTime.now().millisecondsSinceEpoch}',
+                dispatchedAt: state.lastBulkResult!.dispatchedAt,
+                onDone: () {},
+              ),
+            );
+          }
+          if (state.successMessage != null) {
+            _bodyCtrl.clear();
+            _footerCtrl.clear();
+            _thumbnailCtrl.clear();
+            if (widget.initialTo == null) {
+              setState(() => _recipients = []);
+            }
+          }
         }
       },
       builder: (context, state) {
         final isSending = state is CatalogSettingsLoaded && state.isSending;
+        final sendingCurrent = state is CatalogSettingsLoaded ? state.sendingCurrent : 0;
+        final sendingTotal = state is CatalogSettingsLoaded ? state.sendingTotal : 0;
 
         return Form(
           key: _formKey,
@@ -118,17 +157,16 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
                     'WhatsApp 24-Hour Rule: Meta allows free-form catalog messages only if the recipient messaged your business in the last 24 hours. If they haven\'t, Meta rejects delivery (Error 131047). Send an approved Template first or ask the customer to reply.',
               ),
               const SizedBox(height: 20),
-              _buildField(
-                controller: _toCtrl,
-                label: 'Recipient Phone *',
-                hint: '+919876543210 (with country code)',
-                icon: Icons.phone_rounded,
-                validator: (v) {
-                  if (v == null || v.trim().isEmpty) return 'Required';
-                  return null;
-                },
+
+              // Reusable Recipient Selector (Manual + Clients + Group + CSV)
+              CatalogRecipientSelector(
+                key: _recipientSelectorKey,
+                recipients: _recipients,
+                onRecipientsChanged: (list) => setState(() => _recipients = list),
+                label: 'Recipient Phone Numbers',
               ),
               const SizedBox(height: 14),
+
               _buildField(
                 controller: _bodyCtrl,
                 label: 'Message Body *',
@@ -192,7 +230,15 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
                               strokeWidth: 2, color: Colors.white),
                         )
                       : const Icon(Icons.send_rounded, size: 18),
-                  label: Text(isSending ? 'Sending...' : 'Send Catalog Message'),
+                  label: Text(
+                    isSending
+                        ? (sendingTotal > 1
+                            ? 'Sending ($sendingCurrent / $sendingTotal)...'
+                            : 'Sending...')
+                        : (_recipients.length > 1
+                            ? 'Send Catalog Message to ${_recipients.length} Recipients'
+                            : 'Send Catalog Message'),
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.primaryColor,
                     foregroundColor: Colors.white,
@@ -255,7 +301,8 @@ class SingleProductComposer extends StatefulWidget {
 
 class _SingleProductComposerState extends State<SingleProductComposer> {
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _toCtrl;
+  final _recipientSelectorKey = GlobalKey<CatalogRecipientSelectorState>();
+  List<RecipientData> _recipients = [];
   late final TextEditingController _catalogCtrl;
   late final TextEditingController _productCtrl;
   late final TextEditingController _bodyCtrl;
@@ -264,7 +311,9 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
   @override
   void initState() {
     super.initState();
-    _toCtrl = TextEditingController(text: widget.initialTo ?? '');
+    if (widget.initialTo != null && widget.initialTo!.trim().isNotEmpty) {
+      _recipients = [RecipientData.fromNumber(widget.initialTo!)];
+    }
     _catalogCtrl = TextEditingController(text: widget.initialCatalogId ?? '');
     _productCtrl = TextEditingController(text: widget.initialProductId ?? '');
     _bodyCtrl = TextEditingController();
@@ -273,7 +322,6 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
 
   @override
   void dispose() {
-    _toCtrl.dispose();
     _catalogCtrl.dispose();
     _productCtrl.dispose();
     _bodyCtrl.dispose();
@@ -282,11 +330,26 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
   }
 
   void _send() {
+    _recipientSelectorKey.currentState?.flushPendingInput();
+    if (_recipients.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter or select at least one recipient phone number.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
+
+    final phoneNumbers = _recipients.map((r) => r.mobileNumber).toList();
+
     context.read<CatalogBloc>().add(
           SendSingleProductEvent(
             SingleProductRequest(
-              to: _toCtrl.text.trim(),
+              to: phoneNumbers.first,
+              recipients: phoneNumbers,
               catalogId: _catalogCtrl.text.trim(),
               productRetailerId: _productCtrl.text.trim(),
               bodyText: _bodyCtrl.text.trim().isEmpty
@@ -330,14 +393,33 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
   Widget build(BuildContext context) {
     return BlocConsumer<CatalogBloc, CatalogState>(
       listener: (context, state) {
-        if (state is CatalogSettingsLoaded && state.successMessage != null) {
-          _bodyCtrl.clear();
-          _footerCtrl.clear();
-          if (widget.initialTo == null) _toCtrl.clear();
+        if (state is CatalogSettingsLoaded) {
+          if (state.lastBulkResult != null && state.lastBulkResult!.total > 1) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => CampaignResultDialog(
+                successCount: state.lastBulkResult!.successCount,
+                failureCount: state.lastBulkResult!.failureCount,
+                campaignId: 'product_${DateTime.now().millisecondsSinceEpoch}',
+                dispatchedAt: state.lastBulkResult!.dispatchedAt,
+                onDone: () {},
+              ),
+            );
+          }
+          if (state.successMessage != null) {
+            _bodyCtrl.clear();
+            _footerCtrl.clear();
+            if (widget.initialTo == null) {
+              setState(() => _recipients = []);
+            }
+          }
         }
       },
       builder: (context, state) {
         final isSending = state is CatalogSettingsLoaded && state.isSending;
+        final sendingCurrent = state is CatalogSettingsLoaded ? state.sendingCurrent : 0;
+        final sendingTotal = state is CatalogSettingsLoaded ? state.sendingTotal : 0;
 
         // Auto-fill catalog ID from active catalog if empty
         if (_catalogCtrl.text.isEmpty && state is CatalogSettingsLoaded && state.activeCatalogId != null) {
@@ -359,8 +441,14 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
                     'WhatsApp 24-Hour Rule: Recipient must have messaged this business number within the last 24 hours. Outside 24h, Meta rejects interactive messages (Error 131047).',
               ),
               const SizedBox(height: 20),
-              _buildField(_toCtrl, 'Recipient Phone *', '+919876543210',
-                  Icons.phone_rounded, required: true),
+
+              // Reusable Recipient Selector
+              CatalogRecipientSelector(
+                key: _recipientSelectorKey,
+                recipients: _recipients,
+                onRecipientsChanged: (list) => setState(() => _recipients = list),
+                label: 'Recipient Phone Numbers',
+              ),
               const SizedBox(height: 14),
 
               // Catalog ID field
@@ -410,7 +498,14 @@ class _SingleProductComposerState extends State<SingleProductComposer> {
                   'e.g. Limited time offer', Icons.notes_rounded,
                   maxLength: 60),
               const SizedBox(height: 24),
-              _SendButton(isSending: isSending, onTap: _send, label: 'Send Single Product'),
+              _SendButton(
+                isSending: isSending,
+                onTap: _send,
+                label: _recipients.length > 1
+                    ? 'Send Single Product to ${_recipients.length} Recipients'
+                    : 'Send Single Product',
+                sendingText: sendingTotal > 1 ? 'Sending ($sendingCurrent / $sendingTotal)...' : 'Sending...',
+              ),
             ],
           ),
         );
@@ -551,11 +646,13 @@ class _SendButton extends StatelessWidget {
   final bool isSending;
   final VoidCallback onTap;
   final String label;
+  final String? sendingText;
 
   const _SendButton({
     required this.isSending,
     required this.onTap,
     required this.label,
+    this.sendingText,
   });
 
   @override
@@ -572,7 +669,7 @@ class _SendButton extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
               )
             : const Icon(Icons.send_rounded, size: 18),
-        label: Text(isSending ? 'Sending...' : label),
+        label: Text(isSending ? (sendingText ?? 'Sending...') : label),
         style: ElevatedButton.styleFrom(
           backgroundColor: AppTheme.primaryColor,
           foregroundColor: Colors.white,

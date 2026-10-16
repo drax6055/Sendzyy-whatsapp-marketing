@@ -493,18 +493,90 @@ const CatalogService = {
     },
 
     /**
+     * Helper to extract a normalized array of recipient phone numbers
+     */
+    extractRecipientList(reqBody) {
+        const { to, recipients: rawRecipients } = reqBody;
+        let list = [];
+        if (Array.isArray(rawRecipients) && rawRecipients.length > 0) {
+            list = rawRecipients;
+        } else if (Array.isArray(to) && to.length > 0) {
+            list = to;
+        } else if (typeof rawRecipients === 'string' && rawRecipients.trim().length > 0) {
+            list = rawRecipients.split(/[\n,]/);
+        } else if (typeof to === 'string' && to.trim().length > 0) {
+            list = to.split(/[\n,]/);
+        }
+
+        const normalized = list
+            .map(n => String(n).replace(/[^0-9]/g, ''))
+            .filter(n => n.length >= 10);
+
+        // Deduplicate numbers
+        return Array.from(new Set(normalized));
+    },
+
+    /**
+     * Dispatch interactive messages to multiple recipients in controlled concurrency batches
+     */
+    async dispatchBulkInteractive(dependencies, tenant, recipients, buildPayloadFor, metaOptions) {
+        const results = [];
+        let successCount = 0;
+        let failureCount = 0;
+
+        // Process in concurrent batches of 5 to respect Meta rate limits
+        const batchSize = 5;
+        for (let i = 0; i < recipients.length; i += batchSize) {
+            const chunk = recipients.slice(i, i + batchSize);
+            const chunkPromises = chunk.map(async (recipient) => {
+                try {
+                    const payload = buildPayloadFor(recipient);
+                    const res = await this.dispatchInteractiveMessage(dependencies, tenant, payload, metaOptions);
+                    return { to: recipient, success: true, wamid: res.wamid };
+                } catch (err) {
+                    console.error(`[CatalogService] Bulk dispatch error for ${recipient}:`, err.response?.data || err.message);
+                    return {
+                        to: recipient,
+                        success: false,
+                        error: err.response?.data?.error?.message || err.message,
+                    };
+                }
+            });
+
+            const chunkResults = await Promise.all(chunkPromises);
+            for (const r of chunkResults) {
+                results.push(r);
+                if (r.success) successCount++;
+                else failureCount++;
+            }
+        }
+
+        return {
+            success: successCount > 0,
+            total: recipients.length,
+            successful: successCount,
+            failed: failureCount,
+            results,
+            wamid: results.find(r => r.wamid)?.wamid || `bulk.${Date.now()}`,
+            messages: results.filter(r => r.wamid).map(r => ({ id: r.wamid })),
+        };
+    },
+
+    /**
      * Send Catalog Message (opens full catalog with thumbnail and "View Catalog" button)
      */
     async sendCatalogMessage(dependencies, tenant, reqBody) {
-        const { to, bodyText, footerText, thumbnailProductRetailerId } = reqBody;
-        if (!to || !bodyText) {
-            throw new Error('Recipient "to" and "bodyText" are required.');
+        const { bodyText, footerText, thumbnailProductRetailerId } = reqBody;
+        const recipients = this.extractRecipientList(reqBody);
+
+        if (recipients.length === 0 || !bodyText) {
+            throw new Error('At least one valid recipient phone number and "bodyText" are required.');
         }
 
-        const payload = {
+        const buildPayloadFor = (recipientPhone) => ({
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: String(to).replace(/[^0-9]/g, ''),
+            to: recipientPhone,
             type: 'interactive',
             interactive: {
                 type: 'catalog_message',
@@ -519,10 +591,10 @@ const CatalogService = {
                     } : {})
                 }
             }
-        };
+        });
 
         const previewText = `🛍️ Catalog Message: ${bodyText}`;
-        return this.dispatchInteractiveMessage(dependencies, tenant, payload, {
+        const metaOptions = {
             previewText,
             outboundMessageType: 'interactive',
             interactivePayload: {
@@ -531,24 +603,31 @@ const CatalogService = {
                 footerText,
                 thumbnailProductRetailerId,
             }
-        });
+        };
+
+        if (recipients.length === 1) {
+            return this.dispatchInteractiveMessage(dependencies, tenant, buildPayloadFor(recipients[0]), metaOptions);
+        }
+
+        return this.dispatchBulkInteractive(dependencies, tenant, recipients, buildPayloadFor, metaOptions);
     },
 
     /**
      * Send Single Product Message (highlights one SKU)
      */
     async sendSingleProduct(dependencies, tenant, reqBody) {
-        const { to, catalogId, productRetailerId, bodyText, footerText } = reqBody;
+        const { catalogId, productRetailerId, bodyText, footerText } = reqBody;
         const effectiveCatalogId = catalogId || tenant.whatsappConfig?.catalogId;
+        const recipients = this.extractRecipientList(reqBody);
 
-        if (!to || !effectiveCatalogId || !productRetailerId) {
-            throw new Error('Recipient "to", "catalogId", and "productRetailerId" (SKU) are required.');
+        if (recipients.length === 0 || !effectiveCatalogId || !productRetailerId) {
+            throw new Error('At least one valid recipient phone, "catalogId", and "productRetailerId" (SKU) are required.');
         }
 
-        const payload = {
+        const buildPayloadFor = (recipientPhone) => ({
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: String(to).replace(/[^0-9]/g, ''),
+            to: recipientPhone,
             type: 'interactive',
             interactive: {
                 type: 'product',
@@ -559,10 +638,10 @@ const CatalogService = {
                     product_retailer_id: productRetailerId,
                 }
             }
-        };
+        });
 
         const previewText = `📦 Product: SKU ${productRetailerId}${bodyText ? ` — ${bodyText}` : ''}`;
-        return this.dispatchInteractiveMessage(dependencies, tenant, payload, {
+        const metaOptions = {
             previewText,
             outboundMessageType: 'interactive',
             interactivePayload: {
@@ -572,18 +651,25 @@ const CatalogService = {
                 bodyText,
                 footerText,
             }
-        });
+        };
+
+        if (recipients.length === 1) {
+            return this.dispatchInteractiveMessage(dependencies, tenant, buildPayloadFor(recipients[0]), metaOptions);
+        }
+
+        return this.dispatchBulkInteractive(dependencies, tenant, recipients, buildPayloadFor, metaOptions);
     },
 
     /**
      * Send Multi-Product Message (up to 30 products across 10 sections)
      */
     async sendMultiProduct(dependencies, tenant, reqBody) {
-        const { to, catalogId, headerText, bodyText, footerText, sections } = reqBody;
+        const { catalogId, headerText, bodyText, footerText, sections } = reqBody;
         const effectiveCatalogId = catalogId || tenant.whatsappConfig?.catalogId;
+        const recipients = this.extractRecipientList(reqBody);
 
-        if (!to || !effectiveCatalogId || !headerText || !bodyText || !Array.isArray(sections) || sections.length === 0) {
-            throw new Error('Recipient "to", "catalogId", "headerText", "bodyText", and at least one "sections" group are required.');
+        if (recipients.length === 0 || !effectiveCatalogId || !headerText || !bodyText || !Array.isArray(sections) || sections.length === 0) {
+            throw new Error('At least one valid recipient, "catalogId", "headerText", "bodyText", and at least one "sections" group are required.');
         }
 
         const formattedSections = sections.map(s => {
@@ -603,10 +689,10 @@ const CatalogService = {
             throw new Error('Sections must contain at least one valid product SKU.');
         }
 
-        const payload = {
+        const buildPayloadFor = (recipientPhone) => ({
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: String(to).replace(/[^0-9]/g, ''),
+            to: recipientPhone,
             type: 'interactive',
             interactive: {
                 type: 'product_list',
@@ -618,10 +704,10 @@ const CatalogService = {
                     sections: formattedSections,
                 }
             }
-        };
+        });
 
         const previewText = `📑 Products (${totalItems} items): ${headerText}`;
-        return this.dispatchInteractiveMessage(dependencies, tenant, payload, {
+        const metaOptions = {
             previewText,
             outboundMessageType: 'interactive',
             interactivePayload: {
@@ -632,18 +718,25 @@ const CatalogService = {
                 footerText,
                 sections: formattedSections,
             }
-        });
+        };
+
+        if (recipients.length === 1) {
+            return this.dispatchInteractiveMessage(dependencies, tenant, buildPayloadFor(recipients[0]), metaOptions);
+        }
+
+        return this.dispatchBulkInteractive(dependencies, tenant, recipients, buildPayloadFor, metaOptions);
     },
 
     /**
      * Send Product Carousel Message (2–10 scrollable product cards)
      */
     async sendCarousel(dependencies, tenant, reqBody) {
-        const { to, bodyText, cards } = reqBody;
+        const { bodyText, cards } = reqBody;
         const defaultCatalogId = tenant.whatsappConfig?.catalogId;
+        const recipients = this.extractRecipientList(reqBody);
 
-        if (!to || !bodyText || !Array.isArray(cards) || cards.length < 2) {
-            throw new Error('Recipient "to", "bodyText", and at least 2 product "cards" are required.');
+        if (recipients.length === 0 || !bodyText || !Array.isArray(cards) || cards.length < 2) {
+            throw new Error('At least one valid recipient, "bodyText", and at least 2 product "cards" are required.');
         }
 
         const formattedCards = cards.map((c, idx) => {
@@ -669,10 +762,10 @@ const CatalogService = {
             };
         });
 
-        const payload = {
+        const buildPayloadFor = (recipientPhone) => ({
             messaging_product: 'whatsapp',
             recipient_type: 'individual',
-            to: String(to).replace(/[^0-9]/g, ''),
+            to: recipientPhone,
             type: 'interactive',
             interactive: {
                 type: 'carousel',
@@ -681,10 +774,10 @@ const CatalogService = {
                     cards: formattedCards,
                 }
             }
-        };
+        });
 
         const previewText = `🎠 Product Carousel (${formattedCards.length} cards): ${bodyText}`;
-        return this.dispatchInteractiveMessage(dependencies, tenant, payload, {
+        const metaOptions = {
             previewText,
             outboundMessageType: 'interactive',
             interactivePayload: {
@@ -692,7 +785,13 @@ const CatalogService = {
                 bodyText,
                 cards: formattedCards,
             }
-        });
+        };
+
+        if (recipients.length === 1) {
+            return this.dispatchInteractiveMessage(dependencies, tenant, buildPayloadFor(recipients[0]), metaOptions);
+        }
+
+        return this.dispatchBulkInteractive(dependencies, tenant, recipients, buildPayloadFor, metaOptions);
     },
 
     /**

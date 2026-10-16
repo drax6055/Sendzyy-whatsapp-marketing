@@ -99,6 +99,9 @@ class CatalogSettingsLoaded extends CatalogState {
   final bool isSyncingCatalogs;
   final bool isLoadingOrders;
   final bool isSending;
+  final int sendingCurrent;
+  final int sendingTotal;
+  final CatalogBulkResult? lastBulkResult;
   final String? successMessage;
   final String? errorMessage;
 
@@ -112,6 +115,9 @@ class CatalogSettingsLoaded extends CatalogState {
     this.isSyncingCatalogs = false,
     this.isLoadingOrders = false,
     this.isSending = false,
+    this.sendingCurrent = 0,
+    this.sendingTotal = 0,
+    this.lastBulkResult,
     this.successMessage,
     this.errorMessage,
   });
@@ -143,6 +149,10 @@ class CatalogSettingsLoaded extends CatalogState {
     bool? isSyncingCatalogs,
     bool? isLoadingOrders,
     bool? isSending,
+    int? sendingCurrent,
+    int? sendingTotal,
+    CatalogBulkResult? lastBulkResult,
+    bool clearBulkResult = false,
     String? successMessage,
     bool clearSuccess = false,
     String? errorMessage,
@@ -158,6 +168,9 @@ class CatalogSettingsLoaded extends CatalogState {
       isSyncingCatalogs: isSyncingCatalogs ?? this.isSyncingCatalogs,
       isLoadingOrders: isLoadingOrders ?? this.isLoadingOrders,
       isSending: isSending ?? this.isSending,
+      sendingCurrent: sendingCurrent ?? this.sendingCurrent,
+      sendingTotal: sendingTotal ?? this.sendingTotal,
+      lastBulkResult: clearBulkResult ? null : (lastBulkResult ?? this.lastBulkResult),
       successMessage: clearSuccess ? null : (successMessage ?? this.successMessage),
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
@@ -510,32 +523,162 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
     SendCatalogMessageEvent event,
     Emitter<CatalogState> emit,
   ) async {
-    await _handleSend(() => _repository.sendCatalogMessage(event.request),
-        'Catalog message sent successfully', emit);
+    final recipients = event.request.allRecipients;
+    if (recipients.length <= 1) {
+      await _handleSend(() => _repository.sendCatalogMessage(event.request),
+          'Catalog message sent successfully', emit);
+    } else {
+      await _handleBulkSend(
+        recipients: recipients,
+        sendSingle: (phone) => _repository.sendCatalogMessage(
+          event.request.copyWith(to: phone, clearRecipients: true),
+        ),
+        label: 'Catalog message',
+        emit: emit,
+      );
+    }
   }
 
   Future<void> _onSendSingleProduct(
     SendSingleProductEvent event,
     Emitter<CatalogState> emit,
   ) async {
-    await _handleSend(() => _repository.sendSingleProduct(event.request),
-        'Single product message sent successfully', emit);
+    final recipients = event.request.allRecipients;
+    if (recipients.length <= 1) {
+      await _handleSend(() => _repository.sendSingleProduct(event.request),
+          'Single product message sent successfully', emit);
+    } else {
+      await _handleBulkSend(
+        recipients: recipients,
+        sendSingle: (phone) => _repository.sendSingleProduct(
+          event.request.copyWith(to: phone, clearRecipients: true),
+        ),
+        label: 'Single product',
+        emit: emit,
+      );
+    }
   }
 
   Future<void> _onSendMultiProduct(
     SendMultiProductEvent event,
     Emitter<CatalogState> emit,
   ) async {
-    await _handleSend(() => _repository.sendMultiProduct(event.request),
-        'Multi-product message sent successfully', emit);
+    final recipients = event.request.allRecipients;
+    if (recipients.length <= 1) {
+      await _handleSend(() => _repository.sendMultiProduct(event.request),
+          'Multi-product message sent successfully', emit);
+    } else {
+      await _handleBulkSend(
+        recipients: recipients,
+        sendSingle: (phone) => _repository.sendMultiProduct(
+          event.request.copyWith(to: phone, clearRecipients: true),
+        ),
+        label: 'Multi-product message',
+        emit: emit,
+      );
+    }
   }
 
   Future<void> _onSendProductCarousel(
     SendProductCarouselEvent event,
     Emitter<CatalogState> emit,
   ) async {
-    await _handleSend(() => _repository.sendProductCarousel(event.request),
-        'Product carousel sent successfully', emit);
+    final recipients = event.request.allRecipients;
+    if (recipients.length <= 1) {
+      await _handleSend(() => _repository.sendProductCarousel(event.request),
+          'Product carousel sent successfully', emit);
+    } else {
+      await _handleBulkSend(
+        recipients: recipients,
+        sendSingle: (phone) => _repository.sendProductCarousel(
+          event.request.copyWith(to: phone, clearRecipients: true),
+        ),
+        label: 'Product carousel',
+        emit: emit,
+      );
+    }
+  }
+
+  Future<void> _handleBulkSend({
+    required List<String> recipients,
+    required Future<String> Function(String phone) sendSingle,
+    required String label,
+    required Emitter<CatalogState> emit,
+  }) async {
+    final current = state is CatalogSettingsLoaded
+        ? state as CatalogSettingsLoaded
+        : null;
+    if (current == null) return;
+
+    final total = recipients.length;
+    emit(current.copyWith(
+      isSending: true,
+      sendingCurrent: 0,
+      sendingTotal: total,
+      clearError: true,
+      clearSuccess: true,
+      clearBulkResult: true,
+    ));
+
+    int successCount = 0;
+    int failureCount = 0;
+    final List<String> failedNumbers = [];
+    const int batchSize = 5;
+
+    for (int i = 0; i < total; i += batchSize) {
+      final chunk = recipients.sublist(
+        i,
+        (i + batchSize > total) ? total : i + batchSize,
+      );
+
+      final results = await Future.wait(chunk.map((phone) async {
+        try {
+          final id = await sendSingle(phone);
+          return (phone: phone, success: true, id: id, error: null);
+        } catch (err) {
+          return (phone: phone, success: false, id: null, error: err.toString());
+        }
+      }));
+
+      for (final r in results) {
+        if (r.success) {
+          successCount++;
+        } else {
+          failureCount++;
+          failedNumbers.add(r.phone);
+        }
+      }
+
+      final processed = successCount + failureCount;
+      emit(current.copyWith(
+        isSending: true,
+        sendingCurrent: processed,
+        sendingTotal: total,
+      ));
+    }
+
+    final bulkResult = CatalogBulkResult(
+      total: total,
+      successCount: successCount,
+      failureCount: failureCount,
+      failedNumbers: failedNumbers,
+      dispatchedAt: DateTime.now(),
+    );
+
+    final summaryMsg = failureCount == 0
+        ? 'Successfully sent $label to all $successCount recipient(s)!'
+        : 'Sent $label to $successCount of $total recipient(s) ($failureCount failed)';
+
+    emit(current.copyWith(
+      isSending: false,
+      sendingCurrent: total,
+      sendingTotal: total,
+      lastBulkResult: bulkResult,
+      successMessage: summaryMsg,
+      errorMessage: failureCount > 0
+          ? 'Failed to deliver to ${failedNumbers.length} recipient(s). Check 24-hour window or phone format.'
+          : null,
+    ));
   }
 
   Future<void> _handleSend(
@@ -546,13 +689,30 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
     final current = state is CatalogSettingsLoaded
         ? state as CatalogSettingsLoaded
         : null;
-    if (current != null) emit(current.copyWith(isSending: true, clearError: true));
+    if (current != null) {
+      emit(current.copyWith(
+        isSending: true,
+        sendingCurrent: 0,
+        sendingTotal: 1,
+        clearError: true,
+        clearSuccess: true,
+        clearBulkResult: true,
+      ));
+    }
 
     try {
       final messageId = await action();
       if (current != null) {
         emit(current.copyWith(
           isSending: false,
+          sendingCurrent: 1,
+          sendingTotal: 1,
+          lastBulkResult: CatalogBulkResult(
+            total: 1,
+            successCount: 1,
+            failureCount: 0,
+            dispatchedAt: DateTime.now(),
+          ),
           successMessage: '$successMsg (ID: $messageId)',
         ));
       }
@@ -560,6 +720,8 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
       if (current != null) {
         emit(current.copyWith(
           isSending: false,
+          sendingCurrent: 1,
+          sendingTotal: 1,
           errorMessage: e.toString().replaceAll('Exception: ', ''),
         ));
       }

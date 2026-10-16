@@ -123,23 +123,69 @@ class CatalogProduct {
 
 // ── Message Request Models ────────────────────────────────────────────────────
 
+/// Catalog bulk sending result summary
+class CatalogBulkResult {
+  final int total;
+  final int successCount;
+  final int failureCount;
+  final List<String> failedNumbers;
+  final DateTime dispatchedAt;
+
+  const CatalogBulkResult({
+    required this.total,
+    required this.successCount,
+    required this.failureCount,
+    this.failedNumbers = const [],
+    required this.dispatchedAt,
+  });
+}
+
 /// Catalog Message — shows full catalog with thumbnail + "View catalog" button
 class CatalogMessageRequest {
   final String to;
+  final List<String>? recipients;
   final String bodyText;
   final String? footerText;
   final String? thumbnailProductRetailerId;
 
   CatalogMessageRequest({
     required this.to,
+    this.recipients,
     required this.bodyText,
     this.footerText,
     this.thumbnailProductRetailerId,
   });
 
+  List<String> get allRecipients {
+    if (recipients != null && recipients!.isNotEmpty) {
+      return recipients!;
+    }
+    return to.trim().isNotEmpty ? [to.trim()] : [];
+  }
+
+  CatalogMessageRequest copyWith({
+    String? to,
+    List<String>? recipients,
+    bool clearRecipients = false,
+    String? bodyText,
+    String? footerText,
+    String? thumbnailProductRetailerId,
+  }) {
+    return CatalogMessageRequest(
+      to: to ?? this.to,
+      recipients: clearRecipients ? null : (recipients ?? this.recipients),
+      bodyText: bodyText ?? this.bodyText,
+      footerText: footerText ?? this.footerText,
+      thumbnailProductRetailerId:
+          thumbnailProductRetailerId ?? this.thumbnailProductRetailerId,
+    );
+  }
+
   Map<String, dynamic> toJson() {
+    final effectiveRecipients = (recipients != null && recipients!.length > 1) ? recipients! : null;
     return {
-      'to': to,
+      'to': effectiveRecipients ?? to,
+      if (effectiveRecipients != null) 'recipients': effectiveRecipients,
       'bodyText': bodyText,
       if (footerText != null && footerText!.isNotEmpty) 'footerText': footerText,
       if (thumbnailProductRetailerId != null &&
@@ -175,6 +221,7 @@ class CatalogMessageRequest {
 /// Single Product Message — highlights one specific product
 class SingleProductRequest {
   final String to;
+  final List<String>? recipients;
   final String catalogId;
   final String productRetailerId;
   final String? bodyText;
@@ -182,15 +229,44 @@ class SingleProductRequest {
 
   SingleProductRequest({
     required this.to,
+    this.recipients,
     required this.catalogId,
     required this.productRetailerId,
     this.bodyText,
     this.footerText,
   });
 
+  List<String> get allRecipients {
+    if (recipients != null && recipients!.isNotEmpty) {
+      return recipients!;
+    }
+    return to.trim().isNotEmpty ? [to.trim()] : [];
+  }
+
+  SingleProductRequest copyWith({
+    String? to,
+    List<String>? recipients,
+    bool clearRecipients = false,
+    String? catalogId,
+    String? productRetailerId,
+    String? bodyText,
+    String? footerText,
+  }) {
+    return SingleProductRequest(
+      to: to ?? this.to,
+      recipients: clearRecipients ? null : (recipients ?? this.recipients),
+      catalogId: catalogId ?? this.catalogId,
+      productRetailerId: productRetailerId ?? this.productRetailerId,
+      bodyText: bodyText ?? this.bodyText,
+      footerText: footerText ?? this.footerText,
+    );
+  }
+
   Map<String, dynamic> toJson() {
+    final effectiveRecipients = (recipients != null && recipients!.length > 1) ? recipients! : null;
     return {
-      'to': to,
+      'to': effectiveRecipients ?? to,
+      if (effectiveRecipients != null) 'recipients': effectiveRecipients,
       'catalogId': catalogId,
       'productRetailerId': productRetailerId,
       if (bodyText != null && bodyText!.isNotEmpty) 'bodyText': bodyText,
@@ -240,6 +316,7 @@ class MultiProductSection {
 /// Multi-Product Message — up to 30 products across 10 sections
 class MultiProductRequest {
   final String to;
+  final List<String>? recipients;
   final String catalogId;
   final String headerText;
   final String bodyText;
@@ -248,6 +325,7 @@ class MultiProductRequest {
 
   MultiProductRequest({
     required this.to,
+    this.recipients,
     required this.catalogId,
     required this.headerText,
     required this.bodyText,
@@ -255,9 +333,39 @@ class MultiProductRequest {
     required this.sections,
   });
 
+  List<String> get allRecipients {
+    if (recipients != null && recipients!.isNotEmpty) {
+      return recipients!;
+    }
+    return to.trim().isNotEmpty ? [to.trim()] : [];
+  }
+
+  MultiProductRequest copyWith({
+    String? to,
+    List<String>? recipients,
+    bool clearRecipients = false,
+    String? catalogId,
+    String? headerText,
+    String? bodyText,
+    String? footerText,
+    List<MultiProductSection>? sections,
+  }) {
+    return MultiProductRequest(
+      to: to ?? this.to,
+      recipients: clearRecipients ? null : (recipients ?? this.recipients),
+      catalogId: catalogId ?? this.catalogId,
+      headerText: headerText ?? this.headerText,
+      bodyText: bodyText ?? this.bodyText,
+      footerText: footerText ?? this.footerText,
+      sections: sections ?? this.sections,
+    );
+  }
+
   Map<String, dynamic> toJson() {
+    final effectiveRecipients = (recipients != null && recipients!.length > 1) ? recipients! : null;
     return {
-      'to': to,
+      'to': effectiveRecipients ?? to,
+      if (effectiveRecipients != null) 'recipients': effectiveRecipients,
       'catalogId': catalogId,
       'headerText': headerText,
       'bodyText': bodyText,
@@ -318,18 +426,44 @@ class ProductCarouselCard {
 /// Product Carousel Message — 2–10 horizontally scrollable product cards
 class ProductCarouselRequest {
   final String to;
+  final List<String>? recipients;
   final String bodyText;
   final List<ProductCarouselCard> cards;
 
   ProductCarouselRequest({
     required this.to,
+    this.recipients,
     required this.bodyText,
     required this.cards,
   });
 
+  List<String> get allRecipients {
+    if (recipients != null && recipients!.isNotEmpty) {
+      return recipients!;
+    }
+    return to.trim().isNotEmpty ? [to.trim()] : [];
+  }
+
+  ProductCarouselRequest copyWith({
+    String? to,
+    List<String>? recipients,
+    bool clearRecipients = false,
+    String? bodyText,
+    List<ProductCarouselCard>? cards,
+  }) {
+    return ProductCarouselRequest(
+      to: to ?? this.to,
+      recipients: clearRecipients ? null : (recipients ?? this.recipients),
+      bodyText: bodyText ?? this.bodyText,
+      cards: cards ?? this.cards,
+    );
+  }
+
   Map<String, dynamic> toJson() {
+    final effectiveRecipients = (recipients != null && recipients!.length > 1) ? recipients! : null;
     return {
-      'to': to,
+      'to': effectiveRecipients ?? to,
+      if (effectiveRecipients != null) 'recipients': effectiveRecipients,
       'bodyText': bodyText,
       'cards': cards.map((c) => c.toJson()).toList(),
     };

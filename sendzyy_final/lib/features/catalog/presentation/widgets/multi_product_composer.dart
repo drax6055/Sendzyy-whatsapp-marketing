@@ -4,7 +4,10 @@ import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_dropdown_field.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_recipient_selector.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser_widget.dart';
+import 'package:iFloraBuzz/features/messages/data/models/recipient_data.dart';
+import 'package:iFloraBuzz/features/messages/presentation/widgets/campaign_result_dialog.dart';
 
 /// Multi-Product Message composer — up to 30 products across 10 sections.
 class MultiProductComposer extends StatefulWidget {
@@ -23,7 +26,8 @@ class MultiProductComposer extends StatefulWidget {
 
 class _MultiProductComposerState extends State<MultiProductComposer> {
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _toCtrl;
+  final _recipientSelectorKey = GlobalKey<CatalogRecipientSelectorState>();
+  List<RecipientData> _recipients = [];
   late final TextEditingController _catalogCtrl;
   late final TextEditingController _headerCtrl;
   late final TextEditingController _bodyCtrl;
@@ -37,7 +41,9 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
   @override
   void initState() {
     super.initState();
-    _toCtrl = TextEditingController(text: widget.initialTo ?? '');
+    if (widget.initialTo != null && widget.initialTo!.trim().isNotEmpty) {
+      _recipients = [RecipientData.fromNumber(widget.initialTo!)];
+    }
     _catalogCtrl = TextEditingController(text: widget.initialCatalogId ?? '');
     _headerCtrl = TextEditingController();
     _bodyCtrl = TextEditingController();
@@ -49,7 +55,6 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
 
   @override
   void dispose() {
-    _toCtrl.dispose();
     _catalogCtrl.dispose();
     _headerCtrl.dispose();
     _bodyCtrl.dispose();
@@ -74,6 +79,17 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
   }
 
   void _send() {
+    _recipientSelectorKey.currentState?.flushPendingInput();
+    if (_recipients.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter or select at least one recipient phone number.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
     if (_totalProducts == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -93,10 +109,13 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
             ))
         .toList();
 
+    final phoneNumbers = _recipients.map((r) => r.mobileNumber).toList();
+
     context.read<CatalogBloc>().add(
           SendMultiProductEvent(
             MultiProductRequest(
-              to: _toCtrl.text.trim(),
+              to: phoneNumbers.first,
+              recipients: phoneNumbers,
               catalogId: _catalogCtrl.text.trim(),
               headerText: _headerCtrl.text.trim(),
               bodyText: _bodyCtrl.text.trim(),
@@ -137,22 +156,39 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
   Widget build(BuildContext context) {
     return BlocConsumer<CatalogBloc, CatalogState>(
       listener: (context, state) {
-        if (state is CatalogSettingsLoaded && state.successMessage != null) {
-          _headerCtrl.clear();
-          _bodyCtrl.clear();
-          _footerCtrl.clear();
-          setState(() {
-            for (final s in _sections) {
-              s.dispose();
-            }
-            _sections.clear();
-            _sections.add(_SectionData());
-          });
-          if (widget.initialTo == null) _toCtrl.clear();
+        if (state is CatalogSettingsLoaded) {
+          if (state.lastBulkResult != null && state.lastBulkResult!.total > 1) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => CampaignResultDialog(
+                successCount: state.lastBulkResult!.successCount,
+                failureCount: state.lastBulkResult!.failureCount,
+                campaignId: 'multi_product_${DateTime.now().millisecondsSinceEpoch}',
+                dispatchedAt: state.lastBulkResult!.dispatchedAt,
+                onDone: () {},
+              ),
+            );
+          }
+          if (state.successMessage != null) {
+            _headerCtrl.clear();
+            _bodyCtrl.clear();
+            _footerCtrl.clear();
+            setState(() {
+              for (final s in _sections) {
+                s.dispose();
+              }
+              _sections.clear();
+              _sections.add(_SectionData());
+              if (widget.initialTo == null) _recipients = [];
+            });
+          }
         }
       },
       builder: (context, state) {
         final isSending = state is CatalogSettingsLoaded && state.isSending;
+        final sendingCurrent = state is CatalogSettingsLoaded ? state.sendingCurrent : 0;
+        final sendingTotal = state is CatalogSettingsLoaded ? state.sendingTotal : 0;
 
         if (_catalogCtrl.text.isEmpty && state is CatalogSettingsLoaded && state.activeCatalogId != null) {
           _catalogCtrl.text = state.activeCatalogId!;
@@ -165,9 +201,16 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
             children: [
               _InfoBanner(),
               const SizedBox(height: 20),
-              _field(_toCtrl, 'Recipient Phone *', '+919876543210',
-                  Icons.phone_rounded, required: true),
+
+              // Reusable Recipient Selector
+              CatalogRecipientSelector(
+                key: _recipientSelectorKey,
+                recipients: _recipients,
+                onRecipientsChanged: (list) => setState(() => _recipients = list),
+                label: 'Recipient Phone Numbers',
+              ),
               const SizedBox(height: 14),
+
               CatalogDropdownField(
                 value: _catalogCtrl.text,
                 onChanged: (val) {
@@ -226,7 +269,14 @@ class _MultiProductComposerState extends State<MultiProductComposer> {
                       foregroundColor: AppTheme.primaryColor),
                 ),
               const SizedBox(height: 24),
-              _SendButton(isSending: isSending, onTap: _send, label: 'Send Multi-Product'),
+              _SendButton(
+                isSending: isSending,
+                onTap: _send,
+                label: _recipients.length > 1
+                    ? 'Send Multi-Product to ${_recipients.length} Recipients'
+                    : 'Send Multi-Product',
+                sendingText: sendingTotal > 1 ? 'Sending ($sendingCurrent / $sendingTotal)...' : 'Sending...',
+              ),
             ],
           ),
         );
@@ -494,7 +544,8 @@ class ProductCarouselComposer extends StatefulWidget {
 
 class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
   final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _toCtrl;
+  final _recipientSelectorKey = GlobalKey<CatalogRecipientSelectorState>();
+  List<RecipientData> _recipients = [];
   late final TextEditingController _catalogCtrl;
   late final TextEditingController _bodyCtrl;
 
@@ -503,7 +554,9 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
   @override
   void initState() {
     super.initState();
-    _toCtrl = TextEditingController(text: widget.initialTo ?? '');
+    if (widget.initialTo != null && widget.initialTo!.trim().isNotEmpty) {
+      _recipients = [RecipientData.fromNumber(widget.initialTo!)];
+    }
     _catalogCtrl = TextEditingController(text: widget.initialCatalogId ?? '');
     _bodyCtrl = TextEditingController();
     // Minimum 2 cards
@@ -513,7 +566,6 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
 
   @override
   void dispose() {
-    _toCtrl.dispose();
     _catalogCtrl.dispose();
     _bodyCtrl.dispose();
     for (final c in _cardControllers) {
@@ -536,6 +588,17 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
   }
 
   void _send() {
+    _recipientSelectorKey.currentState?.flushPendingInput();
+    if (_recipients.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter or select at least one recipient phone number.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     if (!_formKey.currentState!.validate()) return;
 
     final catalogId = _catalogCtrl.text.trim();
@@ -560,10 +623,13 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
       return;
     }
 
+    final phoneNumbers = _recipients.map((r) => r.mobileNumber).toList();
+
     context.read<CatalogBloc>().add(
           SendProductCarouselEvent(
             ProductCarouselRequest(
-              to: _toCtrl.text.trim(),
+              to: phoneNumbers.first,
+              recipients: phoneNumbers,
               bodyText: _bodyCtrl.text.trim(),
               cards: cards,
             ),
@@ -599,16 +665,35 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
   Widget build(BuildContext context) {
     return BlocConsumer<CatalogBloc, CatalogState>(
       listener: (context, state) {
-        if (state is CatalogSettingsLoaded && state.successMessage != null) {
-          _bodyCtrl.clear();
-          for (final c in _cardControllers) {
-            c.clear();
+        if (state is CatalogSettingsLoaded) {
+          if (state.lastBulkResult != null && state.lastBulkResult!.total > 1) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => CampaignResultDialog(
+                successCount: state.lastBulkResult!.successCount,
+                failureCount: state.lastBulkResult!.failureCount,
+                campaignId: 'carousel_${DateTime.now().millisecondsSinceEpoch}',
+                dispatchedAt: state.lastBulkResult!.dispatchedAt,
+                onDone: () {},
+              ),
+            );
           }
-          if (widget.initialTo == null) _toCtrl.clear();
+          if (state.successMessage != null) {
+            _bodyCtrl.clear();
+            for (final c in _cardControllers) {
+              c.clear();
+            }
+            if (widget.initialTo == null) {
+              setState(() => _recipients = []);
+            }
+          }
         }
       },
       builder: (context, state) {
         final isSending = state is CatalogSettingsLoaded && state.isSending;
+        final sendingCurrent = state is CatalogSettingsLoaded ? state.sendingCurrent : 0;
+        final sendingTotal = state is CatalogSettingsLoaded ? state.sendingTotal : 0;
 
         if (_catalogCtrl.text.isEmpty && state is CatalogSettingsLoaded && state.activeCatalogId != null) {
           _catalogCtrl.text = state.activeCatalogId!;
@@ -645,9 +730,16 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
                 ),
               ),
               const SizedBox(height: 20),
-              _buildField(_toCtrl, 'Recipient Phone *', '+919876543210',
-                  Icons.phone_rounded, required: true),
+
+              // Reusable Recipient Selector
+              CatalogRecipientSelector(
+                key: _recipientSelectorKey,
+                recipients: _recipients,
+                onRecipientsChanged: (list) => setState(() => _recipients = list),
+                label: 'Recipient Phone Numbers',
+              ),
               const SizedBox(height: 14),
+
               CatalogDropdownField(
                 value: _catalogCtrl.text,
                 onChanged: (val) {
@@ -747,9 +839,13 @@ class _ProductCarouselComposerState extends State<ProductCarouselComposer> {
                 ),
               const SizedBox(height: 24),
               _SendButton(
-                  isSending: isSending,
-                  onTap: _send,
-                  label: 'Send Product Carousel'),
+                isSending: isSending,
+                onTap: _send,
+                label: _recipients.length > 1
+                    ? 'Send Product Carousel to ${_recipients.length} Recipients'
+                    : 'Send Product Carousel',
+                sendingText: sendingTotal > 1 ? 'Sending ($sendingCurrent / $sendingTotal)...' : 'Sending...',
+              ),
             ],
           ),
         );
@@ -789,11 +885,13 @@ class _SendButton extends StatelessWidget {
   final bool isSending;
   final VoidCallback onTap;
   final String label;
+  final String? sendingText;
 
   const _SendButton({
     required this.isSending,
     required this.onTap,
     required this.label,
+    this.sendingText,
   });
 
   @override
@@ -810,7 +908,7 @@ class _SendButton extends StatelessWidget {
                 child: CircularProgressIndicator(
                     strokeWidth: 2, color: Colors.white))
             : const Icon(Icons.send_rounded, size: 18),
-        label: Text(isSending ? 'Sending...' : label),
+        label: Text(isSending ? (sendingText ?? 'Sending...') : label),
         style: ElevatedButton.styleFrom(
           backgroundColor: AppTheme.primaryColor,
           foregroundColor: Colors.white,
