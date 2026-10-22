@@ -71,7 +71,52 @@ function maskSecret(secret) {
   return '*'.repeat(secret.length - 8) + secret.slice(-8);
 }
 
-module.exports = { encryptSecret, decryptSecret, maskSecret, generateAppSecretProof };
+/**
+ * Returns a 32-byte key Buffer for AES-256-GCM token encryption.
+ */
+function getTokenEncryptionKey() {
+  const raw = process.env.TOKEN_ENCRYPTION_KEY || process.env.WEBHOOK_SECRET_KEY || '0000000000000000000000000000000000000000000000000000000000000000';
+  if (raw.length === 64) {
+    return Buffer.from(raw, 'hex');
+  }
+  return crypto.createHash('sha256').update(raw).digest();
+}
+
+/**
+ * Encrypts a Meta access token using AES-256-GCM.
+ * @param {string} plain - Plaintext token
+ * @returns {string} iv.tag.enc encoded in base64
+ */
+function encryptToken(plain) {
+  if (!plain) return '';
+  const key = getTokenEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return [iv, cipher.getAuthTag(), enc].map(b => b.toString('base64')).join('.');
+}
+
+/**
+ * Decrypts an AES-256-GCM encrypted Meta access token.
+ * @param {string} blob - iv.tag.enc encoded in base64
+ * @returns {string} Plaintext token
+ */
+function decryptToken(blob) {
+  if (!blob) return '';
+  if (!blob.includes('.')) {
+    return blob;
+  }
+  try {
+    const [iv, tag, enc] = blob.split('.').map(s => Buffer.from(s, 'base64'));
+    const key = getTokenEncryptionKey();
+    const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(enc), d.final()]).toString('utf8');
+  } catch (err) {
+    console.error('[cryptoUtils] decryptToken failed:', err.message);
+    throw new Error('Failed to decrypt Meta access token');
+  }
+}
 
 /**
  * Generates an HMAC-SHA256 appsecret_proof required by Meta Graph API calls.
@@ -87,3 +132,12 @@ module.exports = { encryptSecret, decryptSecret, maskSecret, generateAppSecretPr
 function generateAppSecretProof(systemToken, appSecret) {
   return crypto.createHmac('sha256', appSecret).update(systemToken).digest('hex');
 }
+
+module.exports = {
+  encryptSecret,
+  decryptSecret,
+  maskSecret,
+  encryptToken,
+  decryptToken,
+  generateAppSecretProof
+};

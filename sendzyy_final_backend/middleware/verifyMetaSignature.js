@@ -62,4 +62,16 @@ function verifyMetaWebhookSignature(req, res, next) {
     next();
 }
 
-module.exports = { verifyMetaWebhookSignature };
+/**
+ * Helper to capture raw buffer for HMAC verification before JSON parsing
+ */
+function captureRawBody(req, res, buf) {
+    req.rawBody = buf;
+    req.rawBuffer = buf;
+}
+
+module.exports = {
+    verifyMetaWebhookSignature,
+    verifyMetaSignature: verifyMetaWebhookSignature,
+    captureRawBody
+};

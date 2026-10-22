@@ -563,6 +563,23 @@ class _IndiaMartLeadsPageState extends State<IndiaMartLeadsPage> {
                       ],
                     ),
                   ),
+                if (_error != null)
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.error_outline, color: Colors.red.shade700, size: 20),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(_error!, style: TextStyle(color: Colors.red.shade900, fontSize: 13))),
+                      ],
+                    ),
+                  ),
 
                 // Table controls (Filters) and the Table
                 Expanded(

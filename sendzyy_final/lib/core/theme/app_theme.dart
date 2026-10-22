@@ -7,6 +7,8 @@ class AppTheme {
   static const Color accentColor = Color(0xFF128C7E);
   static const Color backgroundColor = Color(0xFFF0F2F5);
   static const Color surfaceColor = Colors.white;
+  static const Color cardColor = Color(0xFF1E293B);
+  static const Color scaffoldBackgroundColor = Color(0xFF0F172A);
 
   static ThemeData get lightTheme {
     return ThemeData(

@@ -483,37 +483,8 @@ const chatbotAnalyticsSchema = new mongoose.Schema({
 chatbotAnalyticsSchema.index({ tenantId: 1, chatbotId: 1, date: 1 });
 const ChatbotAnalytics = mongoose.model('ChatbotAnalytics', chatbotAnalyticsSchema);
 
-const leadSchema = new mongoose.Schema({
-    tenantId: { type: String, required: true },
-    name: { type: String, default: '' },
-    mobileNumber: { type: String, required: true },   // normalised, e.g. "919876543210"
-    email: { type: String, default: '' },
-    companyName: { type: String, default: '' },
-    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart'], required: true },
-    formName: { type: String, default: '' },
-    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
-    status: { type: String, enum: ['new', 'contacted', 'converted', 'failed'], default: 'new' },
-    clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
-    isDuplicate: { type: Boolean, default: false },
-}, { timestamps: true });
-leadSchema.index({ tenantId: 1, createdAt: -1 });
-leadSchema.index({ tenantId: 1, mobileNumber: 1 });
-const Lead = mongoose.model('Lead', leadSchema);
-
-const leadTriggerSchema = new mongoose.Schema({
-    tenantId: { type: String, required: true },
-    source: { type: String, enum: ['shopify', 'wordpress', 'indiamart', 'any'], default: 'any' },
-    formName: { type: String, default: '' },
-    action: { type: String, enum: ['send_template', 'start_chatbot'], required: true },
-    templateName: { type: String, default: '' },
-    templateLanguage: { type: String, default: 'en_US' },
-    mediaId: { type: String, default: '' },
-    mediaType: { type: String, default: '' },
-    variableMapping: { type: mongoose.Schema.Types.Mixed, default: {} }, // {"1":"name","2":"mobileNumber"}
-    chatbotId: { type: String, default: '' },
-    isActive: { type: Boolean, default: true },
-}, { timestamps: true });
-const LeadTrigger = mongoose.model('LeadTrigger', leadTriggerSchema);
+const Lead = require('./models/Lead');
+const LeadTrigger = require('./models/LeadTrigger');
 
 const clientTriggerSchema = new mongoose.Schema({
     tenantId: { type: String, required: true, unique: true },
@@ -869,6 +840,15 @@ app.use(bodyParser.json({
 app.set('TenantModel', Tenant);
 app.use('/api/instagram', instagramRoutes);
 app.use('/api/instagram/comment-automations', instagramCommentAutomationRoutes);
+
+// ── Mount Meta Ads Lead Integration & Compliance Routes ───────────────────────
+const metaRoutes = require('./routes/metaRoutes');
+const metaLeadgenWebhook = require('./routes/metaLeadgenWebhook');
+const metaCompliance = require('./routes/metaCompliance');
+
+app.use('/api/meta', metaRoutes);
+app.use(metaLeadgenWebhook);
+app.use(metaCompliance);
 app.use(bodyParser.raw({
     type: (req) => {
         const contentType = req.headers['content-type'] || '';
@@ -6802,6 +6782,29 @@ webhookIngestionService.setHandler(async (body, ctx) => {
             } else {
                 const from = message.from;
                 const profileName = contacts?.[0]?.profile?.name || 'Unknown Sender';
+
+                // ── CTWA (Click-to-WhatsApp) Referral Detection ─────────
+                if (message.referral) {
+                    try {
+                        const { handleCtwaReferralIfPresent } = require('./services/ctwaService');
+                        await handleCtwaReferralIfPresent({
+                            tenantId,
+                            message,
+                            contact: contacts?.[0]
+                        });
+                    } catch (ctwaErr) {
+                        console.error('[CTWA Webhook] Error handling referral:', ctwaErr.message);
+                    }
+                }
+
+                // ── Check if contact has a pending chatbot session awaiting customer reply ──
+                try {
+                    const { maybeStartPendingChatbot } = require('./services/metaTriggers');
+                    await maybeStartPendingChatbot(tenantId, from);
+                } catch (pendingErr) {
+                    console.error('[MetaTriggers] Error checking pending chatbot session:', pendingErr.message);
+                }
+
                 // ── Catalog Order: handle cart submissions from WhatsApp customers ─────────
                 if (message.type === 'order') {
                     try {
@@ -7494,11 +7497,45 @@ setInterval(runScheduledCampaigns, 60 * 1000);
 app.post('/api/leads/triggers', authenticate, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { source, formName, action, templateName, templateLanguage, mediaId, mediaType, variableMapping, chatbotId, isActive } = req.body;
+        const {
+            source,
+            adType,
+            formId,
+            campaignId,
+            adId,
+            formName,
+            action,
+            templateName,
+            templateLanguage,
+            mediaId,
+            mediaType,
+            variableMapping,
+            chatbotId,
+            cooldownDays,
+            requireConsent,
+            isActive
+        } = req.body;
+
         if (!action) return res.status(400).json({ error: 'action is required' });
+
+        // Strict 24-hr window validation for Instant Form leads
+        if ((source === 'meta_ads' || source === 'any') && (adType === 'instant_form' || !adType) && action === 'start_chatbot') {
+            return res.status(400).json({
+                error: 'Instant Form leads do not have an open 24-hour customer window. Action must be "send_template". You can specify a follow-up chatbotId that will activate once the lead replies.'
+            });
+        }
+
+        if (action === 'send_template' && !templateName) {
+            return res.status(400).json({ error: 'templateName is required for send_template action' });
+        }
+
         const trigger = await LeadTrigger.create({
             tenantId,
             source: source || 'any',
+            adType: adType || 'any',
+            formId: formId || '',
+            campaignId: campaignId || '',
+            adId: adId || '',
             formName: formName || '',
             action,
             templateName: templateName || '',
@@ -7507,6 +7544,8 @@ app.post('/api/leads/triggers', authenticate, async (req, res) => {
             mediaType: mediaType || '',
             variableMapping: variableMapping || {},
             chatbotId: chatbotId || '',
+            cooldownDays: cooldownDays !== undefined ? Number(cooldownDays) : 7,
+            requireConsent: requireConsent !== undefined ? Boolean(requireConsent) : false,
             isActive: isActive !== undefined ? isActive : true,
         });
         res.status(201).json(trigger);
@@ -7534,8 +7573,40 @@ app.put('/api/leads/triggers/:id', authenticate, async (req, res) => {
         const trigger = await LeadTrigger.findById(req.params.id);
         if (!trigger) return res.status(404).json({ error: 'Not found' });
         if (trigger.tenantId !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
-        const { source, formName, action, templateName, templateLanguage, mediaId, mediaType, variableMapping, chatbotId, isActive } = req.body;
+        const {
+            source,
+            adType,
+            formId,
+            campaignId,
+            adId,
+            formName,
+            action,
+            templateName,
+            templateLanguage,
+            mediaId,
+            mediaType,
+            variableMapping,
+            chatbotId,
+            cooldownDays,
+            requireConsent,
+            isActive
+        } = req.body;
+
+        const effectiveSource = source !== undefined ? source : trigger.source;
+        const effectiveAdType = adType !== undefined ? adType : trigger.adType;
+        const effectiveAction = action !== undefined ? action : trigger.action;
+
+        if ((effectiveSource === 'meta_ads' || effectiveSource === 'any') && (effectiveAdType === 'instant_form' || !effectiveAdType) && effectiveAction === 'start_chatbot') {
+            return res.status(400).json({
+                error: 'Instant Form leads do not have an open 24-hour customer window. Action must be "send_template".'
+            });
+        }
+
         if (source !== undefined) trigger.source = source;
+        if (adType !== undefined) trigger.adType = adType;
+        if (formId !== undefined) trigger.formId = formId;
+        if (campaignId !== undefined) trigger.campaignId = campaignId;
+        if (adId !== undefined) trigger.adId = adId;
         if (formName !== undefined) trigger.formName = formName;
         if (action !== undefined) trigger.action = action;
         if (templateName !== undefined) trigger.templateName = templateName;
@@ -7544,7 +7615,10 @@ app.put('/api/leads/triggers/:id', authenticate, async (req, res) => {
         if (mediaType !== undefined) trigger.mediaType = mediaType;
         if (variableMapping !== undefined) trigger.variableMapping = variableMapping;
         if (chatbotId !== undefined) trigger.chatbotId = chatbotId;
+        if (cooldownDays !== undefined) trigger.cooldownDays = Number(cooldownDays);
+        if (requireConsent !== undefined) trigger.requireConsent = Boolean(requireConsent);
         if (isActive !== undefined) trigger.isActive = isActive;
+
         await trigger.save();
         res.json(trigger);
     } catch (err) {
@@ -7573,11 +7647,26 @@ app.delete('/api/leads/triggers/:id', authenticate, async (req, res) => {
 app.get('/api/leads', authenticate, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { source, status, startDate, endDate, search } = req.query;
+        const { source, status, startDate, endDate, search, adType, formId, campaignId, platform, needsAttention } = req.query;
 
         const query = { tenantId };
         if (source) query.source = source;
         if (status) query.status = status;
+        if (adType) {
+            query.$or = [{ adType: adType }, { 'meta.adType': adType }, { 'touchpoints.adType': adType }];
+        }
+        if (formId) {
+            query.$or = [{ formId: formId }, { 'meta.formId': formId }, { 'touchpoints.formId': formId }];
+        }
+        if (campaignId) {
+            query.$or = [{ campaignId: campaignId }, { 'meta.campaignId': campaignId }, { 'touchpoints.campaignId': campaignId }];
+        }
+        if (platform) {
+            query.$or = [{ platform: platform }, { 'meta.platform': platform }, { 'touchpoints.platform': platform }];
+        }
+        if (needsAttention !== undefined) {
+            query.needsAttention = needsAttention === 'true' || needsAttention === true;
+        }
         if (startDate || endDate) {
             query.createdAt = {};
             if (startDate) query.createdAt.$gte = new Date(startDate);
@@ -7587,6 +7676,12 @@ app.get('/api/leads', authenticate, async (req, res) => {
             query.$or = [
                 { name: { $regex: search, $options: 'i' } },
                 { mobileNumber: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } },
+                { companyName: { $regex: search, $options: 'i' } },
+                { formName: { $regex: search, $options: 'i' } },
+                { 'meta.formName': { $regex: search, $options: 'i' } },
+                { 'meta.campaignName': { $regex: search, $options: 'i' } },
+                { 'meta.adName': { $regex: search, $options: 'i' } },
             ];
         }
 
@@ -7623,6 +7718,8 @@ app.get('/api/leads/analytics', authenticate, async (req, res) => {
                         _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
                         shopify: { $sum: { $cond: [{ $eq: ['$source', 'shopify'] }, 1, 0] } },
                         wordpress: { $sum: { $cond: [{ $eq: ['$source', 'wordpress'] }, 1, 0] } },
+                        indiamart: { $sum: { $cond: [{ $eq: ['$source', 'indiamart'] }, 1, 0] } },
+                        meta_ads: { $sum: { $cond: [{ $eq: ['$source', 'meta_ads'] }, 1, 0] } },
                         total: { $sum: 1 },
                     },
                 },
@@ -7651,7 +7748,8 @@ app.get('/api/leads/:id', authenticate, async (req, res) => {
 });
 
 // 8.4 — PATCH /api/leads/:id/status — update status with enum validation and tenant ownership check
-const VALID_LEAD_STATUSES = ['new', 'contacted', 'converted', 'failed'];
+const VALID_LEAD_STATUSES = ['new', 'contacted', 'engaged', 'converted', 'failed'];
+
 
 app.patch('/api/leads/:id/status', authenticate, async (req, res) => {
     try {

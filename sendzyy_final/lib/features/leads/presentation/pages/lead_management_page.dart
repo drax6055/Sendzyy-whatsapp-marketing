@@ -935,10 +935,15 @@ class _SourceBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isShopify = source.toLowerCase() == 'shopify';
-    final color = isShopify ? Colors.green : Colors.blue;
-    final label = isShopify ? 'Shopify' : 'WordPress';
-    return _Badge(label: label, color: color);
+    final s = source.toLowerCase();
+    if (s == 'shopify') {
+      return const _Badge(label: 'Shopify', color: Colors.green);
+    } else if (s == 'indiamart') {
+      return const _Badge(label: 'IndiaMART', color: Colors.teal);
+    } else if (s == 'meta_ads' || s == 'facebook' || s == 'instagram') {
+      return const _Badge(label: 'Meta Ads', color: Color(0xFF1877F2));
+    }
+    return const _Badge(label: 'WordPress', color: Colors.blue);
   }
 }
 

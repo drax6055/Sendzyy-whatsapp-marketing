@@ -21,6 +21,7 @@ import 'package:iFloraBuzz/features/chatbot/presentation/pages/chatbot_list_page
 import 'package:iFloraBuzz/features/chatbot/presentation/bloc/chatbot_bloc.dart';
 import 'package:iFloraBuzz/features/leads/presentation/pages/lead_management_page.dart';
 import 'package:iFloraBuzz/features/leads/presentation/pages/indiamart_leads_page.dart';
+import 'package:iFloraBuzz/features/leads/presentation/pages/meta_ads_leads_page.dart';
 import 'package:iFloraBuzz/features/integrations/presentation/pages/integration_settings_page.dart';
 import 'package:iFloraBuzz/features/retry/presentation/pages/retry_system_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_profile_setup_page.dart';
@@ -184,7 +185,7 @@ class _DashboardShellState extends State<DashboardShell> {
         if (saved >= 10 && saved <= 12) {
           _isSettingsExpanded = true;
         }
-        if (saved == 4 || saved == 13) {
+        if (saved == 4 || saved == 12 || saved == 20) {
           _isLeadsExpanded = true;
         }
         if (saved == 14 || saved == 15 || saved == 19) {
@@ -211,7 +212,7 @@ class _DashboardShellState extends State<DashboardShell> {
       if (index >= 9 && index <= 11) {
         _isSettingsExpanded = true;
       }
-      if (index == 4 || index == 12) {
+      if (index == 4 || index == 12 || index == 20) {
         _isLeadsExpanded = true;
       }
       if (index == 13 || index == 14 || index == 18) {
@@ -400,6 +401,7 @@ class _DashboardShellState extends State<DashboardShell> {
     const CatalogPage(),
     const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
+    const MetaAdsLeadsPage(),
   ];
 
   Widget _buildSidebarContent({bool isDrawer = false}) {
@@ -855,7 +857,7 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   Widget _buildExpandableLeadsMenu({bool isDrawer = false}) {
-    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 12;
+    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 12 || _selectedIndex == 20;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -924,6 +926,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   12,
                   Icons.store_rounded,
                   'IndiaMART',
+                  isSubItem: true,
+                  isDrawer: isDrawer,
+                ),
+                _buildNavItem(
+                  20,
+                  Icons.campaign_rounded,
+                  'Meta Ads',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
