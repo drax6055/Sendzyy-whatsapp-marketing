@@ -337,6 +337,10 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildHeader(),
+                    if (_error != null) ...[
+                      const SizedBox(height: 16),
+                      _buildErrorBanner(),
+                    ],
                     const SizedBox(height: 20),
                     _buildConnectionBanner(),
                     const SizedBox(height: 20),
@@ -354,6 +358,33 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
     );
   }
 
+  Widget _buildErrorBanner() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.redAccent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _error ?? 'An unexpected error occurred while loading Meta leads data.',
+              style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: _fetchMetaStatusAndData,
+            child: const Text('Retry', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildHeader() {
     return Row(
       children: [
@@ -363,7 +394,7 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
             color: const Color(0xFF1877F2).withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(FontAwesomeIcons.facebook, color: Color(0xFF1877F2), size: 24),
+          child: const FaIcon(FontAwesomeIcons.facebook, color: Color(0xFF1877F2), size: 24),
         ),
         const SizedBox(width: 14),
         const Expanded(
@@ -426,7 +457,7 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                 color: const Color(0xFF1877F2).withValues(alpha: 0.2),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(FontAwesomeIcons.facebookF, color: Color(0xFF1877F2), size: 22),
+              child: const FaIcon(FontAwesomeIcons.facebookF, color: Color(0xFF1877F2), size: 22),
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -448,7 +479,7 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
             const SizedBox(width: 16),
             FilledButton.icon(
               onPressed: _connectFacebook,
-              icon: const Icon(FontAwesomeIcons.facebook, size: 16),
+              icon: const FaIcon(FontAwesomeIcons.facebook, size: 16),
               label: const Text('Connect Facebook'),
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF1877F2),
@@ -575,7 +606,7 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
         children: [
           Row(
             children: [
-              const Icon(FontAwesomeIcons.facebook, size: 18, color: Color(0xFF1877F2)),
+              const FaIcon(FontAwesomeIcons.facebook, size: 18, color: Color(0xFF1877F2)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -780,11 +811,28 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                 ),
               ),
               const SizedBox(width: 12),
-              CompactDateRangePicker(
-                initialDateRange: _dateRange,
-                onDateRangeSelected: (range) {
-                  setState(() => _dateRange = range);
-                  _fetchLeads();
+              OutlinedButton.icon(
+                icon: const Icon(Icons.date_range_rounded, size: 16),
+                label: Text(
+                  _dateRange != null
+                      ? '${DateFormat('MMM dd').format(_dateRange!.start)} - ${DateFormat('MMM dd').format(_dateRange!.end)}'
+                      : 'Date Range',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                  side: const BorderSide(color: Colors.white24),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                ),
+                onPressed: () async {
+                  final picked = await showCompactDateRangePicker(
+                    context: context,
+                    initialDateRange: _dateRange,
+                  );
+                  if (picked != null) {
+                    setState(() => _dateRange = picked);
+                    _fetchLeads();
+                  }
                 },
               ),
             ],
@@ -1003,9 +1051,9 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                       Row(
                         children: [
                           if (platform == 'ig')
-                            const Icon(FontAwesomeIcons.instagram, size: 14, color: Colors.pinkAccent)
+                            const FaIcon(FontAwesomeIcons.instagram, size: 14, color: Colors.pinkAccent)
                           else
-                            const Icon(FontAwesomeIcons.facebook, size: 14, color: Color(0xFF1877F2)),
+                            const FaIcon(FontAwesomeIcons.facebook, size: 14, color: Color(0xFF1877F2)),
                           const SizedBox(width: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -1062,7 +1110,7 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                           ),
                           if (phone.isNotEmpty)
                             IconButton(
-                              icon: const Icon(FontAwesomeIcons.whatsapp, size: 18, color: Colors.greenAccent),
+                              icon: const FaIcon(FontAwesomeIcons.whatsapp, size: 18, color: Colors.greenAccent),
                               tooltip: 'Open in WhatsApp',
                               onPressed: () => webOpenUrl('https://wa.me/$phone'),
                             ),
