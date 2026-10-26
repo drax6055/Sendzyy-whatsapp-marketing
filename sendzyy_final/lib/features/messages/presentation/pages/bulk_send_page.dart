@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'package:iFloraBuzz/features/clients/data/models/client_model.dart';
 import 'package:iFloraBuzz/features/clients/data/models/group_model.dart';
 import 'package:iFloraBuzz/features/clients/data/repositories/client_repository.dart';
@@ -318,7 +319,7 @@ class _BulkSendPageState extends State<BulkSendPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Invalid number(s) skipped: ${invalid.join(', ')}. Use 10 digits or 12 digits with country code 91.',
+              'Invalid number(s) skipped: ${invalid.join(', ')}. Enter local number or include country code (e.g. +${CountryCodeService.instance.defaultDialCode}XXXXXXXXXX).',
             ),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 4),

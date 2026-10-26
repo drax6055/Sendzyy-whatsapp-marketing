@@ -1,3 +1,5 @@
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
+
 /// A recipient parsed from CSV or manual input.
 /// [variables] maps body variable index (1-based) to its value, e.g. {1: 'John', 2: '+91...'}
 /// [headerVariables] maps header variable index (1-based) to its value, e.g. {1: 'Hello'}
@@ -16,17 +18,17 @@ class RecipientData {
     this.fromCsv = false,
   });
 
-  /// Normalize a mobile number:
-  /// - Strip spaces, dashes, +, leading zeros
-  /// - 10 digits → prepend "91"
-  /// - 12 digits starting with 91 → valid as-is
-  /// - anything else → returns null (invalid)
+  /// Normalize a mobile number using the tenant's configured default country.
+  /// - Numbers with '+' or '00' prefix → parse as international (any country)
+  /// - Numbers without prefix → prepend tenant's default dial code
+  /// - 10-digit numbers with default=IN → get '91' prepended (same as before)
+  /// - Already has correct country code → passed through unchanged
+  /// - Invalid → returns null
+  ///
+  /// Delegates to [CountryCodeService.instance.normalizeNumber] which respects
+  /// the tenant's defaultCountry setting (default: 'IN' for backward compatibility).
   static String? normalizeNumber(String raw) {
-    // Remove all non-digit characters
-    final digits = raw.replaceAll(RegExp(r'\D'), '');
-    if (digits.length == 10) return '91$digits';
-    if (digits.length == 12 && digits.startsWith('91')) return digits;
-    return null; // invalid
+    return CountryCodeService.instance.normalizeNumber(raw);
   }
 
   /// Build from a CSV row. Expected columns: mobile, var1, var2, var3 ...

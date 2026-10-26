@@ -1,23 +1,25 @@
 /**
  * Mobile number utilities for lead ingestion.
  * Requirements: 1.7, 12.3, 12.4
+ *
+ * NOTE: normaliseMobileNumber now accepts an optional defaultCountry (ISO-2) parameter.
+ * Existing callers that pass no second argument default to 'IN' (India) — no behaviour change.
  */
 
+const { normalizePhone } = require('./utils/phoneNormalizer');
+
 /**
- * Normalise a raw mobile number string.
- * 1. Strip all non-digit characters.
- * 2. If the result is exactly 10 digits, prepend '91' (Indian country code).
- * 3. Return the resulting digit string.
- * 4. If input is null/undefined/empty, return ''.
+ * Normalise a raw mobile number string using country-aware phone parsing.
+ * If defaultCountry is 'IN' and the number is 10 digits, prepends '91' (same as before).
+ * For other countries, prepends their calling code when a local-format number is detected.
  *
  * @param {string|null|undefined} raw
- * @returns {string}
+ * @param {string} defaultCountry ISO-2 country code (default: 'IN')
+ * @returns {string} E.164 digits without '+', or '' if invalid/empty
  */
-function normaliseMobileNumber(raw) {
+function normaliseMobileNumber(raw, defaultCountry = 'IN') {
   if (raw == null || raw === '') return '';
-  const digits = String(raw).replace(/\D/g, '');
-  if (digits.length === 10) return `91${digits}`;
-  return digits;
+  return normalizePhone(String(raw), defaultCountry).digits;
 }
 
 /**

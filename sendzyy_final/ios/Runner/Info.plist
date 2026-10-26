@@ -49,6 +49,10 @@
 	<string>Sendzyy requires microphone access for WhatsApp WebRTC voice calls.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Sendzyy uses Face ID to quickly and securely log you in.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Sendzyy requires access to contacts so you can select recipients for WhatsApp messaging.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Sendzyy requires photo library access to upload media and attachments.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

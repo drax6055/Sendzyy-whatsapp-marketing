@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'package:iFloraBuzz/core/utils/web_helper.dart';
 
 import 'package:csv/csv.dart';
@@ -173,10 +174,11 @@ class _CreateGroupDialogState extends State<CreateGroupDialog> {
   }
 
   void _downloadSample() async {
-    const csv = 'name,mobile,company,email,venue,remark\n'
-        'John Doe,919876543210,Acme Corp,john@acme.com,Main Street Store,VIP customer\n'
-        'Jane Smith,919123456789,,jane@example.com,Wedding Expo 2025,\n'
-        'Bob Kumar,917890123456,Bob Enterprises,,City Mall,Referred by John\n';
+    final code = CountryCodeService.instance.defaultDialCode;
+    final csv = 'name,mobile,company,email,venue,remark\n'
+        'John Doe,${code}9876543210,Acme Corp,john@acme.com,Main Street Store,VIP customer\n'
+        'Jane Smith,${code}9123456789,,jane@example.com,Wedding Expo 2025,\n'
+        'Bob Kumar,${code}7890123456,Bob Enterprises,,City Mall,Referred by John\n';
     await webDownloadBytes(utf8.encode(csv), 'sample_clients.csv', mimeType: 'text/csv');
   }
 
@@ -224,15 +226,17 @@ class _CreateGroupDialogState extends State<CreateGroupDialog> {
         final row = rows[i];
         if (row.isEmpty) continue;
         final name = _cell(row, nameIdx);
-        final mobile = _cell(row, mobileIdx);
+        final rawMobile = _cell(row, mobileIdx);
         final venue = _cell(row, venueIdx);
-        if (name.isEmpty || mobile.isEmpty) continue;
+        if (name.isEmpty || rawMobile.isEmpty) continue;
         if (venue.isEmpty) continue; // skip rows without venue
+        // Normalize phone: prepend country code if needed, accept international numbers as-is
+        final normalizedMobile = CountryCodeService.instance.normalizeNumber(rawMobile) ?? rawMobile;
         clients.add(ClientModel(
           id: '',
           tenantId: '',
           name: name,
-          mobileNumber: mobile,
+          mobileNumber: normalizedMobile,
           companyName: companyIdx != -1 ? _cell(row, companyIdx).nullIfEmpty : null,
           emailId: emailIdx != -1 ? _cell(row, emailIdx).nullIfEmpty : null,
           venue: venue,

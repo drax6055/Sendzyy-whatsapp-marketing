@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'package:iFloraBuzz/features/clients/data/models/client_model.dart';
 import 'package:iFloraBuzz/features/clients/presentation/bloc/client_bloc.dart';
 
@@ -41,11 +42,15 @@ class _CreateClientDialogState extends State<CreateClientDialog> {
         _saveHandled = false;
       });
 
+      final normalizedMobile =
+          CountryCodeService.instance.normalizeNumber(_mobileController.text.trim()) ??
+              _mobileController.text.trim();
+
       final client = ClientModel(
         id: '',
         tenantId: '',
         name: _nameController.text.trim(),
-        mobileNumber: _mobileController.text.trim(),
+        mobileNumber: normalizedMobile,
         companyName: _companyController.text.trim().isEmpty ? null : _companyController.text.trim(),
         emailId: _emailController.text.trim().isEmpty ? null : _emailController.text.trim(),
         venue: _venueController.text.trim(),
@@ -117,30 +122,33 @@ class _CreateClientDialogState extends State<CreateClientDialog> {
                     validator: (val) => val == null || val.isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _mobileController,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                      labelText: 'Mobile Number *',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.phone_outlined),
-                      hintText: 'With country code (e.g. 919876543210)',
-                    ),
-                    validator: (val) {
-                      if (val == null || val.trim().isEmpty) return 'Required';
-                      final digits = val.trim();
-                      if (!RegExp(r'^\d{10,15}$').hasMatch(digits)) {
-                        return 'Enter a valid mobile number (10–15 digits, with country code)';
-                      }
-                      final s = context.read<ClientsBloc>().state;
-                      if (s is ClientsLoaded) {
-                        if (s.filteredClients.any((c) => c.mobileNumber == digits)) {
-                          return 'Number already exists';
+                    TextFormField(
+                      controller: _mobileController,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        labelText: 'Mobile Number *',
+                        border: const OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.phone_outlined),
+                        hintText:
+                            'e.g. +${CountryCodeService.instance.defaultDialCode}XXXXXXXXXX or local format',
+                      ),
+                      validator: (val) {
+                        if (val == null || val.trim().isEmpty) return 'Required';
+                        final normalized =
+                            CountryCodeService.instance.normalizeNumber(val);
+                        if (normalized == null) {
+                          return 'Enter a valid number (e.g. +${CountryCodeService.instance.defaultDialCode}XXXXXXXXXX or local format)';
                         }
-                      }
-                      return null;
-                    },
-                  ),
+                        final s = context.read<ClientsBloc>().state;
+                        if (s is ClientsLoaded) {
+                          if (s.filteredClients
+                              .any((c) => c.mobileNumber == normalized)) {
+                            return 'Number already exists';
+                          }
+                        }
+                        return null;
+                      },
+                    ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _companyController,

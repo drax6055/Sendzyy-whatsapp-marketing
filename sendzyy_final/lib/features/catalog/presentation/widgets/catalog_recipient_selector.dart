@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -82,7 +83,8 @@ class CatalogRecipientSelectorState extends State<CatalogRecipientSelector> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Skipped invalid number(s): ${invalid.take(3).join(', ')}${invalid.length > 3 ? '...' : ''}. Use 10 digits or 12 digits with 91 prefix.',
+            'Skipped invalid number(s): ${invalid.take(3).join(', ')}${invalid.length > 3 ? '...' : ''}. '
+            'Include country code (e.g. +${CountryCodeService.instance.defaultDialCode}XXXXXXXXXX) or enter local format.',
           ),
           backgroundColor: Colors.orange.shade800,
           duration: const Duration(seconds: 4),
@@ -336,11 +338,12 @@ class CatalogRecipientSelectorState extends State<CatalogRecipientSelector> {
   }
 
   void _downloadSampleCsv() async {
-    const csvContent =
+    final code = CountryCodeService.instance.defaultDialCode;
+    final csvContent =
         'mobile,name\n'
-        '919876543210,John Doe\n'
-        '919123456789,Jane Smith\n'
-        '917890123456,Acme Retail\n';
+        '${code}9876543210,John Doe\n'
+        '${code}9123456789,Jane Smith\n'
+        '${code}7890123456,Acme Retail\n';
     await webDownloadBytes(
       utf8.encode(csvContent),
       'sample_catalog_contacts.csv',

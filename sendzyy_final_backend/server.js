@@ -53,6 +53,8 @@ if (process.env.MONGODB_URI) {
             await seedPanelPackages();
             // Backfill reporting timezone for existing tenants
             await backfillTenantReportingTimezones();
+            // Backfill defaultCountry for existing tenants (safe, defaults to 'IN')
+            await backfillTenantDefaultCountry();
             // Recover any pending/stuck webhook logs on boot
             await webhookIngestionService.recoverPendingWebhookLogs();
             // Drop the old unique compound index on {tenantId, version} if it exists.
@@ -124,6 +126,7 @@ const tenantSchema = new mongoose.Schema({
         tokenExpiry: { type: Date, default: null },
         connected: { type: Boolean, default: false }
     },
+    defaultCountry: { type: String, default: 'IN' }, // ISO-2 country code for phone normalisation; defaults to India
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
 }, { timestamps: true });
 const Tenant = mongoose.model('Tenant', tenantSchema);
@@ -145,6 +148,20 @@ async function backfillTenantReportingTimezones() {
         }
     } catch (e) {
         console.error('[Startup] Failed to backfill tenant reporting timezones:', e.message);
+    }
+}
+
+async function backfillTenantDefaultCountry() {
+    try {
+        const res = await Tenant.updateMany(
+            { $or: [{ defaultCountry: { $exists: false } }, { defaultCountry: null }, { defaultCountry: '' }] },
+            { $set: { defaultCountry: 'IN' } }
+        );
+        if (res.modifiedCount > 0) {
+            console.log(`[Startup] Backfilled defaultCountry for ${res.modifiedCount} tenant(s) to 'IN'`);
+        }
+    } catch (e) {
+        console.error('[Startup] Failed to backfill tenant defaultCountry:', e.message);
     }
 }
 
@@ -8274,7 +8291,7 @@ app.post('/api/leads/webhook/:tenantId', webhookRateLimiter, async (req, res) =>
             || (shopifyTopic ? 'shopify' : null)
             || (rawPayload.billing_address || rawPayload.default_address ? 'shopify' : 'wordpress');
         const parsed = parseLeadPayload(rawPayload, source);
-        const normalisedMobile = normaliseMobileNumber(parsed.mobileNumber);
+        const normalisedMobile = normaliseMobileNumber(parsed.mobileNumber, tenant.defaultCountry || 'IN');
 
         if (!normalisedMobile) {
             httpStatus = 400;
@@ -8394,7 +8411,41 @@ app.get('/api/leads/webhook-secret', authenticate, async (req, res) => {
     }
 });
 
-// Helper function to pull and persist IndiaMART leads
+// ── Default Country Code Settings ─────────────────────────────────────────────
+
+// GET /api/settings/country — returns tenant's current defaultCountry
+app.get('/api/settings/country', authenticate, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.user.tenantId).select('defaultCountry');
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        res.json({ defaultCountry: tenant.defaultCountry || 'IN' });
+    } catch (err) {
+        console.error('[CountrySettings] GET error:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// PATCH /api/settings/country — updates tenant's defaultCountry
+app.patch('/api/settings/country', authenticate, async (req, res) => {
+    try {
+        const { defaultCountry } = req.body;
+        if (!defaultCountry || typeof defaultCountry !== 'string') {
+            return res.status(400).json({ error: 'defaultCountry is required' });
+        }
+        // Accept ISO-2 codes (2 uppercase letters) or ISO-3 (3 letters) — normalise to uppercase
+        const code = defaultCountry.trim().toUpperCase();
+        if (!/^[A-Z]{2,3}$/.test(code)) {
+            return res.status(400).json({ error: 'Invalid country code format. Use ISO 3166-1 alpha-2 (e.g. IN, US, AU)' });
+        }
+        await Tenant.findByIdAndUpdate(req.user.tenantId, { defaultCountry: code });
+        res.json({ ok: true, defaultCountry: code });
+    } catch (err) {
+        console.error('[CountrySettings] PATCH error:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+
 async function syncIndiaMartLeads(tenantId, config, startDate = null, endDate = null) {
     const { glusrCrmKey } = config;
     let url = `https://mapi.indiamart.com/wservce/crm/crmListing/v2/?glusr_crm_key=${glusrCrmKey}`;
@@ -8432,9 +8483,12 @@ async function syncIndiaMartLeads(tenantId, config, startDate = null, endDate = 
     const records = data.RESPONSE || [];
     let newLeadsCount = 0;
 
+    const tenant = await Tenant.findById(tenantId).select('defaultCountry');
+    const defaultCountry = tenant?.defaultCountry || 'IN';
+
     for (const rec of records) {
         // Parse and validate sender mobile
-        const normalisedMobile = normaliseMobileNumber(rec.SENDER_MOBILE);
+        const normalisedMobile = normaliseMobileNumber(rec.SENDER_MOBILE, defaultCountry);
         if (!normalisedMobile || !validateMobileNumber(normalisedMobile)) {
             continue;
         }

@@ -81,6 +81,34 @@ class HelpPage extends StatelessWidget {
       'a':
           'If your Meta credentials change, click the gear (Settings) icon in the top header bar to update your WhatsApp Business Account ID, Phone Number ID, and Access Token.',
     },
+    {
+      'q': 'How are Invalid Numbers calculated in Campaign Summary?',
+      'a':
+          'When you upload a CSV or enter manual numbers in Broadcast, each number is validated through CountryCodeService phone normalization:\n\n'
+          '• Valid: Must be a valid E.164 number between 7 and 15 digits (with country code or local format).\n'
+          '• Invalid:\n'
+          '  - Contains letters or symbols ("N/A", "none", "1234abc").\n'
+          '  - Too short (e.g. fewer than 6 digits).\n'
+          '  - Exceeds the ITU international limit of 15 digits.\n\n'
+          'Every number that cannot be normalized is skipped and adds +1 to Invalid Numbers (displayed in red if > 0 in the Campaign Summary).',
+    },
+    {
+      'q': 'How are Duplicate Numbers calculated in Campaign Summary?',
+      'a':
+          'Because numbers from different countries have different formats (some with +, some with country code, some with spaces/dashes), Sendzyy performs Canonical International Deduplication:\n\n'
+          '1. Format Normalization Before Comparison:\n'
+          '   Every number is first converted to clean international digits.\n'
+          '   Example: +1 (212) 555-0100 and 12125550100 both normalize to 12125550100 (USA). Sendzyy recognizes that Row 1 and Row 8 are the exact same recipient; the second row is skipped and counted as +1 Duplicate.\n\n'
+          '2. Local vs Full Format Deduplication:\n'
+          '   A local number 9876543210 (India local) and full number 919876543210 both normalize to 919876543210. Recognized as the same contact and skipped as +1 Duplicate.\n\n'
+          '3. No False Collisions Between Different Countries:\n'
+          '   A USA number 19876543210 and an Indian number 919876543210 have different country codes (1 vs 91). They are correctly treated as two distinct, unique recipients.',
+    },
+    {
+      'q': 'Can I send messages to multiple countries in a single CSV?',
+      'a':
+          'Yes! You can upload a single CSV with numbers from any mix of countries (e.g. USA, Australia, UK, UAE, India, etc.). Simply ensure international numbers include their country code (e.g. +1... or 1..., +61..., +44...). Any numbers entered without a country code will automatically receive your tenant\'s Default Country Code configured in Settings.',
+    },
   ];
 
   @override

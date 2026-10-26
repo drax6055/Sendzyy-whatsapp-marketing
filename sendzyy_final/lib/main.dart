@@ -6,6 +6,9 @@ import 'package:iFloraBuzz/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:iFloraBuzz/features/templates/presentation/bloc/template_bloc.dart';
 import 'package:iFloraBuzz/features/messages/presentation/bloc/message_bloc.dart';
 import 'package:iFloraBuzz/features/reports/presentation/bloc/report_bloc.dart';
+import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'core/di/injection.dart' as di;
 import 'core/theme/app_theme.dart';
 import 'features/auth/presentation/pages/login_page.dart';
@@ -47,6 +50,11 @@ void main() async {
     debugPrint('[FCM] Firebase initialization notice: $e');
   }
   await di.init();
+  try {
+    await CountryCodeService.instance.loadFromPrefs(di.getIt<SharedPreferences>());
+  } catch (e) {
+    debugPrint('[CountryCodeService] Init error: $e');
+  }
   runApp(const MyApp());
 }
 
@@ -260,6 +268,10 @@ class _MyAppState extends State<MyApp> {
                       RefreshUnreadCountEvent(tenantId: tenantId),
                     );
               }
+              CountryCodeService.instance.refreshFromBackend(
+                di.getIt<Dio>(),
+                di.getIt<SharedPreferences>(),
+              );
             }
             if (state is AuthSubscriptionExpired) {
               // Show expiry dialog on top of whatever screen is showing

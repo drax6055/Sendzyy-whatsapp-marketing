@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'package:iFloraBuzz/core/utils/web_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -16,10 +17,11 @@ class CsvUploader extends StatelessWidget {
   const CsvUploader({super.key, required this.onParsed});
 
   void _downloadSample() async {
-    const csv = 
-        '919876543210,John,Hello,Acme Corp\n'
-        '919123456789,Jane,Hi,Example Ltd\n'
-        '917890123456,Bob,Hey,Bob Enterprises\n';
+    final code = CountryCodeService.instance.defaultDialCode;
+    final csv =
+        '${code}9876543210,John,Hello,Acme Corp\n'
+        '${code}9123456789,Jane,Hi,Example Ltd\n'
+        '${code}7890123456,Bob,Hey,Bob Enterprises\n';
     await webDownloadBytes(utf8.encode(csv), 'sample_campaign.csv', mimeType: 'text/csv');
   }
 
@@ -135,7 +137,7 @@ class CsvUploader extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                  'e.g. 919876543210, John, +91..., ABC Co.',
+                  'Supports mixed country numbers.\nAdd country code prefix for international (e.g. +1, +61).\nLocal numbers get your default code auto-added.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11, color: Colors.grey),
                 ),

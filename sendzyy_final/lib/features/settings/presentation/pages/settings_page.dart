@@ -17,6 +17,9 @@ import 'package:iFloraBuzz/core/js/meta_signup_helper.dart';
 import 'package:iFloraBuzz/features/settings/presentation/widgets/onboarding_checklist_widget.dart';
 import 'package:iFloraBuzz/features/templates/presentation/pages/create_template_page.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:iFloraBuzz/core/services/country_code_service.dart';
 import 'package:iFloraBuzz/core/widgets/password_verification_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -461,6 +464,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
                 const SizedBox(height: 12),
 
+                // Default Country Code tile
+                _buildDefaultCountryTile(context),
+
+                const SizedBox(height: 12),
+
                 // Profile Information â€” inline expandable
                 _buildExpandableTile(
                   title: 'Profile Information',
@@ -470,9 +478,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: _buildProfileContent(
                     context,
                     isConnected
-                        ? (state as AuthAuthenticated)
-                                  .tenant['whatsappConfig'] ??
-                              {}
+                        ? state.tenant['whatsappConfig'] ?? {}
                         : {},
                     isConnected,
                   ),
@@ -3181,6 +3187,156 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
+
+  Widget _buildDefaultCountryTile(BuildContext context) {
+    final currentIso = CountryCodeService.instance.defaultIso;
+    final currentName = CountryCodeService.instance.defaultCountryName;
+    final currentDial = CountryCodeService.instance.defaultDialCode;
+    final country = CountryCodeService.allCountries.firstWhere(
+      (c) => c['iso'] == currentIso,
+      orElse: () => {'flag': '🌐', 'name': currentName, 'dialCode': currentDial},
+    );
+    final flag = country['flag'] ?? '🌐';
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 550;
+
+        return InkWell(
+          onTap: () => _showCountryPickerDialog(context),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: isMobile ? 12 : 18,
+              vertical: isMobile ? 12 : 14,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.withValues(alpha: 0.12)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Container(
+                  width: isMobile ? 38 : 44,
+                  height: isMobile ? 38 : 44,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(flag, style: TextStyle(fontSize: isMobile ? 19 : 22)),
+                ),
+                SizedBox(width: isMobile ? 10 : 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          const Text(
+                            'Default Country Code',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              '+$currentDial ($currentIso)',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.primaryColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        'Selected: $currentName (+$currentDial). Applied when numbers in CSV or manual input lack a country code.',
+                        style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(width: isMobile ? 6 : 12),
+                OutlinedButton(
+                  onPressed: () => _showCountryPickerDialog(context),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.primaryColor,
+                    side: const BorderSide(color: AppTheme.primaryColor),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: isMobile ? 10 : 14,
+                      vertical: isMobile ? 6 : 8,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text('Change', style: TextStyle(fontSize: 12.5)),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showCountryPickerDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => _CountrySelectionDialog(
+        currentIso: CountryCodeService.instance.defaultIso,
+        onSelected: (iso, name, dialCode) async {
+          final messenger = ScaffoldMessenger.of(context);
+          final success = await CountryCodeService.instance.setDefaultCountry(
+            iso,
+            getIt<SharedPreferences>(),
+            getIt<Dio>(),
+          );
+          if (mounted) {
+            setState(() {});
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text(
+                  success
+                      ? 'Default country set to $name (+$dialCode)'
+                      : 'Country saved locally. Failed to sync with server.',
+                ),
+                backgroundColor: success ? Colors.green : Colors.orange,
+              ),
+            );
+          }
+        },
+      ),
+    );
+  }
 }
 
 class _ChangePasswordDialog extends StatefulWidget {
@@ -3379,4 +3535,185 @@ class _PasswordField extends StatelessWidget {
       ),
     );
   }
+}
+
+class _CountrySelectionDialog extends StatefulWidget {
+  final String currentIso;
+  final Future<void> Function(String iso, String name, String dialCode) onSelected;
+
+  const _CountrySelectionDialog({
+    required this.currentIso,
+    required this.onSelected,
+  });
+
+  @override
+  State<_CountrySelectionDialog> createState() => _CountrySelectionDialogState();
+}
+
+class _CountrySelectionDialogState extends State<_CountrySelectionDialog> {
+  final _searchCtrl = TextEditingController();
+  String _filter = '';
+  bool _isSaving = false;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final screenWidth = mediaQuery.size.width;
+    final screenHeight = mediaQuery.size.height;
+    final isMobile = screenWidth < 600;
+
+    final all = CountryCodeService.allCountries;
+    final filtered = _filter.isEmpty
+        ? all
+        : all.where((c) {
+            final q = _filter.toLowerCase();
+            return (c['name']?.toLowerCase().contains(q) ?? false) ||
+                (c['dialCode']?.contains(q) ?? false) ||
+                (c['iso']?.toLowerCase().contains(q) ?? false);
+          }).toList();
+
+    return Dialog(
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: isMobile ? 12 : 24,
+        vertical: isMobile ? 16 : 24,
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: isMobile ? screenWidth * 0.94 : 480.0,
+          maxHeight: isMobile ? (screenHeight * 0.82).clamp(360.0, 600.0) : 600.0,
+        ),
+        child: Padding(
+          padding: EdgeInsets.all(isMobile ? 16 : 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.public, color: AppTheme.primaryColor),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Select Default Country Code',
+                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.of(context).pop(),
+                  tooltip: 'Close',
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Numbers without a country code will automatically have this country code added.',
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _searchCtrl,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: 'Search by country name, dial code, or ISO (e.g. India, 91, IN)',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _filter.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          setState(() => _filter = '');
+                        },
+                      )
+                    : null,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                filled: true,
+                fillColor: Colors.grey.shade50,
+              ),
+              onChanged: (val) => setState(() => _filter = val.trim()),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: _isSaving
+                  ? const Center(child: CircularProgressIndicator())
+                  : filtered.isEmpty
+                      ? const Center(
+                          child: Text(
+                            'No matching countries found',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: filtered.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final country = filtered[index];
+                            final iso = country['iso'] ?? '';
+                            final name = country['name'] ?? '';
+                            final dial = country['dialCode'] ?? '';
+                            final flag = country['flag'] ?? '🌐';
+                            final isSelected =
+                                iso.toUpperCase() == widget.currentIso.toUpperCase();
+
+                            return ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 2,
+                              ),
+                              leading: Text(
+                                flag,
+                                style: const TextStyle(fontSize: 22),
+                              ),
+                              title: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      name,
+                                      style: TextStyle(
+                                        fontWeight: isSelected
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    '+$dial',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      color: isSelected
+                                          ? AppTheme.primaryColor
+                                          : Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              trailing: isSelected
+                                  ? const Icon(
+                                      Icons.check_circle,
+                                      color: AppTheme.primaryColor,
+                                      size: 20,
+                                    )
+                                  : const SizedBox(width: 20),
+                              onTap: () async {
+                                setState(() => _isSaving = true);
+                                Navigator.of(context).pop();
+                                await widget.onSelected(iso, name, dial);
+                              },
+                            );
+                          },
+                        ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 }
