@@ -17,8 +17,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
 import 'package:flutter/services.dart'
     show Clipboard, ClipboardData, LogicalKeyboardKey;
-// import 'package:iFloraBuzz/features/calling/presentation/bloc/call_control_bloc.dart';
-// import 'package:iFloraBuzz/features/calling/presentation/pages/active_call_page.dart';
+
 
 
 class ChatPage extends StatefulWidget {
@@ -647,30 +646,7 @@ class _ChatPageState extends State<ChatPage> {
                   const SizedBox(width: 4),
                   _WindowTimerWidget(lastActive: lastActive),
                 ],
-                // TODO: Work on this module later
-                // const SizedBox(width: 8),
-                // IconButton(
-                //   icon: const Icon(Icons.call_rounded, color: Color(0xFF128C7E)),
-                //   tooltip: 'Start Voice Call',
-                //   onPressed: () {
-                //     final toPhone = contact['id']?.toString() ?? '';
-                //     final callerName = contact['name']?.toString() ?? 'Contact';
-                //     if (toPhone.isEmpty) return;
-                //
-                //     context.read<CallControlBloc>().add(
-                //           InitiateCallEvent(
-                //             phoneNumberId: '',
-                //             to: toPhone,
-                //             callerName: callerName,
-                //           ),
-                //         );
-                //
-                //     Navigator.push(
-                //       context,
-                //       MaterialPageRoute(builder: (_) => const ActiveCallPage()),
-                //     );
-                //   },
-                // ),
+
 
               ],
             ),

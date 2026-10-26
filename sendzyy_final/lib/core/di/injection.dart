@@ -21,13 +21,7 @@ import '../constants/app_constants.dart';
 import 'package:iFloraBuzz/features/notifications/data/datasources/notification_remote_datasource.dart';
 import 'package:iFloraBuzz/features/notifications/data/repositories/notification_repository.dart';
 import 'package:iFloraBuzz/features/notifications/presentation/bloc/notification_bloc.dart';
-import 'package:iFloraBuzz/core/services/calling_webrtc_service.dart';
-import 'package:iFloraBuzz/features/calling/data/repositories/calling_repository.dart';
-import 'package:iFloraBuzz/features/calling/data/repositories/calling_repository_impl.dart';
-import 'package:iFloraBuzz/features/calling/presentation/bloc/call_control_bloc.dart';
-import 'package:iFloraBuzz/features/calling/presentation/bloc/call_permission_bloc.dart';
-import 'package:iFloraBuzz/features/calling/presentation/bloc/call_settings_bloc.dart';
-import 'package:iFloraBuzz/features/calling/presentation/bloc/call_log_bloc.dart';
+
 import 'package:iFloraBuzz/features/app_update/data/services/app_update_service.dart';
 import 'package:iFloraBuzz/features/app_update/presentation/bloc/app_update_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/data/repositories/whatsapp_flow_repository.dart';
@@ -116,25 +110,7 @@ Future<void> init() async {
   // Features - Notifications
   getIt.registerFactory(() => NotificationBloc(repository: getIt()));
 
-  // Features - Calling
-  getIt.registerLazySingleton<CallingRepository>(
-    () => CallingRepositoryImpl(getIt(), getIt()),
-  );
-  getIt.registerFactory<CallingWebRTCService>(
-    () => CallingWebRTCService.create(),
-  );
-  getIt.registerLazySingleton(
-    () => CallControlBloc(repository: getIt(), webrtcService: getIt()),
-  );
-  getIt.registerFactory(
-    () => CallPermissionBloc(getIt()),
-  );
-  getIt.registerFactory(
-    () => CallSettingsBloc(getIt()),
-  );
-  getIt.registerLazySingleton(
-    () => CallLogBloc(),
-  );
+
   // Features - App Update
   getIt.registerLazySingleton(() => AppUpdateService(dio: getIt()));
   getIt.registerFactory(() => AppUpdateBloc(updateService: getIt()));

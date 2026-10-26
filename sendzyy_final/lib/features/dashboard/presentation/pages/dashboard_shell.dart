@@ -27,8 +27,7 @@ import 'package:iFloraBuzz/features/retry/presentation/pages/retry_system_page.d
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_profile_setup_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_automation_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_messages_page.dart';
-import 'package:iFloraBuzz/features/calling/presentation/pages/call_log_page.dart';
-import 'package:iFloraBuzz/features/calling/presentation/pages/calling_settings_page.dart';
+
 import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
@@ -396,8 +395,8 @@ class _DashboardShellState extends State<DashboardShell> {
     InstagramAutomationPage(
       onNavigateToProfile: () => _setSelectedIndex(13),
     ),
-    const CallLogPage(),
-    const CallingSettingsPage(phoneNumberId: ''),
+    const SizedBox.shrink(), // Placeholder for removed CallLogPage
+    const SizedBox.shrink(), // Placeholder for removed CallingSettingsPage
     const CatalogPage(),
     const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
@@ -656,14 +655,7 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
-                // TODO: Work on this module later
-                // _buildNavItem(
-                //   13,
-                //   Icons.phone_in_talk_rounded,
-                //   'Call Settings',
-                //   isSubItem: true,
-                //   isDrawer: isDrawer,
-                // ),
+
               ],
             ),
           ),
@@ -857,7 +849,7 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   Widget _buildExpandableLeadsMenu({bool isDrawer = false}) {
-    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 12 || _selectedIndex == 20;
+    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 20;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -919,13 +911,6 @@ class _DashboardShellState extends State<DashboardShell> {
                   4,
                   Icons.language,
                   'Website',
-                  isSubItem: true,
-                  isDrawer: isDrawer,
-                ),
-                _buildNavItem(
-                  12,
-                  Icons.store_rounded,
-                  'IndiaMART',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
