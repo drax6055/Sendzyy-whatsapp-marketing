@@ -17,6 +17,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
 import 'package:flutter/services.dart'
     show Clipboard, ClipboardData, LogicalKeyboardKey;
+import 'package:iFloraBuzz/features/chat/presentation/widgets/contact_avatar.dart';
 
 
 
@@ -33,6 +34,8 @@ class _ChatPageState extends State<ChatPage> {
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _messagesScrollController = ScrollController();
+  final ScrollController _conversationsScrollController = ScrollController();
+  Timer? _searchDebounce;
   String _searchQuery = '';
   String? _lastScrolledContactId;
   int _lastMessageCount = 0;
@@ -48,6 +51,19 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _loadReadContactTimestamps();
+    _conversationsScrollController.addListener(_onConversationsScroll);
+  }
+
+  void _onConversationsScroll() {
+    if (!_conversationsScrollController.hasClients) return;
+    final maxScroll = _conversationsScrollController.position.maxScrollExtent;
+    final currentScroll = _conversationsScrollController.position.pixels;
+    if (maxScroll - currentScroll <= 280) {
+      final state = context.read<ChatBloc>().state;
+      if (state is ChatLoaded && state.hasMore && !state.isLoadingMore) {
+        context.read<ChatBloc>().add(LoadMoreConversations());
+      }
+    }
   }
 
   Future<void> _loadReadContactTimestamps() async {
@@ -119,6 +135,9 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    _conversationsScrollController.removeListener(_onConversationsScroll);
+    _conversationsScrollController.dispose();
+    _searchDebounce?.cancel();
     _messageController.dispose();
     _searchController.dispose();
     _messagesScrollController.dispose();
@@ -288,7 +307,7 @@ class _ChatPageState extends State<ChatPage> {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  'Conversations',
+                  state.total > 0 ? 'Conversations (${state.total})' : 'Conversations',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: AppTheme.secondaryColor,
@@ -301,7 +320,16 @@ class _ChatPageState extends State<ChatPage> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: TextField(
               controller: _searchController,
-              onChanged: (val) => setState(() => _searchQuery = val),
+              onChanged: (val) {
+                setState(() => _searchQuery = val);
+                _searchDebounce?.cancel();
+                _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+                  context.read<ChatBloc>().add(FetchConversations(
+                    search: val.trim(),
+                    filter: _selectedFilter,
+                  ));
+                });
+              },
               decoration: InputDecoration(
                 hintText: 'Search by Name or Number......',
                 border: OutlineInputBorder(
@@ -320,6 +348,10 @@ class _ChatPageState extends State<ChatPage> {
                         onPressed: () {
                           _searchController.clear();
                           setState(() => _searchQuery = '');
+                          context.read<ChatBloc>().add(FetchConversations(
+                            search: '',
+                            filter: _selectedFilter,
+                          ));
                         },
                       )
                     : Icon(Icons.search, color: Colors.grey.shade400, size: 20),
@@ -335,14 +367,30 @@ class _ChatPageState extends State<ChatPage> {
                   label: 'All',
                   isSelected: _selectedFilter == 'all',
                   badgeCount: null,
-                  onTap: () => setState(() => _selectedFilter = 'all'),
+                  onTap: () {
+                    if (_selectedFilter != 'all') {
+                      setState(() => _selectedFilter = 'all');
+                      context.read<ChatBloc>().add(FetchConversations(
+                        search: _searchQuery.trim(),
+                        filter: 'all',
+                      ));
+                    }
+                  },
                 ),
                 const SizedBox(width: 8),
                 _buildFilterChip(
                   label: 'Unread',
                   isSelected: _selectedFilter == 'unread',
                   badgeCount: unreadCount,
-                  onTap: () => setState(() => _selectedFilter = 'unread'),
+                  onTap: () {
+                    if (_selectedFilter != 'unread') {
+                      setState(() => _selectedFilter = 'unread');
+                      context.read<ChatBloc>().add(FetchConversations(
+                        search: _searchQuery.trim(),
+                        filter: 'unread',
+                      ));
+                    }
+                  },
                 ),
               ],
             ),
@@ -374,8 +422,19 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                   )
                 : ListView.builder(
-                    itemCount: filtered.length,
+                    controller: _conversationsScrollController,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: filtered.length +
+                        (state.isLoadingMore ||
+                                (!state.hasMore && filtered.length >= 25)
+                            ? 1
+                            : 0),
                     itemBuilder: (context, index) {
+                      if (index >= filtered.length) {
+                        return state.isLoadingMore
+                            ? _buildInstagramLoader()
+                            : _buildEndOfList();
+                      }
                       final conv = filtered[index];
                       final bool isSelected =
                           state.selectedContactId == conv['id'];
@@ -402,24 +461,22 @@ class _ChatPageState extends State<ChatPage> {
                           selectedTileColor: AppTheme.primaryColor.withValues(
                             alpha: 0.05,
                           ),
-                          leading: CircleAvatar(
-                            backgroundColor: AppTheme.secondaryColor,
-                            child: Text(
-                              (conv['name'] as String?)?.isNotEmpty == true
-                                  ? conv['name'][0].toUpperCase()
-                                  : '?',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
+                          leading: ContactAvatar(
+                            name: conv['name'],
+                            contactId: conv['id'],
+                            avatarUrl: conv['avatarUrl'],
+                            radius: 20,
                           ),
                           title: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Expanded(
                                 child: Text(
-                                  conv['name'] ?? 'Unknown',
+                                  (conv['name'] != null &&
+                                          conv['name'].toString().trim().isNotEmpty &&
+                                          !ContactAvatar.isNumeric(conv['name']))
+                                      ? conv['name']
+                                      : (conv['id'] ?? 'Unknown'),
                                   style: const TextStyle(
                                     fontWeight: FontWeight.bold,
                                   ),
@@ -464,6 +521,50 @@ class _ChatPageState extends State<ChatPage> {
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildInstagramLoader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      alignment: Alignment.center,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.2,
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF00A884)),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Loading more...',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey.shade500,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEndOfList() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      alignment: Alignment.center,
+      child: Text(
+        '• All conversations loaded •',
+        style: TextStyle(
+          fontSize: 11,
+          color: Colors.grey.shade400,
+          letterSpacing: 0.5,
+        ),
       ),
     );
   }
@@ -541,9 +642,93 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  void _showEditContactNameDialog(BuildContext context, String contactId, String currentName) {
+    final bool isNum = ContactAvatar.isNumeric(currentName) || currentName.trim().isEmpty;
+    final controller = TextEditingController(text: isNum ? '' : currentName);
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.person_outline, color: Color(0xFF128C7E), size: 22),
+            ),
+            const SizedBox(width: 12),
+            const Text('Edit Contact Name', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Phone: $contactId',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              decoration: InputDecoration(
+                labelText: 'Contact Name',
+                hintText: 'e.g. Ramesh Kumar',
+                prefixIcon: const Icon(Icons.badge_outlined),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Color(0xFF128C7E), width: 2),
+                ),
+              ),
+              onSubmitted: (val) {
+                if (val.trim().isNotEmpty) {
+                  context.read<ChatBloc>().add(EditContactName(contactId, val.trim()));
+                  Navigator.of(dialogCtx).pop();
+                }
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.grey.shade700)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF128C7E),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                context.read<ChatBloc>().add(EditContactName(contactId, newName));
+                Navigator.of(dialogCtx).pop();
+              }
+            },
+            child: const Text('Save Name'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildChatWindow(ChatLoaded state) {
     final contact = state.conversations.firstWhere(
       (c) => c['id'] == state.selectedContactId,
+      orElse: () => {
+        'id': state.selectedContactId ?? '',
+        'name': state.selectedContactId ?? '',
+        'lastActive': DateTime.now().toIso8601String(),
+      },
     );
     final DateTime lastActive = contact['lastActive'] is DateTime
         ? (contact['lastActive'] as DateTime).toLocal()
@@ -576,14 +761,11 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                   const SizedBox(width: 4),
                 ],
-                CircleAvatar(
-                  backgroundColor: AppTheme.secondaryColor,
-                  child: Text(
-                    (contact['name'] as String?)?.isNotEmpty == true
-                        ? contact['name'][0].toUpperCase()
-                        : '?',
-                    style: const TextStyle(color: Colors.white),
-                  ),
+                ContactAvatar(
+                  name: contact['name'],
+                  contactId: contact['id'],
+                  avatarUrl: contact['avatarUrl'],
+                  radius: 20,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -594,7 +776,11 @@ class _ChatPageState extends State<ChatPage> {
                         children: [
                           Flexible(
                             child: Text(
-                              contact['name'] ?? 'Unknown',
+                              (contact['name'] != null &&
+                                      contact['name'].toString().trim().isNotEmpty &&
+                                      !ContactAvatar.isNumeric(contact['name']))
+                                  ? contact['name']
+                                  : (contact['id'] ?? 'Unknown'),
                               overflow: TextOverflow.ellipsis,
                               maxLines: 1,
                               style: const TextStyle(
@@ -603,14 +789,31 @@ class _ChatPageState extends State<ChatPage> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            contact['id'] ?? '',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Color.fromARGB(255, 99, 99, 99),
+                          const SizedBox(width: 6),
+                          IconButton(
+                            icon: const Icon(Icons.edit_outlined, size: 16, color: Colors.grey),
+                            tooltip: 'Edit Contact Name',
+                            splashRadius: 18,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () => _showEditContactNameDialog(
+                              context,
+                              contact['id']?.toString() ?? '',
+                              contact['name']?.toString() ?? '',
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          if (contact['name'] != null &&
+                              contact['name'].toString().trim().isNotEmpty &&
+                              !ContactAvatar.isNumeric(contact['name']) &&
+                              contact['id'] != null)
+                            Text(
+                              contact['id'],
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: Color.fromARGB(255, 99, 99, 99),
+                              ),
+                            ),
                         ],
                       ),
                       Row(
