@@ -859,6 +859,9 @@ app.use(bodyParser.json({
 app.set('TenantModel', Tenant);
 app.use('/api/instagram', instagramRoutes);
 app.use('/api/instagram/comment-automations', instagramCommentAutomationRoutes);
+const instagramPublishRoutes = require('./routes/instagramPublishRoutes');
+app.use('/api/instagram/publish', instagramPublishRoutes);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Mount Meta Ads Lead Integration & Compliance Routes ───────────────────────
 const metaRoutes = require('./routes/metaRoutes');

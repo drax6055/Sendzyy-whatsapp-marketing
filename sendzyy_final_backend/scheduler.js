@@ -623,6 +623,20 @@ function startMetaReconciliationCron(TenantModel, RecipientModel) {
  *
  * Requirements: 3.3, 3.5
  */
+const instagramPublishService = require('./services/instagramPublishService');
+
+function startInstagramPublishCron(Tenant) {
+    return cron.schedule('* * * * *', async () => {
+        try {
+            if (Tenant) {
+                await instagramPublishService.processDueScheduledPosts(Tenant);
+            }
+        } catch (err) {
+            console.error('[InstagramPublishCron] Error during scheduled posts sweep:', err.message);
+        }
+    });
+}
+
 async function initScheduler(retryScheduler, ScheduledRetryPhase, Tenant, transporter, io) {
     // Task 13.2: Recover phases interrupted by a previous server restart
     await recoverExecutingPhases(ScheduledRetryPhase);
@@ -644,6 +658,11 @@ async function initScheduler(retryScheduler, ScheduledRetryPhase, Tenant, transp
     // Meta Analytics Daily Reconciliation cron: 02:30 UTC
     startMetaReconciliationCron(Tenant);
 
+    // Instagram Scheduled Content Publisher: every minute
+    if (Tenant) {
+        startInstagramPublishCron(Tenant);
+    }
+
     return task;
 }
 
@@ -655,6 +674,7 @@ module.exports = {
     startTokenExpiryWatcherCron,
     startWebhookRecoveryCron,
     startMetaReconciliationCron,
+    startInstagramPublishCron,
 };
 
 
