@@ -27,7 +27,7 @@ import 'package:iFloraBuzz/features/retry/presentation/pages/retry_system_page.d
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_profile_setup_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_automation_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_messages_page.dart';
-
+import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_publish_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
@@ -187,7 +187,7 @@ class _DashboardShellState extends State<DashboardShell> {
         if (saved == 4 || saved == 12 || saved == 20) {
           _isLeadsExpanded = true;
         }
-        if (saved == 14 || saved == 15 || saved == 19) {
+        if (saved == 13 || saved == 14 || saved == 18 || saved == 21) {
           _isInstagramExpanded = true;
         }
       });
@@ -214,7 +214,7 @@ class _DashboardShellState extends State<DashboardShell> {
       if (index == 4 || index == 12 || index == 20) {
         _isLeadsExpanded = true;
       }
-      if (index == 13 || index == 14 || index == 18) {
+      if (index == 13 || index == 14 || index == 18 || index == 21) {
         _isInstagramExpanded = true;
       }
     });
@@ -401,6 +401,9 @@ class _DashboardShellState extends State<DashboardShell> {
     const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
     const MetaAdsLeadsPage(),
+    InstagramPublishPage(
+      onNavigateToProfile: () => _setSelectedIndex(13),
+    ),
   ];
 
   Widget _buildSidebarContent({bool isDrawer = false}) {
@@ -670,7 +673,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _buildExpandableInstagramMenu({bool isDrawer = false}) {
     final bool isAnyInstagramSelected =
-        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18;
+        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18 || _selectedIndex == 21;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -747,6 +750,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   18,
                   Icons.chat_bubble_outline_rounded,
                   'Message',
+                  isSubItem: true,
+                  isDrawer: isDrawer,
+                ),
+                _buildNavItem(
+                  21,
+                  Icons.post_add_rounded,
+                  'Publish',
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
