@@ -9,6 +9,7 @@ import 'package:iFloraBuzz/features/catalog/presentation/widgets/product_browser
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_message_composer.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/multi_product_composer.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_report_tab.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_selector_dropdown.dart';
 
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
   
@@ -56,7 +57,7 @@ class _CatalogPageState extends State<CatalogPage>
                 ),
                 backgroundColor: const Color(0xFF10B981),
                 duration: const Duration(seconds: 3),
-                behavior: SnackBarBehavior.floating,
+                behavior: isMobile ? SnackBarBehavior.fixed : SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
               ),
@@ -76,7 +77,7 @@ class _CatalogPageState extends State<CatalogPage>
                 ),
                 backgroundColor: Colors.red.shade500,
                 duration: const Duration(seconds: 4),
-                behavior: SnackBarBehavior.floating,
+                behavior: isMobile ? SnackBarBehavior.fixed : SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)),
               ),
@@ -100,6 +101,7 @@ class _CatalogPageState extends State<CatalogPage>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     Container(
                       padding: EdgeInsets.all(isMobile ? 8 : 10),
@@ -146,8 +148,16 @@ class _CatalogPageState extends State<CatalogPage>
                         ],
                       ),
                     ),
+                    if (!isMobile) ...[
+                      const SizedBox(width: 16),
+                      const CatalogSelectorDropdown(),
+                    ],
                   ],
                 ),
+                if (isMobile) ...[
+                  const SizedBox(height: 10),
+                  const CatalogSelectorDropdown(isCompact: true),
+                ],
                 SizedBox(height: isMobile ? 12 : 20),
                 // Tabs
                 TabBar(
@@ -279,9 +289,10 @@ class _ConnectedCatalogBanner extends StatelessWidget {
     final activeCat = state.activeCatalog;
     final hasCatalogs = state.catalogs.isNotEmpty ||
         (state.activeCatalogId != null && state.activeCatalogId!.trim().isNotEmpty);
+    final isMobile = ResponsiveHelper.isMobile(context);
 
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.all(isMobile ? 16 : 20),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -297,7 +308,9 @@ class _ConnectedCatalogBanner extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Top Header Row ─────────────────────────────────────────────
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
                 padding: const EdgeInsets.all(10),
@@ -317,25 +330,24 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 4,
                       children: [
-                        Flexible(
-                          child: Text(
-                            activeCat?.name ??
-                                (hasCatalogs
-                                    ? 'Connected Meta Catalog'
-                                    : (state.isSyncingCatalogs
-                                        ? 'Connecting Meta Catalog...'
-                                        : 'No Meta Catalog Connected')),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                              color: Color(0xFF1A1D1E),
-                            ),
-                            overflow: TextOverflow.ellipsis,
+                        Text(
+                          activeCat?.name ??
+                              (hasCatalogs
+                                  ? 'Connected Meta Catalog'
+                                  : (state.isSyncingCatalogs
+                                      ? 'Connecting Meta Catalog...'
+                                      : 'No Meta Catalog Connected')),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: Color(0xFF1A1D1E),
                           ),
                         ),
-                        const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 3),
@@ -358,6 +370,23 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                             ),
                           ),
                         ),
+                        if (state.catalogs.length > 1)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6366F1).withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              '${state.catalogs.length} Catalogs',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF6366F1),
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                     const SizedBox(height: 4),
@@ -374,67 +403,196 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: state.isSyncingCatalogs
-                    ? null
-                    : () => context
-                        .read<CatalogBloc>()
-                        .add(SyncCatalogsWithMeta()),
-                icon: state.isSyncingCatalogs
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.sync_rounded, size: 16),
-                label: Text(
-                    state.isSyncingCatalogs ? 'Syncing...' : 'Sync with Meta'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.primaryColor,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              if (!isMobile) ...[
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => CatalogSelectorDropdown.showAddCatalogDialog(context),
+                  icon: const Icon(Icons.add_rounded, size: 16),
+                  label: const Text('Add Catalog'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF374151),
+                    side: const BorderSide(color: Color(0xFFD1D5DB)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: state.isSyncingCatalogs
+                      ? null
+                      : () => context
+                          .read<CatalogBloc>()
+                          .add(SyncCatalogsWithMeta()),
+                  icon: state.isSyncingCatalogs
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.sync_rounded, size: 16),
+                  label: Text(
+                      state.isSyncingCatalogs ? 'Syncing...' : 'Sync with Meta'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.primaryColor,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  ),
+                ),
+              ],
             ],
           ),
-          if (state.catalogs.length > 1) ...[
-            const SizedBox(height: 16),
-            const Divider(height: 1),
+
+          if (isMobile) ...[
             const SizedBox(height: 12),
             Row(
               children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => CatalogSelectorDropdown.showAddCatalogDialog(context),
+                    icon: const Icon(Icons.add_rounded, size: 16),
+                    label: const Text('Add Catalog', style: TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF374151),
+                      side: const BorderSide(color: Color(0xFFD1D5DB)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: state.isSyncingCatalogs
+                        ? null
+                        : () => context
+                            .read<CatalogBloc>()
+                            .add(SyncCatalogsWithMeta()),
+                    icon: state.isSyncingCatalogs
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.sync_rounded, size: 16),
+                    label: Text(
+                        state.isSyncingCatalogs ? 'Syncing...' : 'Sync Meta',
+                        style: const TextStyle(fontSize: 12)),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.primaryColor,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+
+          // ── Catalog Dropdown Selector ─────────────────────────────────
+          const SizedBox(height: 16),
+          const Divider(height: 1, color: Color(0xFFF3F4F6)),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF9FAFB),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.swap_horiz_rounded,
+                  size: 18,
+                  color: Color(0xFF10B981),
+                ),
+                const SizedBox(width: 8),
                 const Text(
-                  'Switch Active Catalog:',
+                  'Select Catalog:',
                   style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF4B5563)),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF4B5563),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
+                      isExpanded: true,
                       value: state.catalogs.any((c) => c.catalogId == state.activeCatalogId)
                           ? state.activeCatalogId
                           : (state.catalogs.isNotEmpty ? state.catalogs.first.catalogId : null),
                       isDense: true,
                       borderRadius: BorderRadius.circular(12),
-                      items: state.catalogs.map((c) {
-                        return DropdownMenuItem<String>(
-                          value: c.catalogId,
-                          child: Text(
-                            '${c.name} (${c.catalogId})',
-                            style: const TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w500),
-                            overflow: TextOverflow.ellipsis,
+                      items: [
+                        ...state.catalogs.map((c) {
+                          final isCur = c.catalogId == state.activeCatalogId;
+                          return DropdownMenuItem<String>(
+                            value: c.catalogId,
+                            child: Row(
+                              children: [
+                                const Icon(Icons.storefront_rounded, size: 15, color: Color(0xFF10B981)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    '${c.name} (${c.catalogId})',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: isCur ? FontWeight.bold : FontWeight.w500,
+                                      color: const Color(0xFF1F2937),
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (isCur)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      'Active',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF047857),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }),
+                        const DropdownMenuItem<String>(
+                          value: '__ADD_NEW__',
+                          child: Row(
+                            children: [
+                              Icon(Icons.add_circle_outline_rounded, size: 15, color: Color(0xFF2563EB)),
+                              SizedBox(width: 8),
+                              Text(
+                                '+ Connect Another Catalog ID...',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF2563EB),
+                                ),
+                              ),
+                            ],
                           ),
-                        );
-                      }).toList(),
+                        ),
+                      ],
                       onChanged: (val) {
-                        if (val != null) {
+                        if (val == '__ADD_NEW__') {
+                          CatalogSelectorDropdown.showAddCatalogDialog(context);
+                        } else if (val != null && val != state.activeCatalogId) {
                           context
                               .read<CatalogBloc>()
                               .add(SelectActiveCatalog(val));
@@ -445,7 +603,7 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                 ),
               ],
             ),
-          ],
+          ),
         ],
       ),
     );
@@ -920,6 +1078,33 @@ class _OrderCard extends StatelessWidget {
             ),
           ],
 
+          // Customer Reported Payment Alert Banner
+          if (order.customerReportedPaid && order.paymentStatus.toLowerCase() != 'paid') ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF3C7),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFCD34D)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFFD97706)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      order.customerReportedUtr.isNotEmpty
+                          ? 'Customer reported UPI payment (UTR: ${order.customerReportedUtr}). Please check bank & mark paid.'
+                          : 'Customer reported payment completed. Please check your bank and mark as paid.',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF92400E)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           // Paid details banner
           if (order.paymentStatus.toLowerCase() == 'paid') ...[
             const SizedBox(height: 8),
@@ -934,9 +1119,11 @@ class _OrderCard extends StatelessWidget {
                   const Icon(Icons.verified_rounded, size: 14, color: Color(0xFF059669)),
                   const SizedBox(width: 6),
                   Text(
-                    order.paymentId != null
+                    order.paymentId != null && order.paymentId!.isNotEmpty
                         ? 'Payment ID: ${order.paymentId}'
-                        : 'Paid via Razorpay',
+                        : (order.paymentProvider.toLowerCase() == 'upi'
+                            ? 'Paid via Direct UPI'
+                            : 'Paid via Razorpay'),
                     style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF065F46)),
                   ),
                 ],
@@ -960,7 +1147,7 @@ class _OrderCard extends StatelessWidget {
                     ),
                     icon: const Icon(Icons.send_rounded, size: 14),
                     label: Text(
-                      order.paymentLinkUrl != null ? 'Resend Payment Link' : 'Send Payment Link',
+                      order.paymentLinkUrl != null ? 'Resend UPI Link' : 'Send UPI Link',
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                     onPressed: () {

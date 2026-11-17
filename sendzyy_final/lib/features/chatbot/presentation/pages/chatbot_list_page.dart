@@ -514,6 +514,11 @@ class _ChatbotCard extends StatelessWidget {
   }
 
   Widget _buildCardHeader(BuildContext context) {
+    final isEmployeeCreated = (chatbot.creatorRole == 'employee') ||
+        (chatbot.createdByName != null &&
+            chatbot.createdByName!.trim().isNotEmpty &&
+            chatbot.createdByName!.trim().toLowerCase() != 'admin');
+
     return Row(
       children: [
         // Bot icon
@@ -527,14 +532,49 @@ class _ChatbotCard extends StatelessWidget {
           child: const Icon(Icons.smart_toy_rounded, color: AppTheme.primaryColor, size: 22),
         ),
         const SizedBox(width: 12),
-        // Name + status badge
+        // Name + status badge + employee tag
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                chatbot.name,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  Text(
+                    chatbot.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  if (isEmployeeCreated &&
+                      chatbot.createdByName != null &&
+                      chatbot.createdByName!.trim().isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: const Color(0xFF128C7E).withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.person_outline, size: 12, color: Color(0xFF128C7E)),
+                          const SizedBox(width: 4),
+                          Text(
+                            chatbot.createdByName!.trim(),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF128C7E),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(height: 4),
               _buildStatusBadge(),
@@ -611,6 +651,11 @@ class _ChatbotCard extends StatelessWidget {
   }
 
   Widget _buildFooterRow(BuildContext context) {
+    final isEmployeeCreated = (chatbot.creatorRole == 'employee') ||
+        (chatbot.createdByName != null &&
+            chatbot.createdByName!.trim().isNotEmpty &&
+            chatbot.createdByName!.trim().toLowerCase() != 'admin');
+
     return Row(
       children: [
         Icon(Icons.access_time, size: 14, color: Colors.grey.shade400),
@@ -619,6 +664,15 @@ class _ChatbotCard extends StatelessWidget {
           'Last modified ${_formatDate(chatbot.updatedAt)}',
           style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
         ),
+        if (isEmployeeCreated &&
+            chatbot.createdByName != null &&
+            chatbot.createdByName!.trim().isNotEmpty) ...[
+          const SizedBox(width: 8),
+          Text(
+            '•  Created by ${chatbot.createdByName!.trim()}',
+            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+          ),
+        ],
       ],
     );
   }

@@ -5,6 +5,9 @@ class ChatbotModel {
   final Map<String, dynamic> flow;
   final bool isActive;
   final DateTime updatedAt;
+  final String? createdBy;
+  final String? createdByName;
+  final String? creatorRole;
 
   ChatbotModel({
     required this.id,
@@ -13,6 +16,9 @@ class ChatbotModel {
     required this.flow,
     required this.isActive,
     required this.updatedAt,
+    this.createdBy,
+    this.createdByName,
+    this.creatorRole,
   });
 
   factory ChatbotModel.fromJson(Map<String, dynamic> json) {
@@ -25,6 +31,9 @@ class ChatbotModel {
       updatedAt: json['updatedAt'] != null
           ? DateTime.parse(json['updatedAt'])
           : DateTime.now(),
+      createdBy: json['createdBy']?.toString(),
+      createdByName: json['createdByName']?.toString(),
+      creatorRole: json['creatorRole']?.toString(),
     );
   }
 
@@ -35,6 +44,9 @@ class ChatbotModel {
       'flow': flow,
       'isActive': isActive,
       'updatedAt': updatedAt.toIso8601String(),
+      if (createdBy != null) 'createdBy': createdBy,
+      if (createdByName != null) 'createdByName': createdByName,
+      if (creatorRole != null) 'creatorRole': creatorRole,
     };
   }
 }

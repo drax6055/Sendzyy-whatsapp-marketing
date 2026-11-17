@@ -26,6 +26,8 @@ Thumbs.db
 serviceAccountKey.json
 *.keystore
 
+
+
 # Logs & Archives
 *.log
 npm-debug.log*

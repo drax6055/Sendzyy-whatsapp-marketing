@@ -27,6 +27,148 @@ class CatalogCommerceSettings {
   }
 }
 
+// Direct UPI Payment Settings for Tenant
+class UpiPaymentSettings {
+  final String upiId;
+  final String businessName;
+  final bool enabled;
+  final bool autoSendOnOrder;
+
+  UpiPaymentSettings({
+    required this.upiId,
+    required this.businessName,
+    required this.enabled,
+    required this.autoSendOnOrder,
+  });
+
+  factory UpiPaymentSettings.fromJson(Map<String, dynamic> json) {
+    return UpiPaymentSettings(
+      upiId: json['upiId']?.toString() ?? '',
+      businessName: json['businessName']?.toString() ?? '',
+      enabled: json['enabled'] == true,
+      autoSendOnOrder: json['autoSendOnOrder'] != false,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'upiId': upiId,
+    'businessName': businessName,
+    'enabled': enabled,
+    'autoSendOnOrder': autoSendOnOrder,
+  };
+
+  factory UpiPaymentSettings.empty() {
+    return UpiPaymentSettings(
+      upiId: '',
+      businessName: '',
+      enabled: false,
+      autoSendOnOrder: true,
+    );
+  }
+
+  UpiPaymentSettings copyWith({
+    String? upiId,
+    String? businessName,
+    bool? enabled,
+    bool? autoSendOnOrder,
+  }) {
+    return UpiPaymentSettings(
+      upiId: upiId ?? this.upiId,
+      businessName: businessName ?? this.businessName,
+      enabled: enabled ?? this.enabled,
+      autoSendOnOrder: autoSendOnOrder ?? this.autoSendOnOrder,
+    );
+  }
+}
+
+// Option B: Bank Settlement / Payout Settings for Tenant
+class TenantPayoutSettings {
+  final String accountHolderName;
+  final String accountNumber;
+  final String ifscCode;
+  final String bankName;
+  final String upiId;
+  final String businessName;
+  final bool enabled;
+  final bool autoSendOnOrder;
+  final String razorpayAccountId;
+
+  TenantPayoutSettings({
+    required this.accountHolderName,
+    required this.accountNumber,
+    required this.ifscCode,
+    required this.bankName,
+    required this.upiId,
+    required this.businessName,
+    required this.enabled,
+    required this.autoSendOnOrder,
+    this.razorpayAccountId = '',
+  });
+
+  factory TenantPayoutSettings.fromJson(Map<String, dynamic> json) {
+    return TenantPayoutSettings(
+      accountHolderName: json['accountHolderName']?.toString() ?? '',
+      accountNumber: json['accountNumber']?.toString() ?? '',
+      ifscCode: json['ifscCode']?.toString() ?? '',
+      bankName: json['bankName']?.toString() ?? '',
+      upiId: json['upiId']?.toString() ?? '',
+      businessName: json['businessName']?.toString() ?? '',
+      enabled: json['enabled'] != false,
+      autoSendOnOrder: json['autoSendOnOrder'] != false,
+      razorpayAccountId: json['razorpayAccountId']?.toString() ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'accountHolderName': accountHolderName,
+    'accountNumber': accountNumber,
+    'ifscCode': ifscCode,
+    'bankName': bankName,
+    'upiId': upiId,
+    'businessName': businessName,
+    'enabled': enabled,
+    'autoSendOnOrder': autoSendOnOrder,
+  };
+
+  factory TenantPayoutSettings.empty() {
+    return TenantPayoutSettings(
+      accountHolderName: '',
+      accountNumber: '',
+      ifscCode: '',
+      bankName: '',
+      upiId: '',
+      businessName: '',
+      enabled: true,
+      autoSendOnOrder: true,
+      razorpayAccountId: '',
+    );
+  }
+
+  TenantPayoutSettings copyWith({
+    String? accountHolderName,
+    String? accountNumber,
+    String? ifscCode,
+    String? bankName,
+    String? upiId,
+    String? businessName,
+    bool? enabled,
+    bool? autoSendOnOrder,
+    String? razorpayAccountId,
+  }) {
+    return TenantPayoutSettings(
+      accountHolderName: accountHolderName ?? this.accountHolderName,
+      accountNumber: accountNumber ?? this.accountNumber,
+      ifscCode: ifscCode ?? this.ifscCode,
+      bankName: bankName ?? this.bankName,
+      upiId: upiId ?? this.upiId,
+      businessName: businessName ?? this.businessName,
+      enabled: enabled ?? this.enabled,
+      autoSendOnOrder: autoSendOnOrder ?? this.autoSendOnOrder,
+      razorpayAccountId: razorpayAccountId ?? this.razorpayAccountId,
+    );
+  }
+}
+
 // A single product from the Meta catalog
 class CatalogProduct {
   final String retailerId; // product_retailer_id / content_id / SKU
@@ -576,10 +718,13 @@ class WhatsAppOrder {
   final String currency;
   final String status;
   final String paymentStatus;
+  final String paymentProvider;
   final String? paymentLinkId;
   final String? paymentLinkUrl;
   final String? paymentId;
   final DateTime? paidAt;
+  final bool customerReportedPaid;
+  final String customerReportedUtr;
   final DateTime? createdAt;
 
   WhatsAppOrder({
@@ -593,10 +738,13 @@ class WhatsAppOrder {
     required this.currency,
     required this.status,
     this.paymentStatus = 'pending',
+    this.paymentProvider = 'upi',
     this.paymentLinkId,
     this.paymentLinkUrl,
     this.paymentId,
     this.paidAt,
+    this.customerReportedPaid = false,
+    this.customerReportedUtr = '',
     this.createdAt,
   });
 
@@ -617,10 +765,13 @@ class WhatsAppOrder {
       currency: json['currency']?.toString() ?? 'INR',
       status: json['status']?.toString() ?? 'received',
       paymentStatus: json['paymentStatus']?.toString() ?? 'pending',
+      paymentProvider: json['paymentProvider']?.toString() ?? 'upi',
       paymentLinkId: json['paymentLinkId']?.toString(),
       paymentLinkUrl: json['paymentLinkUrl']?.toString(),
       paymentId: json['paymentId']?.toString(),
       paidAt: json['paidAt'] != null ? DateTime.tryParse(json['paidAt'].toString()) : null,
+      customerReportedPaid: json['customerReportedPaid'] == true,
+      customerReportedUtr: json['customerReportedUtr']?.toString() ?? '',
       createdAt: json['createdAt'] != null ? DateTime.tryParse(json['createdAt'].toString()) : null,
     );
   }

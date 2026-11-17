@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/catalog/data/models/catalog_model.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
+import 'package:iFloraBuzz/features/catalog/presentation/widgets/catalog_selector_dropdown.dart';
 
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
 
@@ -73,6 +74,12 @@ class _ProductBrowserWidgetState extends State<ProductBrowserWidget> {
     if (isMobile && !widget.isPickerMode) {
       return Column(
         children: [
+          const Row(
+            children: [
+              Expanded(child: CatalogSelectorDropdown(isCompact: true)),
+            ],
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -143,6 +150,10 @@ class _ProductBrowserWidgetState extends State<ProductBrowserWidget> {
 
     return Row(
       children: [
+        if (!widget.isPickerMode) ...[
+          const CatalogSelectorDropdown(isCompact: true),
+          const SizedBox(width: 10),
+        ],
         Expanded(
           child: TextField(
             controller: _searchController,
