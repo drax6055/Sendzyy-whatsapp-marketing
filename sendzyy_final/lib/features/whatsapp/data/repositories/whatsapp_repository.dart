@@ -10,6 +10,20 @@ import 'package:iFloraBuzz/features/credits/data/models/panel_plan.dart';
 import 'package:iFloraBuzz/features/templates/data/models/app_entry.dart';
 import 'package:iFloraBuzz/core/utils/snackbar_utils.dart';
 
+class ConversationPageResult {
+  final List<Map<String, dynamic>> conversations;
+  final int total;
+  final bool hasMore;
+  final int page;
+
+  const ConversationPageResult({
+    required this.conversations,
+    required this.total,
+    required this.hasMore,
+    required this.page,
+  });
+}
+
 class WhatsAppRepository {
   final Dio _dio;
   final SharedPreferences _prefs;
@@ -794,14 +808,68 @@ class WhatsAppRepository {
     return [];
   }
 
-  Future<List<Map<String, dynamic>>> getConversations() async {
+  Future<ConversationPageResult> getConversationsPaged({
+    int page = 1,
+    int limit = 30,
+    String? search,
+    String? filter,
+  }) async {
     try {
-      final response = await _dio.get('/conversations');
+      final queryParams = <String, dynamic>{
+        'page': page,
+        'limit': limit,
+      };
+      if (search != null && search.trim().isNotEmpty) {
+        queryParams['search'] = search.trim();
+      }
+      if (filter != null && filter.isNotEmpty && filter != 'all') {
+        queryParams['filter'] = filter;
+      }
+      final response = await _dio.get('/conversations', queryParameters: queryParams);
       if (response.statusCode == 200) {
-        return List<Map<String, dynamic>>.from(response.data);
+        if (response.data is Map) {
+          final data = response.data as Map;
+          final list = List<Map<String, dynamic>>.from(data['conversations'] ?? []);
+          return ConversationPageResult(
+            conversations: list,
+            total: (data['total'] as num?)?.toInt() ?? list.length,
+            hasMore: data['hasMore'] == true,
+            page: (data['page'] as num?)?.toInt() ?? page,
+          );
+        } else if (response.data is List) {
+          final list = List<Map<String, dynamic>>.from(response.data);
+          return ConversationPageResult(
+            conversations: list,
+            total: list.length,
+            hasMore: false,
+            page: 1,
+          );
+        }
       }
     } catch (_) {}
-    return [];
+    return ConversationPageResult(
+      conversations: [],
+      total: 0,
+      hasMore: false,
+      page: page,
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getConversations() async {
+    final res = await getConversationsPaged(page: 1, limit: 30);
+    return res.conversations;
+  }
+
+  Future<bool> updateContactName(String contactId, String name) async {
+    try {
+      final response = await _dio.put(
+        '/conversations/$contactId/name',
+        data: {'name': name},
+      );
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<List<Map<String, dynamic>>> getMessages(String contactId) async {

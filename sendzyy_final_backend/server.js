@@ -297,6 +297,7 @@ const conversationSchema = new mongoose.Schema({
     tenantId: { type: String, required: true },
     contactId: { type: String, required: true },
     name: String,
+    avatarUrl: { type: String, default: null },
     lastMessage: String,
     lastActive: { type: Date, default: Date.now },
     hasReply: { type: Boolean, default: false },
@@ -564,6 +565,7 @@ recipientSchema.index({ wamid: 1, deliveredAt: 1 }, { sparse: true, background: 
 recipientSchema.index({ wamid: 1, readAt: 1 }, { sparse: true, background: true });
 recipientSchema.index({ wamid: 1, failedAt: 1 }, { sparse: true, background: true });
 recipientSchema.index({ tenantId: 1, deliveryTimestamp: 1 }, { background: true });
+recipientSchema.index({ tenantId: 1, to: 1 }, { background: true });
 const Recipient = mongoose.model('Recipient', recipientSchema);
 
 const retryConfigurationSchema = new mongoose.Schema({
@@ -1078,6 +1080,9 @@ app.use(bodyParser.json({
 app.set('TenantModel', Tenant);
 app.use('/api/instagram', instagramRoutes);
 app.use('/api/instagram/comment-automations', instagramCommentAutomationRoutes);
+const instagramPublishRoutes = require('./routes/instagramPublishRoutes');
+app.use('/api/instagram/publish', instagramPublishRoutes);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Mount Meta Ads Lead Integration & Compliance Routes ───────────────────────
 const metaRoutes = require('./routes/metaRoutes');
@@ -3448,6 +3453,9 @@ app.post('/send-message', authenticate, async (req, res) => {
                 lastActive: new Date(),
                 $setOnInsert: { hasReply: false }
             };
+            if (recipientName && recipientName.trim()) {
+                convUpdate.name = recipientName.trim();
+            }
 
             // Automatic binding: When an employee messages a contact, bind contact to that employee
             if (isEmployee && employeeId) {
@@ -3458,7 +3466,6 @@ app.post('/send-message', authenticate, async (req, res) => {
                 convUpdate.lastEmployeeMessage = msgPreview;
                 convUpdate.lastEmployeeActive = new Date();
             }
-
             await Conversation.findOneAndUpdate(
                 { tenantId, contactId: to },
                 convUpdate,
@@ -4184,11 +4191,113 @@ app.delete('/scheduled-campaigns/:id', authenticate, async (req, res) => {
     }
 });
 
-//  Conversations & Messages REST (Multi-tier Isolation & Assignment)
+//  Conversations & Messages REST
+
+/**
+ * Enriches conversations dynamically with real contact names from Clients, Leads, and Campaign Recipients
+ * if their current name is empty, identical to contactId, or purely numeric.
+ */
+async function enrichConversationsWithNames(tenantId, convs) {
+    if (!convs || !convs.length) return convs;
+
+    const isUnresolved = (name, contactId) => {
+        if (!name) return true;
+        const str = String(name).trim();
+        if (!str || str === contactId || str === 'Unknown Sender' || str === 'Unknown') return true;
+        return /^[\+\d\s\-\(\)]+$/.test(str);
+    };
+
+    const needsResolution = convs.filter(c => isUnresolved(c.name, c.contactId)).slice(0, 300);
+    if (needsResolution.length === 0) return convs;
+
+    try {
+        const searchVariations = new Set();
+        for (const c of needsResolution) {
+            const raw = String(c.contactId).trim();
+            searchVariations.add(raw);
+            const digits = raw.replace(/\D/g, '');
+            if (digits) {
+                searchVariations.add(digits);
+                searchVariations.add('+' + digits);
+                if (digits.length >= 10) {
+                    const s10 = digits.slice(-10);
+                    searchVariations.add(s10);
+                    searchVariations.add('91' + s10);
+                    searchVariations.add('+91' + s10);
+                    searchVariations.add('0' + s10);
+                }
+            }
+        }
+
+        const searchArray = Array.from(searchVariations);
+
+        const [clients, leads, recipients] = await Promise.all([
+            Client.find({ tenantId, mobileNumber: { $in: searchArray } }).select('name mobileNumber companyName').lean(),
+            Lead.find({ tenantId, mobileNumber: { $in: searchArray } }).select('name mobileNumber companyName').lean(),
+            Recipient.find({
+                tenantId,
+                to: { $in: searchArray },
+                name: { $exists: true, $ne: null }
+            }).select('to name').lean()
+        ]);
+
+        const nameMap = new Map();
+        const registerName = (rawNumber, possibleName) => {
+            if (!rawNumber || !possibleName) return;
+            const clean = String(possibleName).trim();
+            if (!clean || isUnresolved(clean, rawNumber)) return;
+            const digits = String(rawNumber).replace(/\D/g, '');
+            if (digits) {
+                nameMap.set(digits, clean);
+                if (digits.length >= 10) nameMap.set(digits.slice(-10), clean);
+            }
+        };
+
+        (recipients || []).forEach(r => registerName(r.to, r.name));
+        (leads || []).forEach(l => registerName(l.mobileNumber, l.name || l.companyName));
+        (clients || []).forEach(c => registerName(c.mobileNumber, c.name || c.companyName));
+
+        const bulkOps = [];
+        for (const c of convs) {
+            if (isUnresolved(c.name, c.contactId)) {
+                const digits = String(c.contactId).replace(/\D/g, '');
+                const suffix = digits.slice(-10);
+                const resolved = nameMap.get(digits) || (suffix ? nameMap.get(suffix) : null);
+                if (resolved) {
+                    c.name = resolved;
+                    bulkOps.push({
+                        updateOne: {
+                            filter: { tenantId, contactId: c.contactId },
+                            update: { $set: { name: resolved } }
+                        }
+                    });
+                }
+            }
+        }
+
+        if (bulkOps.length > 0) {
+            Conversation.bulkWrite(bulkOps, { ordered: false }).catch(err => {
+                console.warn('[enrichConversationsWithNames] bulkWrite error:', err.message);
+            });
+        }
+    } catch (err) {
+        console.error('[enrichConversationsWithNames] error:', err.message);
+    }
+
+    return convs;
+}
+
 app.get('/conversations', authenticate, async (req, res) => {
     try {
-        const query = { tenantId: req.user.tenantId };
+        const tenantId = req.user.tenantId;
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(Math.max(1, parseInt(req.query.limit) || 30), 100);
+        const skip = (page - 1) * limit;
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const filter = req.query.filter; // 'unread' or 'all'
+
         const isEmployee = req.user.role === 'employee';
+        const query = { tenantId };
 
         if (isEmployee) {
             // Chat Isolation: employee only sees conversations assigned to them
@@ -4202,10 +4311,40 @@ app.get('/conversations', authenticate, async (req, res) => {
             }
         }
 
-        const convs = await Conversation.find(query)
-            .sort(isEmployee ? { lastEmployeeActive: -1, lastActive: -1 } : { lastActive: -1 }).lean();
+        if (filter === 'unread') {
+            query.hasReply = true;
+        }
 
-        const formattedConvs = await Promise.all(convs.map(async (c) => {
+        if (search) {
+            const searchCond = [
+                { contactId: { $regex: search, $options: 'i' } },
+                { name: { $regex: search, $options: 'i' } }
+            ];
+            if (query.$or) {
+                query.$and = [
+                    { $or: query.$or },
+                    { $or: searchCond }
+                ];
+                delete query.$or;
+            } else {
+                query.$or = searchCond;
+            }
+        }
+
+        const sortOrder = isEmployee ? { lastEmployeeActive: -1, lastActive: -1 } : { lastActive: -1 };
+
+        const [total, rawConvs] = await Promise.all([
+            Conversation.countDocuments(query),
+            Conversation.find(query)
+                .sort(sortOrder)
+                .skip(skip)
+                .limit(limit)
+                .lean()
+        ]);
+
+        const enriched = await enrichConversationsWithNames(tenantId, rawConvs);
+
+        const formattedConvs = await Promise.all(enriched.map(async (c) => {
             let lastMsg = c.lastMessage || '';
             let lastAct = c.lastActive;
 
@@ -4249,6 +4388,7 @@ app.get('/conversations', authenticate, async (req, res) => {
             return {
                 id: c.contactId,
                 name: c.name || c.contactId,
+                avatarUrl: c.avatarUrl || null,
                 lastMessage: lastMsg,
                 lastActive: lastAct,
                 hasReply: c.hasReply || false,
@@ -4258,36 +4398,66 @@ app.get('/conversations', authenticate, async (req, res) => {
             };
         }));
 
-        const tenant = await Tenant.findById(req.user.tenantId).select('defaultCountry');
-        const defaultCountry = tenant?.defaultCountry || 'IN';
-
-        // Deduplicate conversations by canonical contactId so each mobile number has strictly ONE chat
-        const dedupedMap = new Map();
-        for (const item of formattedConvs) {
-            const normKey = normalizePhoneNumber(item.id, defaultCountry) || String(item.id).replace(/\D/g, '');
-            if (!dedupedMap.has(normKey)) {
-                item.id = normKey;
-                dedupedMap.set(normKey, item);
-            } else {
-                const existing = dedupedMap.get(normKey);
-                if ((!existing.name || existing.name === existing.id) && item.name && item.name !== item.id) {
-                    existing.name = item.name;
-                }
-                if (!existing.assignedTo && item.assignedTo) {
-                    existing.assignedTo = item.assignedTo;
-                    existing.assignedToName = item.assignedToName;
-                    existing.assignedAt = item.assignedAt;
-                }
-                if (item.lastActive && (!existing.lastActive || new Date(item.lastActive) > new Date(existing.lastActive))) {
-                    existing.lastActive = item.lastActive;
-                    existing.lastMessage = item.lastMessage;
-                }
-            }
-        }
-
-        res.json(Array.from(dedupedMap.values()));
+        res.json({
+            conversations: formattedConvs,
+            total,
+            page,
+            limit,
+            hasMore: skip + formattedConvs.length < total
+        });
     } catch (error) {
+        console.error('Error fetching conversations:', error);
         res.status(500).json({ error: 'Failed to fetch conversations' });
+    }
+});
+
+// Update contact display name manually from chat screen
+app.put('/conversations/:contactId/name', authenticate, async (req, res) => {
+    try {
+        const { name } = req.body;
+        const tenantId = req.user.tenantId;
+        const contactId = req.params.contactId;
+        if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+
+        const trimmedName = name.trim();
+        await Conversation.findOneAndUpdate(
+            { tenantId, contactId },
+            { $set: { name: trimmedName } },
+            { upsert: true }
+        );
+
+        // Also update or insert in Client CRM collection so it stays synced
+        await Client.findOneAndUpdate(
+            { tenantId, mobileNumber: contactId },
+            { $set: { name: trimmedName, mobileNumber: contactId }, $setOnInsert: { venue: 'WhatsApp Chat' } },
+            { upsert: true }
+        );
+
+        await broadcastConversations(tenantId);
+        res.json({ success: true, name: trimmedName });
+    } catch (err) {
+        console.error('Error updating contact name:', err);
+        res.status(500).json({ error: 'Failed to update contact name' });
+    }
+});
+
+// Update contact avatar URL from chat screen
+app.put('/conversations/:contactId/avatar', authenticate, async (req, res) => {
+    try {
+        const { avatarUrl } = req.body;
+        const tenantId = req.user.tenantId;
+        const contactId = req.params.contactId;
+
+        await Conversation.findOneAndUpdate(
+            { tenantId, contactId },
+            { $set: { avatarUrl: avatarUrl || null } },
+            { upsert: true }
+        );
+
+        await broadcastConversations(tenantId);
+        res.json({ success: true, avatarUrl });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update avatar' });
     }
 });
 
@@ -6240,7 +6410,7 @@ async function saveChatbotMessageToDB({
         lastEmployeeActive: now,
         hasReply: true, // Always mark visible — both bot-sent and customer replies
     };
-    if (name) convUpdate.name = name;
+    if (name && name !== 'Unknown Sender' && name !== 'Unknown') convUpdate.name = name;
 
     await Conversation.findOneAndUpdate(
         { tenantId, contactId },
@@ -7341,16 +7511,22 @@ async function handleLiveChat(tenantId, message, profileName, from) {
         }
     }
 
+    const liveConvUpdate = {
+        lastMessage: lastMessagePreview,
+        lastActive: new Date(),
+        lastEmployeeMessage: lastMessagePreview,
+        lastEmployeeActive: new Date(),
+        hasReply: true
+    };
+    if (profileName && profileName !== 'Unknown Sender' && profileName !== 'Unknown' && profileName.trim().length > 0) {
+        liveConvUpdate.name = profileName.trim();
+    } else {
+        liveConvUpdate.$setOnInsert = { name: from };
+    }
+
     await Conversation.findOneAndUpdate(
         { tenantId, contactId: from },
-        { 
-            name: profileName, 
-            lastMessage: lastMessagePreview, 
-            lastActive: new Date(), 
-            lastEmployeeMessage: lastMessagePreview, 
-            lastEmployeeActive: new Date(), 
-            hasReply: true 
-        },
+        liveConvUpdate,
         { upsert: true }
     );
     await Message.create({
@@ -7816,7 +7992,9 @@ io.on('connection', (socket) => {
                 const convs = await Conversation.find(query)
                     .sort(isEmployee ? { lastEmployeeActive: -1, lastActive: -1 } : { lastActive: -1 }).lean();
 
-                const formattedConvs = await Promise.all(convs.map(async function (c) {
+                const enriched = await enrichConversationsWithNames(tenantId, convs);
+
+                const formattedConvs = await Promise.all(enriched.map(async function (c) {
                     let lastMsg = c.lastMessage || "";
                     let lastAct = c.lastActive;
 
@@ -7860,6 +8038,7 @@ io.on('connection', (socket) => {
                     return {
                         id: c.contactId,
                         name: c.name || c.contactId,
+                        avatarUrl: c.avatarUrl || null,
                         lastMessage: lastMsg,
                         lastActive: lastAct,
                         hasReply: c.hasReply || false,
@@ -7877,6 +8056,9 @@ io.on('connection', (socket) => {
                         dedupedInitial.set(normKey, item);
                     } else {
                         const existing = dedupedInitial.get(normKey);
+                        if (!existing.avatarUrl && item.avatarUrl) {
+                            existing.avatarUrl = item.avatarUrl;
+                        }
                         if ((!existing.name || existing.name === existing.id) && item.name && item.name !== item.id) {
                             existing.name = item.name;
                         }
@@ -8002,15 +8184,17 @@ async function broadcastConversations(tenantId) {
     try {
         const allConvs = await Conversation.find({ tenantId })
             .sort({ lastActive: -1 }).lean();
+        const enriched = await enrichConversationsWithNames(tenantId, allConvs);
 
         // Deduplicate conversations by canonical contactId so each mobile number has strictly ONE chat
         const dedupedAll = new Map();
-        for (const c of allConvs) {
+        for (const c of enriched) {
             const normKey = normalizePhoneNumber(c.contactId, 'IN') || String(c.contactId).replace(/\D/g, '');
             if (!dedupedAll.has(normKey)) {
                 dedupedAll.set(normKey, {
                     id: normKey,
                     name: c.name || normKey,
+                    avatarUrl: c.avatarUrl || null,
                     lastMessage: c.lastMessage || "",
                     lastActive: c.lastActive,
                     hasReply: c.hasReply || false,
@@ -8022,6 +8206,9 @@ async function broadcastConversations(tenantId) {
                 });
             } else {
                 const existing = dedupedAll.get(normKey);
+                if (!existing.avatarUrl && c.avatarUrl) {
+                    existing.avatarUrl = c.avatarUrl;
+                }
                 if ((!existing.name || existing.name === existing.id) && c.name && c.name !== c.contactId) {
                     existing.name = c.name;
                 }
@@ -8060,6 +8247,7 @@ async function broadcastConversations(tenantId) {
                 employeeConvsMap[empId].push({
                     id: c.id,
                     name: c.name || c.id,
+                    avatarUrl: c.avatarUrl || null,
                     lastMessage: empMsg,
                     lastActive: empActive,
                     hasReply: c.hasReply || false,
@@ -8389,8 +8577,8 @@ async function runScheduledCampaigns() {
                                     updateOne: {
                                         filter: { tenantId: sc.tenantId, contactId: to },
                                         update: {
-                                            $set: { name: to, lastMessage: previewText, lastActive: new Date() },
-                                            $setOnInsert: { hasReply: false }
+                                            $set: { lastMessage: previewText, lastActive: new Date() },
+                                            $setOnInsert: { name: to, hasReply: false }
                                         },
                                         upsert: true
                                     }

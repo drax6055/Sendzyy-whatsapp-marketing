@@ -27,8 +27,7 @@ import 'package:iFloraBuzz/features/retry/presentation/pages/retry_system_page.d
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_profile_setup_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_automation_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_messages_page.dart';
-import 'package:iFloraBuzz/features/calling/presentation/pages/call_log_page.dart';
-import 'package:iFloraBuzz/features/calling/presentation/pages/calling_settings_page.dart';
+import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_publish_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
@@ -182,7 +181,7 @@ class _DashboardShellState extends State<DashboardShell> {
         _selectedIndex = saved;
         _navigationHistory.clear();
         _navigationHistory.add(saved);
-        if (saved >= 5 && saved <= 7) {
+        if (saved == 5 || saved == 6 || saved == 23) {
           _isReportsExpanded = true;
         }
         if (saved >= 10 && saved <= 12) {
@@ -191,7 +190,7 @@ class _DashboardShellState extends State<DashboardShell> {
         if (saved == 4 || saved == 12 || saved == 20) {
           _isLeadsExpanded = true;
         }
-        if (saved == 14 || saved == 15 || saved == 19) {
+        if (saved == 13 || saved == 14 || saved == 18 || saved == 21) {
           _isInstagramExpanded = true;
         }
       });
@@ -209,7 +208,7 @@ class _DashboardShellState extends State<DashboardShell> {
           _navigationHistory.add(index);
         }
       }
-      if (index == 5 || index == 6 || index == 22) {
+      if (index == 5 || index == 6 || index == 23) {
         _isReportsExpanded = true;
       }
       if (index >= 9 && index <= 11) {
@@ -218,7 +217,7 @@ class _DashboardShellState extends State<DashboardShell> {
       if (index == 4 || index == 12 || index == 20) {
         _isLeadsExpanded = true;
       }
-      if (index == 13 || index == 14 || index == 18) {
+      if (index == 13 || index == 14 || index == 18 || index == 21) {
         _isInstagramExpanded = true;
       }
     });
@@ -399,12 +398,15 @@ class _DashboardShellState extends State<DashboardShell> {
     InstagramAutomationPage(
       onNavigateToProfile: () => _setSelectedIndex(13),
     ),
-    const CallLogPage(),
-    const CallingSettingsPage(phoneNumberId: ''),
+    const SizedBox.shrink(), // Placeholder for removed CallLogPage
+    const SizedBox.shrink(), // Placeholder for removed CallingSettingsPage
     const CatalogPage(),
     const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
     const MetaAdsLeadsPage(),
+    InstagramPublishPage(
+      onNavigateToProfile: () => _setSelectedIndex(13),
+    ),
     const TeamMembersPage(),
     const EmployeeReportsPage(),
   ];
@@ -462,7 +464,7 @@ class _DashboardShellState extends State<DashboardShell> {
                 if (canAccess('whatsapp_flows'))
                   _buildNavItem(19, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
                 if (isAdmin)
-                  _buildNavItem(21, Icons.manage_accounts_rounded, 'Team Members', isDrawer: isDrawer),
+                  _buildNavItem(22, Icons.manage_accounts_rounded, 'Team Members', isDrawer: isDrawer),
                 if (canAccess('help'))
                   _buildNavItem(8, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
                 if (isAdmin)
@@ -538,7 +540,7 @@ class _DashboardShellState extends State<DashboardShell> {
       if (authState.hasPermission('catalog')) permitted.add(17);
       if (authState.hasPermission('whatsapp_flows')) permitted.add(19);
       if (authState.hasPermission('help')) permitted.add(8);
-      if (authState.hasPermission('instagram')) permitted.addAll([13, 14, 18]);
+      if (authState.hasPermission('instagram')) permitted.addAll([13, 14, 18, 21]);
 
       if (permitted.isNotEmpty && !permitted.contains(_selectedIndex)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -756,14 +758,7 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
-                // TODO: Work on this module later
-                // _buildNavItem(
-                //   13,
-                //   Icons.phone_in_talk_rounded,
-                //   'Call Settings',
-                //   isSubItem: true,
-                //   isDrawer: isDrawer,
-                // ),
+
               ],
             ),
           ),
@@ -778,7 +773,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _buildExpandableInstagramMenu({bool isDrawer = false}) {
     final bool isAnyInstagramSelected =
-        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18;
+        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18 || _selectedIndex == 21;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -858,6 +853,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
+                _buildNavItem(
+                  21,
+                  Icons.post_add_rounded,
+                  'Publish',
+                  isSubItem: true,
+                  isDrawer: isDrawer,
+                ),
               ],
             ),
           ),
@@ -873,7 +875,7 @@ class _DashboardShellState extends State<DashboardShell> {
   Widget _buildExpandableReportsMenu({bool isDrawer = false}) {
     final authState = context.watch<AuthBloc>().state;
     final isAdmin = authState is AuthAuthenticated ? authState.isAdmin : true;
-    final bool isAnyReportSelected = _selectedIndex == 5 || _selectedIndex == 6 || _selectedIndex == 22;
+    final bool isAnyReportSelected = _selectedIndex == 5 || _selectedIndex == 6 || _selectedIndex == 23;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -949,7 +951,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
                 if (isAdmin)
                   _buildNavItem(
-                    22,
+                    23,
                     Icons.badge_outlined,
                     'Employee Reports',
                     isSubItem: true,
@@ -968,7 +970,7 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   Widget _buildExpandableLeadsMenu({bool isDrawer = false}) {
-    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 12 || _selectedIndex == 20;
+    final bool isAnyLeadSelected = _selectedIndex == 4 || _selectedIndex == 20;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1033,20 +1035,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
-                _buildNavItem(
-                  12,
-                  Icons.store_rounded,
-                  'IndiaMART',
-                  isSubItem: true,
-                  isDrawer: isDrawer,
-                ),
-                _buildNavItem(
-                  20,
-                  Icons.campaign_rounded,
-                  'Meta Ads',
-                  isSubItem: true,
-                  isDrawer: isDrawer,
-                ),
+                // _buildNavItem(
+                //   20,
+                //   Icons.campaign_rounded,
+                //   'Meta Ads',
+                //   isSubItem: true,
+                //   isDrawer: isDrawer,
+                // ),
               ],
             ),
           ),
