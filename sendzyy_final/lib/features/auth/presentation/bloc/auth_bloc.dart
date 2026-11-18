@@ -43,6 +43,13 @@ class BiometricLoginRequested extends AuthEvent {}
 /// Fired periodically or on API 403 to force-logout expired sessions
 class SubscriptionExpiryCheckRequested extends AuthEvent {}
 
+class UpdateEmployeeName extends AuthEvent {
+  final String name;
+  UpdateEmployeeName(this.name);
+  @override
+  List<Object> get props => [name];
+}
+
 // States
 abstract class AuthState extends Equatable {
   const AuthState();
@@ -62,6 +69,27 @@ class AuthAuthenticated extends AuthState {
   final String user;
   final Map<String, dynamic> tenant;
   const AuthAuthenticated(this.user, this.tenant);
+
+  bool get isAdmin => (tenant['role'] ?? 'admin') != 'employee';
+  bool get isEmployee => tenant['role'] == 'employee';
+  List<String> get permissions {
+    final raw = tenant['permissions'];
+    if (raw is List) {
+      final list = List<String>.from(raw);
+      if (isEmployee && !list.contains('reports')) list.add('reports');
+      return list;
+    }
+    return ['all'];
+  }
+  bool hasPermission(String module) {
+    if (isAdmin) return true;
+    if (module == 'reports') return true; // Reports is permanent and compulsory for all employees
+    return permissions.contains('all') || permissions.contains(module);
+  }
+  String? get employeeId => tenant['employeeId']?.toString();
+  String? get employeeName => tenant['employeeName']?.toString();
+  String? get employeeEmail => tenant['employeeEmail']?.toString() ?? tenant['employee']?['email']?.toString();
+
   @override
   List<Object> get props => [user, tenant];
 }
@@ -125,6 +153,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             'email': data['email'],
             'subscription': data['subscription'],
             'whatsappConfig': data['whatsappConfig'],
+            'role': data['role'] ?? 'admin',
+            'employeeId': data['employeeId'],
+            'employeeName': data['employeeName'],
+            'permissions': data['permissions'] ?? ['all'],
+            'employee': data['employee'],
           };
 
           await _prefs.setString('tenant_data', jsonEncode(tenant));
@@ -192,7 +225,16 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
         if (response.statusCode == 200) {
           final token = response.data['token'];
-          final tenant = response.data['tenant'];
+          final Map<String, dynamic> tenant = Map<String, dynamic>.from(response.data['tenant'] ?? {});
+          final role = response.data['role'] ?? tenant['role'] ?? 'admin';
+          tenant['role'] = role;
+          if (response.data['employee'] != null) {
+            tenant['employee'] = response.data['employee'];
+            tenant['employeeId'] = response.data['employee']['id'];
+            tenant['employeeName'] = response.data['employee']['name'];
+            tenant['employeeEmail'] = response.data['employee']['email'];
+            tenant['permissions'] = response.data['employee']['permissions'];
+          }
 
           await _prefs.setString(_keyToken, token);
           await _prefs.setString('tenant_id', tenant['id']);
@@ -239,7 +281,12 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           return;
         }
         if (e.response?.statusCode == 403) {
-          final data = e.response?.data;
+          dynamic data = e.response?.data;
+          if (data is String) {
+            try {
+              data = jsonDecode(data);
+            } catch (_) {}
+          }
           if (data is Map) {
             final errCode = data['error'];
             if (errCode == 'subscription_expired') {
@@ -252,7 +299,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
             if (errCode == 'account_inactive') {
               emit(AuthAccountInactive(
                 data['message']?.toString() ??
-                    'Your account is inactive. Please contact support.',
+                    'Your account is inactive. You cannot log in. Please contact your administrator.',
               ));
               return;
             } 
@@ -329,6 +376,21 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       await _clearSession();
       await SecureStorageService.instance.clearCredentials();
       emit(AuthUnauthenticated());
+    });
+
+    on<UpdateEmployeeName>((event, emit) async {
+      if (state is AuthAuthenticated) {
+        final current = state as AuthAuthenticated;
+        final updatedTenant = Map<String, dynamic>.from(current.tenant);
+        updatedTenant['employeeName'] = event.name;
+        if (updatedTenant['employee'] is Map) {
+          final updatedEmp = Map<String, dynamic>.from(updatedTenant['employee']);
+          updatedEmp['name'] = event.name;
+          updatedTenant['employee'] = updatedEmp;
+        }
+        await _prefs.setString('tenant_data', jsonEncode(updatedTenant));
+        emit(AuthAuthenticated(current.user, updatedTenant));
+      }
     });
 
     on<BiometricLoginRequested>((event, emit) async {

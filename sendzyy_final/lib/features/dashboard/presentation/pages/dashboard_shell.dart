@@ -27,10 +27,13 @@ import 'package:iFloraBuzz/features/retry/presentation/pages/retry_system_page.d
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_profile_setup_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_automation_page.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_messages_page.dart';
-
+import 'package:iFloraBuzz/features/instagram/presentation/pages/instagram_publish_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/pages/catalog_page.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/whatsapp_flows/presentation/pages/whatsapp_flows_page.dart';
+import 'package:iFloraBuzz/features/admin/presentation/pages/team_members_page.dart';
+import 'package:iFloraBuzz/features/reports/presentation/pages/employee_reports_page.dart';
+import 'package:iFloraBuzz/features/admin/presentation/widgets/employee_profile_dialog.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
 import 'package:iFloraBuzz/core/services/renewal_reminder_service.dart';
 import 'package:iFloraBuzz/core/constants/app_constants.dart';
@@ -178,7 +181,7 @@ class _DashboardShellState extends State<DashboardShell> {
         _selectedIndex = saved;
         _navigationHistory.clear();
         _navigationHistory.add(saved);
-        if (saved >= 5 && saved <= 7) {
+        if (saved == 5 || saved == 6 || saved == 23) {
           _isReportsExpanded = true;
         }
         if (saved >= 10 && saved <= 12) {
@@ -187,7 +190,7 @@ class _DashboardShellState extends State<DashboardShell> {
         if (saved == 4 || saved == 12 || saved == 20) {
           _isLeadsExpanded = true;
         }
-        if (saved == 14 || saved == 15 || saved == 19) {
+        if (saved == 13 || saved == 14 || saved == 18 || saved == 21) {
           _isInstagramExpanded = true;
         }
       });
@@ -205,7 +208,7 @@ class _DashboardShellState extends State<DashboardShell> {
           _navigationHistory.add(index);
         }
       }
-      if (index == 5 || index == 6) {
+      if (index == 5 || index == 6 || index == 23) {
         _isReportsExpanded = true;
       }
       if (index >= 9 && index <= 11) {
@@ -214,7 +217,7 @@ class _DashboardShellState extends State<DashboardShell> {
       if (index == 4 || index == 12 || index == 20) {
         _isLeadsExpanded = true;
       }
-      if (index == 13 || index == 14 || index == 18) {
+      if (index == 13 || index == 14 || index == 18 || index == 21) {
         _isInstagramExpanded = true;
       }
     });
@@ -401,9 +404,26 @@ class _DashboardShellState extends State<DashboardShell> {
     const InstagramMessagesPage(),
     const WhatsAppFlowsPage(),
     const MetaAdsLeadsPage(),
+    InstagramPublishPage(
+      onNavigateToProfile: () => _setSelectedIndex(13),
+    ),
+    const TeamMembersPage(),
+    const EmployeeReportsPage(),
   ];
 
   Widget _buildSidebarContent({bool isDrawer = false}) {
+    final authState = context.watch<AuthBloc>().state;
+    final isAdmin = authState is AuthAuthenticated ? authState.isAdmin : true;
+    bool canAccess(String module) {
+      if (authState is AuthAuthenticated) {
+        if (authState.isEmployee && module == 'reports') {
+          return true; // Permanent & compulsory for every employee
+        }
+        return authState.hasPermission(module);
+      }
+      return true;
+    }
+
     return Column(
       children: [
         const SizedBox(height: 18),
@@ -425,18 +445,36 @@ class _DashboardShellState extends State<DashboardShell> {
           child: SingleChildScrollView(
             child: Column(
               children: [
-                _buildNavItem(0, Icons.send_rounded, 'Broadcast', isDrawer: isDrawer),
-                _buildNavItem(1, Icons.forum_rounded, 'Chats', isDrawer: isDrawer),
-                _buildNavItem(2, Icons.copy_rounded, 'Templates', isDrawer: isDrawer),
-                _buildNavItem(3, Icons.people_alt_rounded, 'Clients', isDrawer: isDrawer),
-                _buildExpandableLeadsMenu(isDrawer: isDrawer),
-                _buildExpandableReportsMenu(isDrawer: isDrawer),
-                _buildNavItem(7, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
-                _buildNavItem(17, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
-                _buildNavItem(19, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
-                _buildNavItem(8, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
-                _buildExpandableSettingsMenu(isDrawer: isDrawer),
-                _buildExpandableInstagramMenu(isDrawer: isDrawer),
+                if (canAccess('broadcast'))
+                  _buildNavItem(0, Icons.send_rounded, 'Broadcast', isDrawer: isDrawer),
+                if (canAccess('chat'))
+                  _buildNavItem(1, Icons.forum_rounded, 'Chats', isDrawer: isDrawer),
+                if (canAccess('templates'))
+                  _buildNavItem(2, Icons.copy_rounded, 'Templates', isDrawer: isDrawer),
+                if (canAccess('clients'))
+                  _buildNavItem(3, Icons.people_alt_rounded, 'Clients', isDrawer: isDrawer),
+                if (canAccess('leads'))
+                  _buildExpandableLeadsMenu(isDrawer: isDrawer),
+                if (canAccess('reports'))
+                  _buildExpandableReportsMenu(isDrawer: isDrawer),
+                if (canAccess('chatbot'))
+                  _buildNavItem(7, Icons.smart_toy_rounded, 'Chatbot', isDrawer: isDrawer),
+                if (canAccess('catalog'))
+                  _buildNavItem(17, Icons.storefront_rounded, 'Catalog', isDrawer: isDrawer),
+                if (canAccess('whatsapp_flows'))
+                  _buildNavItem(19, Icons.schema_rounded, 'WhatsApp Flows', isDrawer: isDrawer),
+                if (isAdmin)
+                  _buildNavItem(22, Icons.manage_accounts_rounded, 'Team Members', isDrawer: isDrawer),
+                if (canAccess('help'))
+                  _buildNavItem(8, Icons.help_outline_rounded, 'Q & A', isDrawer: isDrawer),
+                if (isAdmin)
+                  _buildExpandableSettingsMenu(isDrawer: isDrawer),
+                if (canAccess('instagram'))
+                  _buildExpandableInstagramMenu(isDrawer: isDrawer),
+                if (authState is AuthAuthenticated && authState.isEmployee) ...[
+                  const SizedBox(height: 8),
+                  _buildEmployeeProfileNavItem(isDrawer: isDrawer),
+                ],
               ],
             ),
           ),
@@ -445,10 +483,75 @@ class _DashboardShellState extends State<DashboardShell> {
     );
   }
 
+  Widget _buildEmployeeProfileNavItem({bool isDrawer = false}) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryColor.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.2)),
+      ),
+      child: ListTile(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        dense: true,
+        leading: const Icon(
+          Icons.badge_outlined,
+          color: AppTheme.primaryColor,
+          size: 20,
+        ),
+        title: const Text(
+          'My Profile',
+          style: TextStyle(
+            color: AppTheme.primaryColor,
+            fontWeight: FontWeight.bold,
+            fontSize: 13,
+          ),
+        ),
+        trailing: const Icon(
+          Icons.arrow_forward_ios_rounded,
+          size: 13,
+          color: AppTheme.primaryColor,
+        ),
+        onTap: () {
+          if (isDrawer) Navigator.of(context).pop();
+          EmployeeProfileDialog.show(context);
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isMobile = ResponsiveHelper.isMobile(context);
     final isTablet = ResponsiveHelper.isTablet(context);
+
+    // Dynamic permission guarding for Employee accounts
+    final authState = context.watch<AuthBloc>().state;
+    if (authState is AuthAuthenticated && authState.isEmployee) {
+      final permitted = <int>[];
+      if (authState.hasPermission('broadcast')) permitted.add(0);
+      if (authState.hasPermission('chat')) permitted.add(1);
+      if (authState.hasPermission('templates')) permitted.add(2);
+      if (authState.hasPermission('clients')) permitted.add(3);
+      if (authState.hasPermission('leads')) permitted.addAll([4, 12, 20]);
+      // Reports is compulsory and permanent for every employee
+      permitted.addAll([5, 6]);
+      if (authState.hasPermission('chatbot')) permitted.add(7);
+      if (authState.hasPermission('catalog')) permitted.add(17);
+      if (authState.hasPermission('whatsapp_flows')) permitted.add(19);
+      if (authState.hasPermission('help')) permitted.add(8);
+      if (authState.hasPermission('instagram')) permitted.addAll([13, 14, 18, 21]);
+
+      if (permitted.isNotEmpty && !permitted.contains(_selectedIndex)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !permitted.contains(_selectedIndex)) {
+            setState(() {
+              _selectedIndex = permitted.first;
+            });
+          }
+        });
+      }
+    }
 
     return PopScope(
       canPop: false,
@@ -670,7 +773,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _buildExpandableInstagramMenu({bool isDrawer = false}) {
     final bool isAnyInstagramSelected =
-        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18;
+        _selectedIndex == 13 || _selectedIndex == 14 || _selectedIndex == 18 || _selectedIndex == 21;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -750,6 +853,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
+                _buildNavItem(
+                  21,
+                  Icons.post_add_rounded,
+                  'Publish',
+                  isSubItem: true,
+                  isDrawer: isDrawer,
+                ),
               ],
             ),
           ),
@@ -763,7 +873,9 @@ class _DashboardShellState extends State<DashboardShell> {
   }
 
   Widget _buildExpandableReportsMenu({bool isDrawer = false}) {
-    final bool isAnyReportSelected = _selectedIndex == 5 || _selectedIndex == 6;
+    final authState = context.watch<AuthBloc>().state;
+    final isAdmin = authState is AuthAuthenticated ? authState.isAdmin : true;
+    final bool isAnyReportSelected = _selectedIndex == 5 || _selectedIndex == 6 || _selectedIndex == 23;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -836,6 +948,15 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
+
+                if (isAdmin)
+                  _buildNavItem(
+                    23,
+                    Icons.badge_outlined,
+                    'Employee Reports',
+                    isSubItem: true,
+                    isDrawer: isDrawer,
+                  ),
               ],
             ),
           ),
@@ -914,13 +1035,13 @@ class _DashboardShellState extends State<DashboardShell> {
                   isSubItem: true,
                   isDrawer: isDrawer,
                 ),
-                _buildNavItem(
-                  20,
-                  Icons.campaign_rounded,
-                  'Meta Ads',
-                  isSubItem: true,
-                  isDrawer: isDrawer,
-                ),
+                // _buildNavItem(
+                //   20,
+                //   Icons.campaign_rounded,
+                //   'Meta Ads',
+                //   isSubItem: true,
+                //   isDrawer: isDrawer,
+                // ),
               ],
             ),
           ),
@@ -1464,18 +1585,25 @@ class _DashboardShellState extends State<DashboardShell> {
                   BlocBuilder<AuthBloc, AuthState>(
                     builder: (context, state) {
                       String name = 'User';
+                      String subtitle = 'Tenant Account';
                       if (state is AuthAuthenticated) {
-                        final config = state.tenant['whatsappConfig'];
-                        if (config != null &&
-                            config['verifiedName'] != null &&
-                            config['verifiedName'].toString().isNotEmpty) {
-                          name = config['verifiedName'].toString();
+                        if (state.isEmployee) {
+                          name = state.employeeName ?? state.user;
+                          subtitle = 'Team Member';
                         } else {
-                          name = state.user;
+                          final config = state.tenant['whatsappConfig'];
+                          if (config != null &&
+                              config['verifiedName'] != null &&
+                              config['verifiedName'].toString().isNotEmpty) {
+                            name = config['verifiedName'].toString();
+                          } else {
+                            name = state.user;
+                          }
+                          subtitle = 'Tenant Account';
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            _fetchMetaProfileIfNeeded(config);
+                          });
                         }
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          _fetchMetaProfileIfNeeded(config);
-                        });
                       }
                       final displayName = name;
                       final firstLetter = displayName.isNotEmpty
@@ -1484,7 +1612,9 @@ class _DashboardShellState extends State<DashboardShell> {
 
                       return PopupMenuButton<String>(
                         onSelected: (val) {
-                          if (val == 'whatsapp_profile') {
+                          if (val == 'employee_profile') {
+                            EmployeeProfileDialog.show(context);
+                          } else if (val == 'whatsapp_profile') {
                             if (state is AuthAuthenticated) {
                               final rawConfig = state.tenant['whatsappConfig'];
                               WhatsAppBusinessProfileDialog.show(context, rawConfig);
@@ -1546,9 +1676,9 @@ class _DashboardShellState extends State<DashboardShell> {
                                           ),
                                           overflow: TextOverflow.ellipsis,
                                         ),
-                                        const Text(
-                                          'Tenant Account',
-                                          style: TextStyle(
+                                        Text(
+                                          subtitle,
+                                          style: const TextStyle(
                                             fontSize: 11,
                                             color: Colors.grey,
                                           ),
@@ -1561,38 +1691,72 @@ class _DashboardShellState extends State<DashboardShell> {
                             ),
                           ),
                           const PopupMenuDivider(height: 1),
-                          PopupMenuItem<String>(
-                            value: 'whatsapp_profile',
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
+                          if (state is AuthAuthenticated && state.isEmployee)
+                            PopupMenuItem<String>(
+                              value: 'employee_profile',
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(7),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: const Icon(
+                                      Icons.badge_outlined,
+                                      size: 16,
+                                      color: AppTheme.primaryColor,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  const Text(
+                                    'My Profile',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            PopupMenuItem<String>(
+                              value: 'whatsapp_profile',
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(7),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: const Icon(
+                                      Icons.chat_bubble_outline_rounded,
+                                      size: 16,
+                                      color: AppTheme.primaryColor,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  const Text(
+                                    'WhatsApp Business Profile',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(7),
-                                  decoration: BoxDecoration(
-                                    color: AppTheme.primaryColor.withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: const Icon(
-                                    Icons.chat_bubble_outline_rounded,
-                                    size: 16,
-                                    color: AppTheme.primaryColor,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                const Text(
-                                  'WhatsApp Business Profile',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 13,
-                                    color: Colors.black87,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                           const PopupMenuDivider(height: 1),
                           PopupMenuItem<String>(
                             value: 'logout',

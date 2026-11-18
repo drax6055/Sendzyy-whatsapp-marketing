@@ -29,6 +29,14 @@ class CountryCodeService {
   /// Country name for display (e.g. 'India', 'United States')
   String get defaultCountryName => _getCountryName(_iso);
 
+  /// Update the in-memory ISO code (e.g. from employee profile fetch).
+  void setIsoLocally(String iso) {
+    final code = iso.trim().toUpperCase();
+    if (code.isNotEmpty) {
+      _iso = code;
+    }
+  }
+
   /// Load country from SharedPreferences on app start (after login).
   /// Also refreshes from backend if token is available.
   Future<void> loadFromPrefs(SharedPreferences prefs) async {

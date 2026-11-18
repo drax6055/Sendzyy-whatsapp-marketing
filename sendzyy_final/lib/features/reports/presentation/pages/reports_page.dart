@@ -7,6 +7,7 @@ import 'package:iFloraBuzz/features/reports/presentation/bloc/report_bloc.dart';
 import 'package:iFloraBuzz/features/reports/presentation/widgets/campaign_report_dialog.dart';
 import 'package:iFloraBuzz/features/reports/presentation/widgets/report_download_dialog.dart';
 import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
+import 'package:iFloraBuzz/features/auth/presentation/bloc/auth_bloc.dart';
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -26,6 +27,11 @@ class _ReportsPageState extends State<ReportsPage> {
   void initState() {
     super.initState();
     _scrollController = ScrollController()..addListener(_onScroll);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        context.read<ReportBloc>().add(FetchReportHistory(isRefresh: true));
+      }
+    });
   }
 
   void _onScroll() {
@@ -234,6 +240,8 @@ class _ReportsPageState extends State<ReportsPage> {
 
             final isMobile = ResponsiveHelper.isMobile(ctx);
             final isTablet = ResponsiveHelper.isTablet(ctx);
+            final authState = ctx.watch<AuthBloc>().state;
+            final isEmployee = authState is AuthAuthenticated && authState.isEmployee;
 
             return RefreshIndicator(
               onRefresh: () async {
@@ -251,13 +259,23 @@ class _ReportsPageState extends State<ReportsPage> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Expanded(
-                            child: Text(
-                              'Campaign Reports',
-                              style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
-                                    fontWeight: FontWeight.bold,
-                                    color: AppTheme.secondaryColor,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  isEmployee ? 'My Reports' : 'Campaign Reports',
+                                  style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: AppTheme.secondaryColor,
+                                      ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (isEmployee)
+                                  Text(
+                                    'Associated reports for your account',
+                                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                                   ),
-                              overflow: TextOverflow.ellipsis,
+                              ],
                             ),
                           ),
                           Row(
@@ -311,12 +329,47 @@ class _ReportsPageState extends State<ReportsPage> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          Text(
-                            'Campaign Reports',
-                            style: Theme.of(ctx).textTheme.headlineMedium?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                  color: AppTheme.secondaryColor,
-                                ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Text(
+                                    isEmployee ? 'My Campaign Reports' : 'Campaign Reports',
+                                    style: Theme.of(ctx).textTheme.headlineMedium?.copyWith(
+                                          fontWeight: FontWeight.bold,
+                                          color: AppTheme.secondaryColor,
+                                        ),
+                                  ),
+                                  if (isEmployee) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.primaryColor.withValues(alpha: 0.1),
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.3)),
+                                      ),
+                                      child: const Text(
+                                        'Personal Activity',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppTheme.primaryColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                isEmployee
+                                    ? 'Showing campaign broadcasts and analytics associated with your employee account.'
+                                    : 'Organization-wide broadcast performance and delivery statistics.',
+                                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                              ),
+                            ],
                           ),
                           Flexible(
                             child: SingleChildScrollView(
@@ -477,6 +530,9 @@ class _ReportsPageState extends State<ReportsPage> {
   }
 
   Widget _buildCampaignTable(BuildContext pageContext, ReportLoaded state, List<Map<String, dynamic>> campaigns) {
+    final authState = pageContext.watch<AuthBloc>().state;
+    final isEmployee = authState is AuthAuthenticated && authState.isEmployee;
+
     if (campaigns.isEmpty && !state.isLoadingMore) {
       return Card(
         child: Padding(
@@ -485,7 +541,9 @@ class _ReportsPageState extends State<ReportsPage> {
             child: Text(
               _dateRange != null || _templateFilter != 'all' || _searchQuery.trim().isNotEmpty
                   ? 'No campaigns found for the selected filters.'
-                  : 'Start a campaign to see results here.',
+                  : (isEmployee
+                      ? 'No campaigns found. Broadcasts and campaigns sent by you will appear here.'
+                      : 'Start a campaign to see results here.'),
             ),
           ),
         ),
@@ -507,6 +565,8 @@ class _ReportsPageState extends State<ReportsPage> {
             itemBuilder: (itemCtx, index) {
               final campaign = campaigns[index];
               final dynamic timestamp = campaign['timestamp'];
+              final String? createdByName = campaign['createdByName'] as String?;
+              final bool hasCreator = createdByName != null && createdByName.isNotEmpty && createdByName != 'Admin';
               final DateTime date;
               if (timestamp is String) {
                 date = (DateTime.tryParse(timestamp) ?? DateTime.now()).toLocal();
@@ -526,10 +586,31 @@ class _ReportsPageState extends State<ReportsPage> {
                       Row(
                         children: [
                           Expanded(
-                            child: Text(
-                              'Campaign ${campaign['template']}',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                              overflow: TextOverflow.ellipsis,
+                            child: Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    'Campaign ${campaign['template']}',
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (hasCreator && !isEmployee) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue.shade50,
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: Colors.blue.shade200),
+                                    ),
+                                    child: Text(
+                                      'by $createdByName',
+                                      style: TextStyle(fontSize: 10, color: Colors.blue.shade800, fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                           ),
                           const SizedBox(width: 6),
@@ -581,6 +662,28 @@ class _ReportsPageState extends State<ReportsPage> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (hasCreator && !isEmployee) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.person_outline, size: 12, color: Colors.blue.shade700),
+                            const SizedBox(width: 4),
+                            Text(
+                              createdByName,
+                              style: TextStyle(fontSize: 11, color: Colors.blue.shade800, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(width: 8),
                     _buildRetryStatusBadge(
                       campaign['status'] as String?,

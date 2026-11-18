@@ -9,6 +9,9 @@ import 'package:iFloraBuzz/core/utils/web_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:iFloraBuzz/core/di/injection.dart';
+import 'package:iFloraBuzz/features/auth/presentation/bloc/auth_bloc.dart';
+import 'package:iFloraBuzz/core/utils/snackbar_utils.dart';
 import 'package:iFloraBuzz/core/constants/app_constants.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/chat/presentation/bloc/chat_bloc.dart';
@@ -43,6 +46,10 @@ class _ChatPageState extends State<ChatPage> {
   /// 'all' or 'unread'
   String _selectedFilter = 'all';
 
+  /// Employee assignment filter for Master Tenant Super-Admin: 'all', 'unassigned', or employeeId
+  String _selectedEmployeeFilter = 'all';
+  List<Map<String, dynamic>> _employees = [];
+
   /// Mapping of contactId -> ISO8601 string of when it was last read
   final Map<String, String> _readContactTimestamps = {};
   SharedPreferences? _prefs;
@@ -51,6 +58,7 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _loadReadContactTimestamps();
+    _fetchEmployeesForFilter();
     _conversationsScrollController.addListener(_onConversationsScroll);
   }
 
@@ -62,6 +70,51 @@ class _ChatPageState extends State<ChatPage> {
       final state = context.read<ChatBloc>().state;
       if (state is ChatLoaded && state.hasMore && !state.isLoadingMore) {
         context.read<ChatBloc>().add(LoadMoreConversations());
+      }
+    }
+  }
+
+  Future<void> _fetchEmployeesForFilter() async {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final auth = context.read<AuthBloc>().state;
+      if (auth is AuthAuthenticated && !auth.isEmployee) {
+        try {
+          final dio = getIt<Dio>();
+          final res = await dio.get('/api/employees');
+          if (res.statusCode == 200 && res.data['employees'] != null) {
+            if (mounted) {
+              setState(() {
+                _employees = List<Map<String, dynamic>>.from(res.data['employees']);
+              });
+            }
+          }
+        } catch (e) {
+          debugPrint('[ChatPage] Could not load employees for filter: $e');
+        }
+      }
+    });
+  }
+
+  Future<void> _reassignChat(String contactId, String? employeeId) async {
+    try {
+      final dio = getIt<Dio>();
+      final res = await dio.patch(
+        '/api/conversations/$contactId/assign',
+        data: {'employeeId': employeeId ?? 'unassigned'},
+      );
+      if (res.statusCode == 200) {
+        if (mounted) {
+          final message = res.data['message'] ?? 'Chat assignment updated';
+          SnackbarUtils.showSuccess(context, message);
+          context.read<ChatBloc>().add(FetchConversations());
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        SnackbarUtils.showError(context, 'Failed to reassign chat: $e');
+      }
+    }
+  }
       }
     }
   }
@@ -89,9 +142,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _saveReadContactTimestamps() async {
     try {
-      if (_prefs == null) {
-        _prefs = await SharedPreferences.getInstance();
-      }
+      _prefs ??= await SharedPreferences.getInstance();
       final tenantId = _prefs!.getString('tenant_id') ?? 'default';
       await _prefs!.setString(
         'read_contacts_timestamps_$tenantId',
@@ -217,6 +268,9 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _buildConversationSidebar(ChatLoaded state) {
+    final authState = context.read<AuthBloc>().state;
+    final bool isAdmin = authState is AuthAuthenticated && !authState.isEmployee;
+
     // Step 1: apply search filter
     final searchFiltered = _searchQuery.isEmpty
         ? state.conversations
@@ -227,9 +281,20 @@ class _ChatPageState extends State<ChatPage> {
             return name.contains(q) || number.contains(q);
           }).toList();
 
+    // Step 1.5: apply employee assignment filter (Admin only)
+    final employeeFiltered = (isAdmin && _selectedEmployeeFilter != 'all')
+        ? searchFiltered.where((c) {
+            final assignedTo = c['assignedTo'];
+            if (_selectedEmployeeFilter == 'unassigned') {
+              return assignedTo == null || assignedTo == '';
+            }
+            return assignedTo == _selectedEmployeeFilter;
+          }).toList()
+        : searchFiltered;
+
     // Step 2: apply All / Unread chip filter
     final filtered = _selectedFilter == 'unread'
-        ? searchFiltered.where((c) {
+        ? employeeFiltered.where((c) {
             final contactId = c['id'] as String? ?? '';
 
             // Check if client replied to our template or message
@@ -257,10 +322,33 @@ class _ChatPageState extends State<ChatPage> {
             // 24h window must still be open
             return DateTime.now().difference(lastActive).inHours < 24;
           }).toList()
-        : searchFiltered;
+        : employeeFiltered;
+
+    // Deduplicate conversations so each mobile number has strictly ONE chat in the list
+    final Map<String, Map<String, dynamic>> dedupedMap = {};
+    for (final c in filtered) {
+      final idDigits = (c['id'] as String? ?? '').replaceAll(RegExp(r'\D'), '');
+      final key = idDigits.length >= 10 ? idDigits.substring(idDigits.length - 10) : idDigits;
+      if (!dedupedMap.containsKey(key)) {
+        dedupedMap[key] = Map<String, dynamic>.from(c);
+      } else {
+        final existing = dedupedMap[key]!;
+        final existingName = existing['name']?.toString() ?? '';
+        final cName = c['name']?.toString() ?? '';
+        if ((existingName.isEmpty || existingName == existing['id']) && (cName.isNotEmpty && cName != c['id'])) {
+          existing['name'] = cName;
+        }
+        if (existing['assignedTo'] == null && c['assignedTo'] != null) {
+          existing['assignedTo'] = c['assignedTo'];
+          existing['assignedToName'] = c['assignedToName'];
+          existing['assignedAt'] = c['assignedAt'];
+        }
+      }
+    }
+    final displayConvs = dedupedMap.values.toList();
 
     // Count for badge on Unread chip
-    final unreadCount = state.conversations.where((c) {
+    final unreadCount = employeeFiltered.where((c) {
       final contactId = c['id'] as String? ?? '';
 
       // Check if client replied to our template or message
@@ -358,6 +446,74 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ),
           ),
+          // ── Employee Assignment Filter Dropdown (Master Tenant Super-Admin only) ──
+          if (isAdmin && _employees.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: (_employees.any((e) => e['_id'] == _selectedEmployeeFilter) ||
+                            _selectedEmployeeFilter == 'all' ||
+                            _selectedEmployeeFilter == 'unassigned')
+                        ? _selectedEmployeeFilter
+                        : 'all',
+                    isExpanded: true,
+                    icon: const Icon(Icons.filter_list, size: 18, color: AppTheme.secondaryColor),
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setState(() => _selectedEmployeeFilter = val);
+                      }
+                    },
+                    items: [
+                      const DropdownMenuItem(
+                        value: 'all',
+                        child: Row(
+                          children: [
+                            Icon(Icons.people_outline, size: 16, color: Colors.grey),
+                            SizedBox(width: 8),
+                            Text('All Team Chats', style: TextStyle(fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                      const DropdownMenuItem(
+                        value: 'unassigned',
+                        child: Row(
+                          children: [
+                            Icon(Icons.person_off_outlined, size: 16, color: Colors.deepOrange),
+                            SizedBox(width: 8),
+                            Text('Unassigned Chats', style: TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                      ..._employees.map((emp) => DropdownMenuItem(
+                            value: emp['_id'] as String,
+                            child: Row(
+                              children: [
+                                const Icon(Icons.person_outline, size: 16, color: AppTheme.primaryColor),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    emp['name'] ?? 'Employee',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           // ── All / Unread Chip Filters ─────────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
@@ -396,7 +552,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
           ),
           Expanded(
-            child: filtered.isEmpty
+            child: displayConvs.isEmpty
                 ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -424,18 +580,18 @@ class _ChatPageState extends State<ChatPage> {
                 : ListView.builder(
                     controller: _conversationsScrollController,
                     physics: const AlwaysScrollableScrollPhysics(),
-                    itemCount: filtered.length +
+                    itemCount: displayConvs.length +
                         (state.isLoadingMore ||
-                                (!state.hasMore && filtered.length >= 25)
+                                (!state.hasMore && displayConvs.length >= 25)
                             ? 1
                             : 0),
                     itemBuilder: (context, index) {
-                      if (index >= filtered.length) {
+                      if (index >= displayConvs.length) {
                         return state.isLoadingMore
                             ? _buildInstagramLoader()
                             : _buildEndOfList();
                       }
-                      final conv = filtered[index];
+                      final conv = displayConvs[index];
                       final bool isSelected =
                           state.selectedContactId == conv['id'];
                       final DateTime lastActive = conv['lastActive'] is DateTime
@@ -492,27 +648,71 @@ class _ChatPageState extends State<ChatPage> {
                               ),
                             ],
                           ),
-                          subtitle: Row(
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  conv['lastMessage'] ?? '',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      conv['lastMessage'] ?? '',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // 24h Indicator
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: isWithin24h
+                                          ? Colors.green
+                                          : Colors.grey.shade300,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 8),
-                              // 24h Indicator
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: isWithin24h
-                                      ? Colors.green
-                                      : Colors.grey.shade300,
+                              if (isAdmin) ...[
+                                const SizedBox(height: 4),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
+                                        ? const Color(0xFF128C7E).withValues(alpha: 0.1)
+                                        : Colors.amber.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
+                                            ? Icons.person_outline
+                                            : Icons.person_off_outlined,
+                                        size: 11,
+                                        color: (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
+                                            ? const Color(0xFF128C7E)
+                                            : Colors.amber.shade900,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
+                                            ? '${conv['assignedToName']}'
+                                            : 'Unassigned',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                          color: (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
+                                              ? const Color(0xFF128C7E)
+                                              : Colors.amber.shade900,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
+                              ],
                             ],
                           ),
                         ),
@@ -722,6 +922,9 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _buildChatWindow(ChatLoaded state) {
+    final authState = context.read<AuthBloc>().state;
+    final bool isAdmin = authState is AuthAuthenticated && !authState.isEmployee;
+
     final contact = state.conversations.firstWhere(
       (c) => c['id'] == state.selectedContactId,
       orElse: () => {
@@ -840,6 +1043,55 @@ class _ChatPageState extends State<ChatPage> {
                               ),
                             ),
                           ),
+                          if (contact['assignedToName'] != null && (contact['assignedToName'] as String).isNotEmpty) ...[
+                            const SizedBox(width: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.person_outline, size: 12, color: Color(0xFF128C7E)),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Assigned to: ${contact['assignedToName']}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF128C7E),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ] else if (isAdmin) ...[
+                            const SizedBox(width: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.person_off_outlined, size: 12, color: Colors.amber.shade900),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Unassigned',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.amber.shade900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ],
@@ -849,7 +1101,90 @@ class _ChatPageState extends State<ChatPage> {
                   const SizedBox(width: 4),
                   _WindowTimerWidget(lastActive: lastActive),
                 ],
-
+                if (isAdmin) ...[
+                  const SizedBox(width: 8),
+                  PopupMenuButton<String>(
+                    tooltip: 'Reassign Conversation',
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    onSelected: (val) {
+                      _reassignChat(contact['id'] as String, val == 'unassigned' ? null : val);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.primaryColor.withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.swap_horiz_rounded, size: 16, color: AppTheme.primaryColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            contact['assignedToName'] != null ? 'Reassign' : 'Assign',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.primaryColor,
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          const Icon(Icons.arrow_drop_down, size: 16, color: AppTheme.primaryColor),
+                        ],
+                      ),
+                    ),
+                    itemBuilder: (ctx) => [
+                      const PopupMenuItem<String>(
+                        value: 'unassigned',
+                        child: Row(
+                          children: [
+                            Icon(Icons.person_off_outlined, size: 18, color: Colors.deepOrange),
+                            SizedBox(width: 8),
+                            Text('Unassign Chat', style: TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuDivider(),
+                      if (_employees.isEmpty)
+                        const PopupMenuItem<String>(
+                          enabled: false,
+                          child: Text('No team members found', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                        )
+                      else
+                        ..._employees.map(
+                          (emp) => PopupMenuItem<String>(
+                            value: emp['_id'] as String,
+                            child: Row(
+                              children: [
+                                const Icon(Icons.person_outline, size: 18, color: AppTheme.primaryColor),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        emp['name'] ?? 'Employee',
+                                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                                      ),
+                                      if (emp['email'] != null)
+                                        Text(
+                                          emp['email'],
+                                          style: TextStyle(color: Colors.grey.shade600, fontSize: 11),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                if (contact['assignedTo'] == emp['_id'])
+                                  const Icon(Icons.check, size: 16, color: AppTheme.primaryColor),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
 
               ],
             ),
@@ -865,8 +1200,23 @@ class _ChatPageState extends State<ChatPage> {
               ),
               child: Builder(
                 builder: (context) {
-                  final reversedMessages = state.messages.reversed.toList();
-                  final hasMessages = reversedMessages.isNotEmpty;
+                  final authState = context.watch<AuthBloc>().state;
+                  final bool isEmployee = authState is AuthAuthenticated && authState.isEmployee;
+
+                  final visibleMessages = isEmployee
+                      ? state.messages.where((m) {
+                          if (m['isMe'] != true) return true;
+                          final source = m['source']?.toString();
+                          if (source != null && source.startsWith('chatbot')) return true;
+                          final sender = m['senderId']?.toString();
+                          final senderName = m['senderName']?.toString();
+                          if (sender == 'admin' || senderName == 'Admin') return false;
+                          if (sender == null || sender.isEmpty) return false;
+                          return true;
+                        }).toList()
+                      : state.messages;
+
+                  final reversedMessages = visibleMessages.reversed.toList();
                   return ListView.builder(
                     controller: _messagesScrollController,
                     reverse: true,
@@ -877,7 +1227,7 @@ class _ChatPageState extends State<ChatPage> {
                         return _buildHistoryLimitBanner();
                       }
                       final msg = reversedMessages[index];
-                      return _buildMessageBubble(msg, state.messages);
+                      return _buildMessageBubble(msg, visibleMessages);
                     },
                   );
                 },

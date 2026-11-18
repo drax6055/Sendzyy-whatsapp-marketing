@@ -83,7 +83,7 @@ class _TemplateListPageState extends State<TemplateListPage> {
             context,
             MaterialPageRoute(builder: (_) => const CreateTemplatePage()),
           );
-          if (result == true && mounted) {
+          if (result == true && context.mounted) {
             context.read<TemplateBloc>().add(FetchTemplates());
           }
         },
@@ -284,7 +284,7 @@ class _TemplateListPageState extends State<TemplateListPage> {
                                 maxCrossAxisExtent: 400,
                                 crossAxisSpacing: 16,
                                 mainAxisSpacing: 16,
-                                mainAxisExtent: 220,
+                                mainAxisExtent: 230,
                               ),
                           itemCount: state.filteredTemplates.length,
                           itemBuilder: (context, index) {
@@ -349,6 +349,13 @@ class _TemplateListPageState extends State<TemplateListPage> {
     final category = template['category'] ?? 'MARKETING';
     final language = template['language'] ?? 'en';
     final components = template['components'] as List<dynamic>? ?? [];
+    final createdByName = template['createdByName']?.toString();
+    final creatorRole = template['creatorRole']?.toString();
+
+    final isEmployeeCreated = (creatorRole == 'employee') ||
+        (createdByName != null &&
+            createdByName.trim().isNotEmpty &&
+            createdByName.trim().toLowerCase() != 'admin');
 
     String bodyText = 'No body content';
     for (var comp in components) {
@@ -374,18 +381,53 @@ class _TemplateListPageState extends State<TemplateListPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text(
-                    name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                    overflow: TextOverflow.ellipsis,
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      Text(
+                        name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      if (isEmployeeCreated &&
+                          createdByName != null &&
+                          createdByName.trim().isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: const Color(0xFF128C7E).withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.person_outline, size: 12, color: Color(0xFF128C7E)),
+                              const SizedBox(width: 4),
+                              Text(
+                                createdByName.trim(),
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF128C7E),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 ),
+                const SizedBox(width: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -505,6 +547,14 @@ class _TemplateListPageState extends State<TemplateListPage> {
     Map<String, dynamic> template,
   ) {
     final components = template['components'] as List<dynamic>? ?? [];
+    final createdByName = template['createdByName']?.toString();
+    final creatorRole = template['creatorRole']?.toString();
+
+    final isEmployeeCreated = (creatorRole == 'employee') ||
+        (createdByName != null &&
+            createdByName.trim().isNotEmpty &&
+            createdByName.trim().toLowerCase() != 'admin');
+
     String? header;
     String? body;
     String? footer;
@@ -541,9 +591,44 @@ class _TemplateListPageState extends State<TemplateListPage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    'Template Details',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Template Details',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      if (isEmployeeCreated &&
+                          createdByName != null &&
+                          createdByName.trim().isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: const Color(0xFF128C7E).withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.person_outline, size: 12, color: Color(0xFF128C7E)),
+                              const SizedBox(width: 4),
+                              Text(
+                                createdByName.trim(),
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF128C7E),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),

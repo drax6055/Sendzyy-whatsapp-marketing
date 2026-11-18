@@ -28,6 +28,7 @@ import 'package:iFloraBuzz/features/whatsapp_flows/data/repositories/whatsapp_fl
 import 'package:iFloraBuzz/features/catalog/data/repositories/catalog_repository.dart';
 import 'package:iFloraBuzz/features/catalog/presentation/bloc/catalog_bloc.dart';
 import 'package:iFloraBuzz/features/instagram/data/repositories/instagram_chat_repository.dart';
+import 'package:iFloraBuzz/features/instagram/data/repositories/instagram_publish_repository.dart';
 import 'package:iFloraBuzz/features/instagram/presentation/bloc/instagram_chat_bloc.dart';
 
 final getIt = GetIt.instance;
@@ -72,6 +73,7 @@ Future<void> init() async {
   getIt.registerLazySingleton(() => RetryRepository(getIt()));
   getIt.registerLazySingleton(() => CatalogRepository(getIt()));
   getIt.registerLazySingleton(() => InstagramChatRepository(getIt()));
+  getIt.registerLazySingleton(() => InstagramPublishRepository(getIt()));
 
   // Notifications Data Layer
   getIt.registerLazySingleton(() => NotificationRemoteDataSource(dio: getIt()));

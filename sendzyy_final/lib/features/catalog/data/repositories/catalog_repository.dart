@@ -44,12 +44,24 @@ class CatalogRepository {
     }
   }
 
-  /// Selects the default/active catalog for sending products and browsing
-  Future<void> selectCatalog(String catalogId) async {
+  /// Selects the default/active catalog for sending products and browsing, or connects a new catalog
+  Future<void> selectCatalog(String catalogId, {String? name}) async {
     try {
-      await _dio.post('/api/catalog/catalogs/select', data: {'catalogId': catalogId});
+      await _dio.post('/api/catalog/catalogs/select', data: {
+        'catalogId': catalogId,
+        if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+      });
     } on DioException catch (e) {
       throw Exception(_extractError(e) ?? 'Failed to switch catalog');
+    }
+  }
+
+  /// Removes / unlinks a catalog from this tenant's list
+  Future<void> removeCatalog(String catalogId) async {
+    try {
+      await _dio.delete('/api/catalog/catalogs/$catalogId');
+    } on DioException catch (e) {
+      throw Exception(_extractError(e) ?? 'Failed to remove catalog');
     }
   }
 
@@ -249,6 +261,60 @@ class CatalogRepository {
       });
     } on DioException catch (e) {
       throw Exception(_extractError(e) ?? 'Failed to mark order as paid');
+    }
+  }
+
+  /// Fetches tenant UPI Payment Settings
+  Future<UpiPaymentSettings> getUpiPaymentSettings() async {
+    try {
+      final response = await _dio.get('/api/catalog/upi-settings');
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = response.data['upiSettings'] ?? response.data;
+        if (data is Map<String, dynamic>) {
+          return UpiPaymentSettings.fromJson(data);
+        } else if (data is Map) {
+          return UpiPaymentSettings.fromJson(Map<String, dynamic>.from(data));
+        }
+      }
+      return UpiPaymentSettings.empty();
+    } catch (_) {
+      return UpiPaymentSettings.empty();
+    }
+  }
+
+  /// Updates tenant UPI Payment Settings
+  Future<void> updateUpiPaymentSettings(UpiPaymentSettings settings) async {
+    try {
+      await _dio.post('/api/catalog/upi-settings', data: settings.toJson());
+    } on DioException catch (e) {
+      throw Exception(_extractError(e) ?? 'Failed to update UPI payment settings');
+    }
+  }
+
+  /// Fetches tenant Bank Settlement / Payout Settings (Option B)
+  Future<TenantPayoutSettings> getPayoutSettings() async {
+    try {
+      final response = await _dio.get('/api/catalog/payout-settings');
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = response.data['payoutSettings'] ?? response.data;
+        if (data is Map<String, dynamic>) {
+          return TenantPayoutSettings.fromJson(data);
+        } else if (data is Map) {
+          return TenantPayoutSettings.fromJson(Map<String, dynamic>.from(data));
+        }
+      }
+      return TenantPayoutSettings.empty();
+    } catch (_) {
+      return TenantPayoutSettings.empty();
+    }
+  }
+
+  /// Updates tenant Bank Settlement / Payout Settings (Option B)
+  Future<void> updatePayoutSettings(TenantPayoutSettings settings) async {
+    try {
+      await _dio.post('/api/catalog/payout-settings', data: settings.toJson());
+    } on DioException catch (e) {
+      throw Exception(_extractError(e) ?? 'Failed to update bank settlement settings');
     }
   }
 

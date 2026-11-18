@@ -44,9 +44,20 @@ const { handleInstagramWebhook } = require('./services/instagramWebhookService')
 const instagramRoutes = require('./routes/instagramRoutes');
 const instagramCommentAutomationRoutes = require('./routes/instagramCommentAutomationRoutes');
 
+// ── Multi-tier Employee / Team Member Imports ──────────────────────────────
+const Employee = require('./models/Employee');
+const employeeRoutes = require('./routes/employeeRoutes');
+const { normalizePhone, normalizePhoneNumber } = require('./utils/phoneNormalizer');
+
+
 //  MongoDB Connection 
 if (process.env.MONGODB_URI) {
-    mongoose.connect(process.env.MONGODB_URI)
+    mongoose.connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 15000,
+        socketTimeoutMS: 45000,
+        maxPoolSize: 20,
+        minPoolSize: 2,
+    })
         .then(async () => {
             console.log(' MongoDB connected');
             // Seed panel packages into database table if missing
@@ -55,6 +66,10 @@ if (process.env.MONGODB_URI) {
             await backfillTenantReportingTimezones();
             // Backfill defaultCountry for existing tenants (safe, defaults to 'IN')
             await backfillTenantDefaultCountry();
+            // Backfill employee-safe message previews for existing conversations
+            await backfillLastEmployeeMessages();
+            // Merge duplicate conversations so only one chat exists per mobile number
+            await mergeAllDuplicateConversations();
             // Recover any pending/stuck webhook logs on boot
             await webhookIngestionService.recoverPendingWebhookLogs();
             // Drop the old unique compound index on {tenantId, version} if it exists.
@@ -70,6 +85,16 @@ if (process.env.MONGODB_URI) {
             await syncDatabaseOptimizationIndexes();
         })
         .catch(err => console.error(' MongoDB connection error:', err));
+
+    mongoose.connection.on('disconnected', () => {
+        console.warn('⚠️ MongoDB disconnected from server monitor. Driver will auto-reconnect.');
+    });
+    mongoose.connection.on('reconnected', () => {
+        console.log('🔄 MongoDB reconnected successfully.');
+    });
+    mongoose.connection.on('error', (err) => {
+        console.error('❌ MongoDB connection error:', err.message);
+    });
 } else {
     console.warn(' MONGODB_URI missing in .env');
 }
@@ -166,6 +191,26 @@ const tenantSchema = new mongoose.Schema({
         catalogId: { type: String, default: null },
         catalogs: { type: Array, default: [] },
         commerceSettings: { type: mongoose.Schema.Types.Mixed, default: {} },
+    },
+    // ── Direct UPI Payment Settings ───────────────────────────────────────
+    upiPaymentConfig: {
+        upiId: { type: String, default: '' },
+        businessName: { type: String, default: '' },
+        enabled: { type: Boolean, default: false },
+        autoSendOnOrder: { type: Boolean, default: true },
+    },
+    // ── Bank Settlement / Payout Configuration (Option B) ─────────────────
+    payoutConfig: {
+        accountHolderName: { type: String, default: '' },
+        accountNumber: { type: String, default: '' },
+        ifscCode: { type: String, default: '' },
+        bankName: { type: String, default: '' },
+        upiId: { type: String, default: '' },
+        businessName: { type: String, default: '' },
+        enabled: { type: Boolean, default: true },
+        autoSendOnOrder: { type: Boolean, default: true },
+        razorpayAccountId: { type: String, default: '' },
+        cashfreeVendorId: { type: String, default: '' },
     },
     webhookSecret: { type: String, default: '' },  // AES-256 encrypted hex string
     openaiApiKey: { type: String, default: '' },
@@ -308,10 +353,15 @@ const conversationSchema = new mongoose.Schema({
     lastMessage: String,
     lastActive: { type: Date, default: Date.now },
     hasReply: { type: Boolean, default: false },
+    // Multi-tier employee assignment & isolation
+    assignedTo: { type: String, default: null },
+    assignedToName: { type: String, default: null },
+    assignedAt: { type: Date, default: null },
+    assignedBy: { type: String, default: null }, // 'auto' | 'admin'
+    lastEmployeeMessage: { type: String, default: null },
+    lastEmployeeActive: { type: Date, default: null },
 }, { timestamps: true });
 conversationSchema.index({ tenantId: 1, contactId: 1 }, { unique: true });
-conversationSchema.index({ tenantId: 1, lastActive: -1 });
-conversationSchema.index({ tenantId: 1, hasReply: 1, lastActive: -1 });
 const Conversation = mongoose.model('Conversation', conversationSchema);
 
 const messageSchema = new mongoose.Schema({
@@ -319,6 +369,8 @@ const messageSchema = new mongoose.Schema({
     contactId: { type: String, required: true },
     text: String,
     isMe: Boolean,
+    senderId: { type: String, default: null }, // employeeId or 'admin'
+    senderName: { type: String, default: null },
     time: String,
     timestamp: { type: Date, default: Date.now, expires: 1296000 }, // TTL 15 days
     // Structured message metadata (optional — legacy docs without these fields remain readable)
@@ -341,6 +393,145 @@ messageSchema.index({ tenantId: 1, timestamp: -1 });
 messageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 1296000 });
 const Message = mongoose.model('Message', messageSchema);
 
+async function backfillLastEmployeeMessages() {
+    try {
+        const convs = await Conversation.find({}).lean();
+        let updatedCount = 0;
+        for (const conv of convs) {
+            const lastNonAdmin = await Message.findOne({
+                tenantId: conv.tenantId,
+                contactId: conv.contactId,
+                $or: [
+                    { isMe: false },
+                    { source: { $regex: '^chatbot' } },
+                    { senderId: { $nin: ['admin', 'Admin', null], $exists: true } }
+                ]
+            }).sort({ timestamp: -1, _id: -1 }).lean();
+
+            let targetEmployeeMsg = '';
+            let targetEmployeeActive = conv.lastActive;
+
+            if (lastNonAdmin) {
+                const previewOpts = {
+                    text: ['image', 'video', 'audio', 'document'].includes(lastNonAdmin.messageType)
+                        ? (lastNonAdmin.messageType === 'document' ? lastNonAdmin.text : '')
+                        : (lastNonAdmin.messageType === 'text' ? lastNonAdmin.text : undefined),
+                    templateName: lastNonAdmin.templateName,
+                    templateBody: lastNonAdmin.templateBody,
+                };
+                targetEmployeeMsg = buildPreview(lastNonAdmin.messageType || 'text', previewOpts) || lastNonAdmin.text || '';
+                targetEmployeeActive = lastNonAdmin.timestamp || conv.lastActive;
+            }
+
+            if (conv.lastEmployeeMessage !== targetEmployeeMsg || !conv.lastEmployeeActive) {
+                await Conversation.updateOne(
+                    { _id: conv._id },
+                    {
+                        $set: {
+                            lastEmployeeMessage: targetEmployeeMsg,
+                            lastEmployeeActive: targetEmployeeActive,
+                        }
+                    }
+                );
+                updatedCount++;
+            }
+        }
+        if (updatedCount > 0) {
+            console.log(`[Startup] Backfilled lastEmployeeMessage for ${updatedCount} conversation(s)`);
+        }
+    } catch (e) {
+        console.error('[Startup] Failed to backfill lastEmployeeMessages:', e.message);
+    }
+}
+
+async function mergeAllDuplicateConversations() {
+    try {
+        const tenants = await Tenant.find({}).select('_id defaultCountry').lean();
+        let totalMerged = 0;
+
+        for (const t of tenants) {
+            const tenantId = t._id.toString();
+            const defaultCountry = t.defaultCountry || 'IN';
+
+            const convs = await Conversation.find({ tenantId }).lean();
+            if (!convs.length) continue;
+
+            const groups = {};
+            for (const c of convs) {
+                const norm = normalizePhoneNumber(c.contactId, defaultCountry) || String(c.contactId).replace(/\D/g, '');
+                if (!groups[norm]) groups[norm] = [];
+                groups[norm].push(c);
+            }
+
+            for (const norm of Object.keys(groups)) {
+                const items = groups[norm];
+                if (items.length > 1) {
+                    let primary = items.find(it => it.contactId === norm) || items[0];
+                    if (primary.contactId !== norm) {
+                        await Conversation.updateOne({ _id: primary._id }, { $set: { contactId: norm } });
+                        primary.contactId = norm;
+                    }
+                    const secondaries = items.filter(it => it._id.toString() !== primary._id.toString());
+
+                    for (const sec of secondaries) {
+                        // Move messages to canonical contactId
+                        await Message.updateMany(
+                            { tenantId, contactId: sec.contactId },
+                            { $set: { contactId: norm } }
+                        );
+                        // Move status mappings & recipients
+                        await StatusMapping.updateMany(
+                            { tenantId, to: sec.contactId },
+                            { $set: { to: norm } }
+                        );
+                        await Recipient.updateMany(
+                            { tenantId, to: sec.contactId },
+                            { $set: { to: norm } }
+                        );
+
+                        // Merge metadata into primary
+                        const updateFields = {};
+                        if ((!primary.name || primary.name === primary.contactId) && sec.name && sec.name !== sec.contactId) {
+                            updateFields.name = sec.name;
+                        }
+                        if (!primary.assignedTo && sec.assignedTo) {
+                            updateFields.assignedTo = sec.assignedTo;
+                            updateFields.assignedToName = sec.assignedToName;
+                            updateFields.assignedAt = sec.assignedAt;
+                            updateFields.assignedBy = sec.assignedBy;
+                        }
+                        if (sec.lastActive && (!primary.lastActive || new Date(sec.lastActive) > new Date(primary.lastActive))) {
+                            updateFields.lastActive = sec.lastActive;
+                            updateFields.lastMessage = sec.lastMessage;
+                        }
+                        if (sec.lastEmployeeActive && (!primary.lastEmployeeActive || new Date(sec.lastEmployeeActive) > new Date(primary.lastEmployeeActive))) {
+                            updateFields.lastEmployeeActive = sec.lastEmployeeActive;
+                            updateFields.lastEmployeeMessage = sec.lastEmployeeMessage;
+                        }
+                        if (Object.keys(updateFields).length > 0) {
+                            await Conversation.updateOne({ _id: primary._id }, { $set: updateFields });
+                        }
+
+                        // Remove secondary duplicate conversation
+                        await Conversation.deleteOne({ _id: sec._id });
+                        totalMerged++;
+                    }
+                } else if (items.length === 1 && items[0].contactId !== norm) {
+                    // Canonicalize single conversation contactId
+                    const c = items[0];
+                    await Conversation.updateOne({ _id: c._id }, { $set: { contactId: norm } });
+                    await Message.updateMany({ tenantId, contactId: c.contactId }, { $set: { contactId: norm } });
+                }
+            }
+        }
+        if (totalMerged > 0) {
+            console.log(`[Startup] Merged ${totalMerged} duplicate conversation(s) across all tenants.`);
+        }
+    } catch (err) {
+        console.error('[Startup] Failed to merge duplicate conversations:', err.message);
+    }
+}
+
 const campaignSchema = new mongoose.Schema({
     tenantId: { type: String, required: true },
     id: { type: String, required: true },
@@ -352,6 +543,8 @@ const campaignSchema = new mongoose.Schema({
     failureCount: { type: Number, default: 0 },
     deliveredCount: { type: Number, default: 0 },
     readCount: { type: Number, default: 0 },
+    createdBy: { type: String, default: 'admin' },       // Employee ID or 'admin'
+    createdByName: { type: String, default: 'Admin' },   // Employee display name or 'Admin'
     // Retry configuration snapshot
     retryConfig: {
         version: { type: Number, required: true, default: 0 },
@@ -378,6 +571,7 @@ const campaignSchema = new mongoose.Schema({
 }, { timestamps: true });
 campaignSchema.index({ tenantId: 1, id: 1 }, { unique: true });
 campaignSchema.index({ tenantId: 1, status: 1 });
+campaignSchema.index({ tenantId: 1, createdBy: 1 });
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 const paymentRecordSchema = new mongoose.Schema({
@@ -519,7 +713,10 @@ const scheduledCampaignSchema = new mongoose.Schema({
     successCount: { type: Number, default: 0 },
     failureCount: { type: Number, default: 0 },
     errorMessage: String,
+    createdBy: { type: String, default: 'admin' },       // Employee ID or 'admin'
+    createdByName: { type: String, default: 'Admin' },   // Employee display name or 'Admin'
 }, { timestamps: true });
+scheduledCampaignSchema.index({ tenantId: 1, createdBy: 1 });
 const ScheduledCampaign = mongoose.model('ScheduledCampaign', scheduledCampaignSchema);
 
 const statusMappingSchema = new mongoose.Schema({
@@ -539,8 +736,25 @@ const chatbotSchema = new mongoose.Schema({
     triggerKeywords: { type: [String], default: [] },
     flow: { type: mongoose.Schema.Types.Mixed, default: {} },
     isActive: { type: Boolean, default: false },
+    createdBy: { type: String, default: null },       // Employee ID or 'admin'
+    createdByName: { type: String, default: null },   // Employee display name or 'Admin'
+    creatorRole: { type: String, default: 'admin' }, // 'employee' or 'admin'
 }, { timestamps: true });
+chatbotSchema.index({ tenantId: 1, createdBy: 1 });
 const Chatbot = mongoose.model('Chatbot', chatbotSchema);
+
+const templateMetadataSchema = new mongoose.Schema({
+    tenantId: { type: String, required: true, index: true },
+    name: { type: String, required: true, trim: true, lowercase: true },
+    metaTemplateId: { type: String },
+    language: { type: String },
+    category: { type: String },
+    createdBy: { type: String, default: null },       // Employee ID or 'admin'
+    createdByName: { type: String, default: null },   // Employee display name or 'Admin'
+    creatorRole: { type: String, default: 'admin' }, // 'employee' or 'admin'
+}, { timestamps: true });
+templateMetadataSchema.index({ tenantId: 1, name: 1 }, { unique: true });
+const TemplateMetadata = mongoose.model('TemplateMetadata', templateMetadataSchema);
 
 const chatbotSessionSchema = new mongoose.Schema({
     tenantId: { type: String, required: true },
@@ -743,9 +957,11 @@ const messageSenderAdapter = {
             throw new Error('WhatsApp not configured for tenant');
         }
 
+        const normTo = normalizePhoneNumber(recipient.to, tenant.defaultCountry || 'IN') || String(recipient.to).replace(/\D/g, '');
+
         const payload = {
             messaging_product: 'whatsapp',
-            to: recipient.to,
+            to: normTo,
             type: 'template',
             template: {
                 name: campaign.template,
@@ -765,7 +981,7 @@ const messageSenderAdapter = {
         // Track the new wamid → campaign mapping so delivery webhooks are handled
         await StatusMapping.findOneAndUpdate(
             { wamid },
-            { wamid, tenantId: campaign.tenantId, campaignId: campaign.id, to: recipient.to },
+            { wamid, tenantId: campaign.tenantId, campaignId: campaign.id, to: normTo },
             { upsert: true }
         );
 
@@ -799,11 +1015,13 @@ const messageSenderAdapter = {
             });
 
             await Conversation.findOneAndUpdate(
-                { tenantId: campaign.tenantId, contactId: recipient.to },
+                { tenantId: campaign.tenantId, contactId: normTo },
                 {
-                    name: recipient.to,
+                    name: normTo,
                     lastMessage: retryPreview,
                     lastActive: new Date(),
+                    lastEmployeeMessage: retryPreview,
+                    lastEmployeeActive: new Date(),
                     $setOnInsert: { hasReply: false }
                 },
                 { upsert: true }
@@ -811,7 +1029,7 @@ const messageSenderAdapter = {
 
             await Message.create({
                 tenantId: campaign.tenantId,
-                contactId: recipient.to,
+                contactId: normTo,
                 text: retryTemplateBody || `📋 Template: ${campaign.template}`,
                 isMe: true,
                 time: new Date().toISOString(),
@@ -823,7 +1041,7 @@ const messageSenderAdapter = {
             });
 
             await broadcastConversations(campaign.tenantId);
-            await broadcastMessages(campaign.tenantId, recipient.to);
+            await broadcastMessages(campaign.tenantId, normTo);
         } catch (msgErr) {
             console.error(
                 `[messageSender] Failed to create Message/Conversation log for retry phase ${phaseNumber} ` +
@@ -923,6 +1141,9 @@ app.use(bodyParser.json({
 app.set('TenantModel', Tenant);
 app.use('/api/instagram', instagramRoutes);
 app.use('/api/instagram/comment-automations', instagramCommentAutomationRoutes);
+const instagramPublishRoutes = require('./routes/instagramPublishRoutes');
+app.use('/api/instagram/publish', instagramPublishRoutes);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Mount Meta Ads Lead Integration & Compliance Routes ───────────────────────
 const metaRoutes = require('./routes/metaRoutes');
@@ -1255,6 +1476,26 @@ const authenticate = (req, res, next) => {
         next();
     });
 };
+
+/**
+ * Middleware to restrict endpoints to Master Tenant Administrators only.
+ */
+const requireAdmin = (req, res, next) => {
+    if (!req.user || !req.user.tenantId) {
+        return res.status(401).json({ error: 'unauthorized', message: 'Authentication required' });
+    }
+    if (req.user.role === 'employee') {
+        return res.status(403).json({
+            error: 'forbidden',
+            message: 'Access restricted: Only Master Tenant Administrators can perform this action.'
+        });
+    }
+    next();
+};
+
+// Mount employee management routes
+app.use('/api/employees', authenticate, employeeRoutes);
+
 
 
 
@@ -1650,24 +1891,49 @@ app.post('/verify-panel-payment-register', async (req, res) => {
     }
 });
 
-//  Login 
+//  Login (Supports both Master Tenant and Employee Accounts)
 app.post('/login', async (req, res) => {
     const { email, password } = req.body || {};
     if (!email || !password) {
         return res.status(400).json({ error: 'Email and password are required' });
     }
     try {
-        const tenant = await Tenant.findOne({ email: String(email).trim().toLowerCase() });
+        const normalizedEmail = String(email).trim().toLowerCase();
+        let tenant = await Tenant.findOne({ email: normalizedEmail });
+        let isEmployee = false;
+        let employee = null;
+
+        if (!tenant) {
+            // Check if user is an Employee
+            employee = await Employee.findOne({ email: normalizedEmail });
+            if (employee) {
+                isEmployee = true;
+                tenant = await Tenant.findById(employee.tenantId);
+                if (!tenant) {
+                    return res.status(401).json({ error: 'Organization account not found' });
+                }
+                if (employee.status === 'inactive') {
+                    return res.status(403).json({
+                        error: 'account_inactive',
+                        message: 'Your account is inactive. You cannot log in. Please contact your administrator.'
+                    });
+                }
+            }
+        }
+
         if (!tenant) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const isMatch = await bcrypt.compare(String(password), tenant.password);
+        const passwordToCompare = isEmployee ? employee.password : tenant.password;
+        const isMatch = await bcrypt.compare(String(password), passwordToCompare);
         if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
 
         // Block login if account status is inactive
         if (tenant.status === 'inactive') {
             return res.status(403).json({
                 error: 'account_inactive',
-                message: 'Your account is inactive. Please contact support.',
+                message: isEmployee
+                    ? 'Your organization account is inactive. You cannot log in.'
+                    : 'Your account is inactive. You cannot log in. Please contact support.',
             });
         }
 
@@ -1676,7 +1942,9 @@ app.post('/login', async (req, res) => {
         if (!planId || planId === 'free') {
             return res.status(403).json({
                 error: 'no_subscription',
-                message: 'No active subscription found. Please complete your plan purchase to log in.',
+                message: isEmployee
+                    ? 'Your organization has no active subscription. Please contact your administrator.'
+                    : 'No active subscription found. Please complete your plan purchase to log in.',
             });
         }
 
@@ -1687,21 +1955,55 @@ app.post('/login', async (req, res) => {
             if (now > expiryDate) {
                 return res.status(403).json({
                     error: 'subscription_expired',
-                    message: 'Your subscription has expired. Please renew your plan to continue.',
+                    message: isEmployee
+                        ? 'Your organization subscription has expired. Please contact your administrator.'
+                        : 'Your subscription has expired. Please renew your plan to continue.',
                     expiredAt: tenant.subscription.expiryDate,
                 });
             }
         }
 
+        let empPermissions = [];
+        if (isEmployee) {
+            empPermissions = [...(employee.permissions || [])];
+            if (!empPermissions.includes('reports')) empPermissions.push('reports');
+        }
+
         const jwtSecret = process.env.JWT_SECRET || 'super-secret-key-123';
-        const token = jwt.sign(
-            { tenantId: tenant._id.toString(), email: tenant.email },
-            jwtSecret,
-            { expiresIn: '30d' }
-        );
+        const tokenPayload = isEmployee ? {
+            tenantId: tenant._id.toString(),
+            employeeId: employee._id.toString(),
+            email: employee.email,
+            name: employee.name,
+            role: 'employee',
+            permissions: empPermissions
+        } : {
+            tenantId: tenant._id.toString(),
+            email: tenant.email,
+            name: tenant.name,
+            role: 'admin',
+            permissions: ['all']
+        };
+
+        const token = jwt.sign(tokenPayload, jwtSecret, { expiresIn: '30d' });
+
+        if (isEmployee) {
+            employee.lastLogin = new Date();
+            await employee.save().catch(() => {});
+        }
 
         res.json({
             token,
+            role: isEmployee ? 'employee' : 'admin',
+            employee: isEmployee ? {
+                id: employee._id.toString(),
+                name: employee.name,
+                email: employee.email,
+                role: employee.role,
+                permissions: empPermissions,
+                tenantId: employee.tenantId,
+                defaultCountry: employee.defaultCountry || tenant.defaultCountry || 'IN'
+            } : null,
             tenant: {
                 id: tenant._id.toString(),
                 name: tenant.name,
@@ -1709,6 +2011,10 @@ app.post('/login', async (req, res) => {
                 status: tenant.status || 'active',
                 subscription: tenant.subscription,
                 whatsappConfig: tenant.whatsappConfig,
+                role: isEmployee ? 'employee' : 'admin',
+                employeeId: isEmployee ? employee._id.toString() : null,
+                employeeName: isEmployee ? employee.name : null,
+                permissions: isEmployee ? empPermissions : ['all']
             }
         });
     } catch (error) {
@@ -1918,6 +2224,29 @@ app.get('/fetch-templates', authenticate, async (req, res) => {
             `${WHATSAPP_API_URL}/${config.businessAccountId}/message_templates`,
             { headers: { Authorization: `Bearer ${config.accessToken}` } }
         );
+
+        // Attach creator metadata (e.g. employee name tag) if available
+        if (response.data && Array.isArray(response.data.data)) {
+            try {
+                const metaRecords = await TemplateMetadata.find({ tenantId: req.user.tenantId }).lean();
+                const metaMap = new Map();
+                for (const r of metaRecords) {
+                    if (r.name) metaMap.set(r.name.toLowerCase().trim(), r);
+                }
+                for (const t of response.data.data) {
+                    const key = (t.name || '').toLowerCase().trim();
+                    const meta = metaMap.get(key);
+                    if (meta) {
+                        t.createdBy = meta.createdBy;
+                        t.createdByName = meta.createdByName;
+                        t.creatorRole = meta.creatorRole;
+                    }
+                }
+            } catch (metaErr) {
+                console.error('[TemplateMetadata] Failed to attach metadata to templates:', metaErr.message);
+            }
+        }
+
         res.json(response.data);
     } catch (error) {
         res.status(error.response?.status || 500).json({ error: 'Failed to fetch templates' });
@@ -1937,6 +2266,11 @@ app.delete('/delete-template', authenticate, async (req, res) => {
             `${WHATSAPP_API_URL}/${config.businessAccountId}/message_templates`,
             { params: { name }, headers: { Authorization: `Bearer ${config.accessToken}` } }
         );
+
+        // Clean up stored template metadata
+        const tmplName = (name || '').trim().toLowerCase();
+        await TemplateMetadata.deleteOne({ tenantId: req.user.tenantId, name: tmplName }).catch(() => {});
+
         res.json(response.data);
     } catch (error) {
         res.status(error.response?.status || 500).json({ error: 'Failed to delete template', details: error.response?.data || error.message });
@@ -1955,6 +2289,31 @@ app.post('/create-template', authenticate, async (req, res) => {
             req.body,
             { headers: { Authorization: `Bearer ${config.accessToken}` } }
         );
+
+        // Save creator metadata (especially if created by an employee)
+        try {
+            const isEmployee = req.user.role === 'employee';
+            const tmplName = (req.body.name || '').trim().toLowerCase();
+            if (tmplName) {
+                await TemplateMetadata.findOneAndUpdate(
+                    { tenantId: req.user.tenantId, name: tmplName },
+                    {
+                        tenantId: req.user.tenantId,
+                        name: tmplName,
+                        metaTemplateId: response.data?.id,
+                        language: req.body.language,
+                        category: req.body.category,
+                        createdBy: isEmployee ? (req.user.employeeId || req.user.id) : (req.user.id || 'admin'),
+                        createdByName: isEmployee ? (req.user.name || 'Employee') : (req.user.name || 'Admin'),
+                        creatorRole: isEmployee ? 'employee' : 'admin',
+                    },
+                    { upsert: true, new: true }
+                );
+            }
+        } catch (metaErr) {
+            console.error('[TemplateMetadata] Failed to save metadata on template creation:', metaErr.message);
+        }
+
         res.json(response.data);
     } catch (error) {
         const errorData = error.response?.data || error.message;
@@ -2039,6 +2398,15 @@ app.get('/me', authenticate, async (req, res) => {
     try {
         const tenant = await Tenant.findById(req.user.tenantId);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        let employee = null;
+        if (req.user.role === 'employee' && req.user.employeeId) {
+            employee = await Employee.findById(req.user.employeeId).lean();
+            if (!employee || employee.status === 'inactive') {
+                return res.status(403).json({ error: 'account_inactive', message: 'Employee account is inactive' });
+            }
+        }
+
         res.json({
             id: tenant._id.toString(),
             name: tenant.name,
@@ -2050,6 +2418,28 @@ app.get('/me', authenticate, async (req, res) => {
                 expiresAt: tenant.subscription.expiryDate,
             },
             whatsappConfig: tenant.whatsappConfig,
+            role: req.user.role || 'admin',
+            employeeId: employee ? employee._id.toString() : null,
+            permissions: req.user.role === 'employee'
+                ? (() => {
+                    const p = [...(employee?.permissions || req.user.permissions || [])];
+                    if (!p.includes('reports')) p.push('reports');
+                    return p;
+                })()
+                : ['all'],
+            employee: employee ? {
+                id: employee._id.toString(),
+                name: employee.name,
+                email: employee.email,
+                role: employee.role,
+                permissions: (() => {
+                    const p = [...(employee.permissions || [])];
+                    if (!p.includes('reports')) p.push('reports');
+                    return p;
+                })(),
+                createdAt: employee.createdAt,
+                defaultCountry: employee.defaultCountry || tenant.defaultCountry || 'IN',
+            } : null,
         });
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch profile' });
@@ -2753,11 +3143,15 @@ app.post('/api/chatbots', authenticate, async (req, res) => {
         return res.status(400).json({ error: 'Missing required fields: name and flow are required' });
     }
     try {
+        const isEmployee = req.user.role === 'employee';
         const chatbot = await Chatbot.create({
             tenantId: req.user.tenantId,
             name,
             triggerKeywords: triggerKeywords || [],
             flow,
+            createdBy: isEmployee ? (req.user.employeeId || req.user.id) : (req.user.id || 'admin'),
+            createdByName: isEmployee ? (req.user.name || 'Employee') : (req.user.name || 'Admin'),
+            creatorRole: isEmployee ? 'employee' : 'admin',
         });
         res.status(201).json(chatbot);
     } catch (error) {
@@ -2824,6 +3218,11 @@ app.put('/api/chatbots/:id', authenticate, async (req, res) => {
         if (triggerKeywords !== undefined) chatbot.triggerKeywords = triggerKeywords;
         if (flow !== undefined) chatbot.flow = flow;
         if (isActive !== undefined) chatbot.isActive = isActive;
+        if (!chatbot.createdBy && req.user.role === 'employee') {
+            chatbot.createdBy = req.user.employeeId || req.user.id;
+            chatbot.createdByName = req.user.name || 'Employee';
+            chatbot.creatorRole = 'employee';
+        }
 
         await chatbot.save();
         res.json(chatbot);
@@ -2892,11 +3291,39 @@ app.delete('/api/chatbots/:id', authenticate, async (req, res) => {
 
 //  Send Message 
 app.post('/send-message', authenticate, async (req, res) => {
-    const { to, type, template, text, mediaId, mediaType, campaignId, recipientName, replyToMessageId, replyToWamid } = req.body;
+    let { to, type, template, text, mediaId, mediaType, campaignId, recipientName, replyToMessageId, replyToWamid } = req.body;
     const tenantId = req.user.tenantId;
+    const isEmployee = req.user.role === 'employee';
+    const employeeId = req.user.employeeId;
+    const employeeName = req.user.name;
+
     try {
         const tenant = await Tenant.findById(tenantId);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        // Resolve default country for phone canonicalization
+        let defaultCountry = tenant.defaultCountry || 'IN';
+        if (isEmployee && employeeId) {
+            const employee = await Employee.findById(employeeId).select('defaultCountry');
+            if (employee?.defaultCountry) defaultCountry = employee.defaultCountry;
+        }
+
+        // Canonicalize contact phone number (e.g. 9409563238 -> 919409563238)
+        to = normalizePhoneNumber(to, defaultCountry) || (to ? String(to).replace(/\D/g, '') : '');
+
+        // Chat Isolation check: employees cannot message contacts assigned to another team member
+        if (isEmployee && employeeId) {
+            const existingConv = await Conversation.findOne({
+                tenantId,
+                contactId: { $in: [to, to.replace(/^91/, ''), `+${to}`] }
+            }).lean();
+            if (existingConv && existingConv.assignedTo && existingConv.assignedTo.toString() !== employeeId.toString()) {
+                return res.status(403).json({
+                    error: 'contact_assigned_elsewhere',
+                    message: 'This contact is currently assigned to another team member.'
+                });
+            }
+        }
 
         const config = tenant.whatsappConfig;
         if (!config.accessToken || !config.phoneNumberId)
@@ -2988,6 +3415,9 @@ app.post('/send-message', authenticate, async (req, res) => {
                             phaseStats: [{ phaseNumber: 1, successCount: 0, failureCount: 0, executedAt: new Date() }]
                         };
                     }
+                    const creatorId = isEmployee && employeeId ? employeeId.toString() : 'admin';
+                    const creatorName = isEmployee ? (employeeName || 'Employee') : 'Admin';
+
                     await Campaign.create({
                         tenantId,
                         id: campaignId,
@@ -2996,14 +3426,23 @@ app.post('/send-message', authenticate, async (req, res) => {
                         dispatchedAt: new Date(),
                         totalCount: 1,
                         successCount: 1,
+                        createdBy: creatorId,
+                        createdByName: creatorName,
                         ...lifecycleFields
                     });
                 } else {
+                    const creatorId = isEmployee && employeeId ? employeeId.toString() : 'admin';
+                    const creatorName = isEmployee ? (employeeName || 'Employee') : 'Admin';
+
                     await Campaign.findOneAndUpdate(
                         { tenantId, id: campaignId },
                         {
                             $set: { template: type === 'template' ? template.name : 'Text Message' },
-                            $inc: { totalCount: 1, successCount: 1 }
+                            $inc: { totalCount: 1, successCount: 1 },
+                            $setOnInsert: {
+                                createdBy: creatorId,
+                                createdByName: creatorName,
+                            }
                         }
                     );
                 }
@@ -3078,6 +3517,16 @@ app.post('/send-message', authenticate, async (req, res) => {
             if (recipientName && recipientName.trim()) {
                 convUpdate.name = recipientName.trim();
             }
+
+            // Automatic binding: When an employee messages a contact, bind contact to that employee
+            if (isEmployee && employeeId) {
+                convUpdate.assignedTo = employeeId;
+                convUpdate.assignedToName = employeeName || 'Employee';
+                convUpdate.assignedAt = new Date();
+                convUpdate.assignedBy = 'auto';
+                convUpdate.lastEmployeeMessage = msgPreview;
+                convUpdate.lastEmployeeActive = new Date();
+            }
             await Conversation.findOneAndUpdate(
                 { tenantId, contactId: to },
                 convUpdate,
@@ -3088,6 +3537,8 @@ app.post('/send-message', authenticate, async (req, res) => {
                 contactId: to,
                 text: ['image', 'video', 'audio', 'document'].includes(type) ? (type === 'document' ? text : '') : (type === 'text' ? text : (outboundTemplateBody || '')),
                 isMe: true,
+                senderId: isEmployee ? employeeId : 'admin',
+                senderName: isEmployee ? employeeName : 'Admin',
                 time: new Date().toISOString(),
                 messageType: outboundMessageType,
                 templateName: outboundTemplateName,
@@ -3122,12 +3573,18 @@ app.get('/campaigns', authenticate, async (req, res) => {
         const isPaginated = limit > 0;
         const skip = isPaginated ? (page - 1) * limit : 0;
 
-        // 1. Total count of campaigns for this tenant
-        const totalCampaigns = await Campaign.countDocuments({ tenantId: req.user.tenantId });
+        const isEmployee = req.user.role === 'employee';
+        const campaignFilter = { tenantId: req.user.tenantId };
+        if (isEmployee && req.user.employeeId) {
+            campaignFilter.createdBy = req.user.employeeId.toString();
+        }
 
-        // 2. Compute accurate overall tenant stats across ALL campaigns (not affected by pagination)
+        // 1. Total count of campaigns for this tenant / employee
+        const totalCampaigns = await Campaign.countDocuments(campaignFilter);
+
+        // 2. Compute accurate overall stats across matching campaigns (not affected by pagination)
         const statsAgg = await Campaign.aggregate([
-            { $match: { tenantId: req.user.tenantId } },
+            { $match: campaignFilter },
             {
                 $group: {
                     _id: null,
@@ -3153,9 +3610,9 @@ app.get('/campaigns', authenticate, async (req, res) => {
             totalCampaigns
         };
 
-        // 3. Fetch all distinct template names across ALL campaigns of this tenant (for filter dropdown)
+        // 3. Fetch all distinct template names across matching campaigns (for filter dropdown)
         const rawTemplates = await Campaign.distinct('template', {
-            tenantId: req.user.tenantId,
+            ...campaignFilter,
             template: { $exists: true, $ne: '' }
         });
         const templates = (rawTemplates || [])
@@ -3163,7 +3620,7 @@ app.get('/campaigns', authenticate, async (req, res) => {
             .sort((a, b) => a.localeCompare(b));
 
         // 4. Fetch ONLY the requested page of campaigns
-        let campaignQuery = Campaign.find({ tenantId: req.user.tenantId })
+        let campaignQuery = Campaign.find(campaignFilter)
             .sort({ timestamp: -1 });
 
         if (isPaginated) {
@@ -3280,6 +3737,10 @@ app.post('/api/campaigns/execute', authenticate, async (req, res) => {
 
         const campaignId = `campaign_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
+        const isEmployee = req.user.role === 'employee';
+        const creatorId = isEmployee && req.user.employeeId ? req.user.employeeId.toString() : 'admin';
+        const creatorName = isEmployee ? (req.user.name || 'Employee') : 'Admin';
+
         await Campaign.create({
             tenantId,
             id: campaignId,
@@ -3289,6 +3750,8 @@ app.post('/api/campaigns/execute', authenticate, async (req, res) => {
             totalCount: recipients.length,
             successCount: 0,
             failureCount: 0,
+            createdBy: creatorId,
+            createdByName: creatorName,
             ...lifecycleFields
         });
 
@@ -3362,6 +3825,10 @@ app.post('/api/campaigns/:campaignId/complete-phase1', authenticate, async (req,
                     }]
                 };
             }
+            const isEmployee = req.user.role === 'employee';
+            const creatorId = isEmployee && req.user.employeeId ? req.user.employeeId.toString() : 'admin';
+            const creatorName = isEmployee ? (req.user.name || 'Employee') : 'Admin';
+
             campaign = await Campaign.create({
                 tenantId,
                 id: campaignId,
@@ -3371,6 +3838,8 @@ app.post('/api/campaigns/:campaignId/complete-phase1', authenticate, async (req,
                 totalCount: 0,
                 successCount: 0,
                 failureCount: 0,
+                createdBy: creatorId,
+                createdByName: creatorName,
                 ...lifecycleFields
             });
             console.log(JSON.stringify({
@@ -3436,6 +3905,12 @@ app.get('/api/campaigns/:campaignId/report', authenticate, async (req, res) => {
     const { campaignId } = req.params;
     const tenantId = req.user.tenantId;
     try {
+        if (req.user.role === 'employee' && req.user.employeeId) {
+            const camp = await Campaign.findOne({ tenantId, id: campaignId }).select('createdBy').lean();
+            if (camp && camp.createdBy && camp.createdBy !== req.user.employeeId.toString()) {
+                return res.status(403).json({ error: 'Access denied: You do not have permission to view this campaign report' });
+            }
+        }
         const report = await reportGenerator.generatePhaseReport(campaignId, tenantId);
         res.json(report);
     } catch (err) {
@@ -3462,6 +3937,12 @@ app.get('/api/campaigns/:campaignId/messages', authenticate, async (req, res) =>
     const { campaignId } = req.params;
     const tenantId = req.user.tenantId;
     try {
+        if (req.user.role === 'employee' && req.user.employeeId) {
+            const camp = await Campaign.findOne({ tenantId, id: campaignId }).select('createdBy').lean();
+            if (camp && camp.createdBy && camp.createdBy !== req.user.employeeId.toString()) {
+                return res.status(403).json({ error: 'Access denied: You do not have permission to view this campaign messages' });
+            }
+        }
         // Parse optional phaseNumber query param
         let phaseNumber = null;
         if (req.query.phaseNumber !== undefined) {
@@ -3650,12 +4131,37 @@ app.post('/scheduled-campaigns', authenticate, async (req, res) => {
         const { campaignName, template, language, recipients, mediaId, mediaType, scheduledAt } = req.body;
         if (!template || !recipients?.length || !scheduledAt)
             return res.status(400).json({ error: 'template, recipients and scheduledAt are required' });
+
+        const isEmployee = req.user.role === 'employee';
+        const creatorId = isEmployee && req.user.employeeId ? req.user.employeeId.toString() : 'admin';
+        const creatorName = isEmployee ? (req.user.name || 'Employee') : 'Admin';
+
+        // Resolve default country code for recipient normalization
+        const tenant = await Tenant.findById(req.user.tenantId).select('defaultCountry');
+        let defaultCountry = tenant?.defaultCountry || 'IN';
+        if (isEmployee && req.user.employeeId) {
+            const employee = await Employee.findById(req.user.employeeId).select('defaultCountry');
+            if (employee?.defaultCountry) defaultCountry = employee.defaultCountry;
+        }
+
+        const normalizedRecipients = (recipients || []).map(r => {
+            const raw = r.mobileNumber || r.to || '';
+            const norm = normalizePhoneNumber(raw, defaultCountry) || String(raw).replace(/\D/g, '');
+            return {
+                ...r,
+                mobileNumber: norm,
+                to: norm,
+            };
+        });
+
         const sc = await ScheduledCampaign.create({
             tenantId: req.user.tenantId,
             campaignName: campaignName || '',
             template, language: language || 'en_US',
-            recipients, mediaId, mediaType,
+            recipients: normalizedRecipients, mediaId, mediaType,
             scheduledAt: new Date(scheduledAt),
+            createdBy: creatorId,
+            createdByName: creatorName,
         });
         res.json({ id: sc._id.toString(), scheduledAt: sc.scheduledAt });
     } catch (err) {
@@ -3666,7 +4172,13 @@ app.post('/scheduled-campaigns', authenticate, async (req, res) => {
 
 app.get('/scheduled-campaigns', authenticate, async (req, res) => {
     try {
-        const list = await ScheduledCampaign.find({ tenantId: req.user.tenantId }).sort({ scheduledAt: -1 });
+        const isEmployee = req.user.role === 'employee';
+        const scFilter = { tenantId: req.user.tenantId };
+        if (isEmployee && req.user.employeeId) {
+            scFilter.createdBy = req.user.employeeId.toString();
+        }
+
+        const list = await ScheduledCampaign.find(scFilter).sort({ scheduledAt: -1 });
         
         // Compute accurate live counts from the Recipient collection (ground truth)
         const campaignIds = list.map(s => s.resultCampaignId || `sched_${s._id}`);
@@ -3722,8 +4234,14 @@ app.get('/scheduled-campaigns', authenticate, async (req, res) => {
 
 app.delete('/scheduled-campaigns/:id', authenticate, async (req, res) => {
     try {
+        const isEmployee = req.user.role === 'employee';
+        const scFilter = { _id: req.params.id, tenantId: req.user.tenantId, status: 'pending' };
+        if (isEmployee && req.user.employeeId) {
+            scFilter.createdBy = req.user.employeeId.toString();
+        }
+
         const sc = await ScheduledCampaign.findOneAndUpdate(
-            { _id: req.params.id, tenantId: req.user.tenantId, status: 'pending' },
+            scFilter,
             { $set: { status: 'cancelled' } },
             { new: true }
         );
@@ -3839,43 +4357,114 @@ app.get('/conversations', authenticate, async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const filter = req.query.filter; // 'unread' or 'all'
 
+        const isEmployee = req.user.role === 'employee';
         const query = { tenantId };
+
+        if (isEmployee) {
+            // Chat Isolation: employee only sees conversations assigned to them
+            query.assignedTo = req.user.employeeId;
+        } else {
+            // Master Tenant Super-Admin: can filter by employee or unassigned
+            if (req.query.assignedTo === 'unassigned') {
+                query.$or = [{ assignedTo: null }, { assignedTo: { $exists: false } }, { assignedTo: '' }];
+            } else if (req.query.assignedTo && req.query.assignedTo !== 'all') {
+                query.assignedTo = req.query.assignedTo;
+            }
+        }
+
         if (filter === 'unread') {
             query.hasReply = true;
         }
 
         if (search) {
-            query.$or = [
+            const searchCond = [
                 { contactId: { $regex: search, $options: 'i' } },
                 { name: { $regex: search, $options: 'i' } }
             ];
+            if (query.$or) {
+                query.$and = [
+                    { $or: query.$or },
+                    { $or: searchCond }
+                ];
+                delete query.$or;
+            } else {
+                query.$or = searchCond;
+            }
         }
+
+        const sortOrder = isEmployee ? { lastEmployeeActive: -1, lastActive: -1 } : { lastActive: -1 };
 
         const [total, rawConvs] = await Promise.all([
             Conversation.countDocuments(query),
             Conversation.find(query)
-                .sort({ lastActive: -1 })
+                .sort(sortOrder)
                 .skip(skip)
                 .limit(limit)
                 .lean()
         ]);
 
         const enriched = await enrichConversationsWithNames(tenantId, rawConvs);
-        const conversations = enriched.map(c => ({
-            id: c.contactId,
-            name: c.name || c.contactId,
-            avatarUrl: c.avatarUrl || null,
-            lastMessage: c.lastMessage || '',
-            lastActive: c.lastActive,
-            hasReply: c.hasReply || false,
+
+        const formattedConvs = await Promise.all(enriched.map(async (c) => {
+            let lastMsg = c.lastMessage || '';
+            let lastAct = c.lastActive;
+
+            if (isEmployee) {
+                if (c.lastEmployeeMessage !== undefined && c.lastEmployeeMessage !== null) {
+                    lastMsg = c.lastEmployeeMessage;
+                    lastAct = c.lastEmployeeActive || c.lastActive;
+                } else {
+                    // Fallback: query last non-admin message for employee preview
+                    const lastNonAdmin = await Message.findOne({
+                        tenantId: c.tenantId,
+                        contactId: c.contactId,
+                        $or: [
+                            { isMe: false },
+                            { source: { $regex: '^chatbot' } },
+                            { senderId: { $nin: ['admin', 'Admin', null], $exists: true } }
+                        ]
+                    }).sort({ timestamp: -1, _id: -1 }).lean();
+
+                    if (lastNonAdmin) {
+                        const previewOpts = {
+                            text: ['image', 'video', 'audio', 'document'].includes(lastNonAdmin.messageType)
+                                ? (lastNonAdmin.messageType === 'document' ? lastNonAdmin.text : '')
+                                : (lastNonAdmin.messageType === 'text' ? lastNonAdmin.text : undefined),
+                            templateName: lastNonAdmin.templateName,
+                            templateBody: lastNonAdmin.templateBody,
+                        };
+                        lastMsg = buildPreview(lastNonAdmin.messageType || 'text', previewOpts) || lastNonAdmin.text || '';
+                        lastAct = lastNonAdmin.timestamp || c.lastActive;
+                    } else {
+                        lastMsg = '';
+                    }
+
+                    Conversation.updateOne(
+                        { _id: c._id },
+                        { $set: { lastEmployeeMessage: lastMsg, lastEmployeeActive: lastAct } }
+                    ).catch(() => {});
+                }
+            }
+
+            return {
+                id: c.contactId,
+                name: c.name || c.contactId,
+                avatarUrl: c.avatarUrl || null,
+                lastMessage: lastMsg,
+                lastActive: lastAct,
+                hasReply: c.hasReply || false,
+                assignedTo: c.assignedTo || null,
+                assignedToName: c.assignedToName || null,
+                assignedAt: c.assignedAt || null,
+            };
         }));
 
         res.json({
-            conversations,
+            conversations: formattedConvs,
             total,
             page,
             limit,
-            hasMore: skip + conversations.length < total
+            hasMore: skip + formattedConvs.length < total
         });
     } catch (error) {
         console.error('Error fetching conversations:', error);
@@ -3935,12 +4524,7 @@ app.put('/conversations/:contactId/avatar', authenticate, async (req, res) => {
 
 app.get('/conversations/:contactId/messages', authenticate, async (req, res) => {
     try {
-        const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
-        const messages = await Message.find({ 
-            tenantId: req.user.tenantId, 
-            contactId: req.params.contactId,
-            timestamp: { $gte: fifteenDaysAgo }
-        })
+        const messages = await Message.find({ tenantId: req.user.tenantId, contactId: req.params.contactId })
             .sort({ timestamp: 1 }).lean();
         res.json(messages.map(m => ({
             id: m._id.toString(),
@@ -3959,11 +4543,61 @@ app.get('/conversations/:contactId/messages', authenticate, async (req, res) => 
             status: m.status || 'sent',
             errorDetails: m.errorDetails || null,
             source: m.source || null,
-            isDeleted: m.isDeleted === true,
-            deletedAt: m.deletedAt || null,
         })));
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch messages' });
+    }
+});
+
+// PATCH /api/conversations/:contactId/assign — Master Tenant Super-Admin reassigns or unassigns chat
+app.patch('/api/conversations/:contactId/assign', authenticate, async (req, res) => {
+    try {
+        if (req.user.role === 'employee') {
+            return res.status(403).json({ error: 'forbidden', message: 'Only Master Tenant Administrators can reassign chats.' });
+        }
+
+        const tenantId = req.user.tenantId;
+        const { contactId } = req.params;
+        const { employeeId } = req.body;
+
+        let assignedTo = null;
+        let assignedToName = null;
+
+        if (employeeId && employeeId !== 'unassigned') {
+            const employee = await Employee.findOne({ _id: employeeId, tenantId });
+            if (!employee) {
+                return res.status(404).json({ error: 'Team member not found in your organization' });
+            }
+            assignedTo = employee._id.toString();
+            assignedToName = employee.name;
+        }
+
+        const conv = await Conversation.findOneAndUpdate(
+            { tenantId, contactId },
+            {
+                assignedTo,
+                assignedToName,
+                assignedAt: assignedTo ? new Date() : null,
+                assignedBy: 'admin',
+            },
+            { new: true, upsert: true }
+        );
+
+        await broadcastConversations(tenantId);
+
+        res.json({
+            success: true,
+            message: assignedTo ? `Chat reassigned to ${assignedToName}` : 'Chat unassigned',
+            conversation: {
+                id: conv.contactId,
+                name: conv.name || conv.contactId,
+                assignedTo: conv.assignedTo,
+                assignedToName: conv.assignedToName,
+            }
+        });
+    } catch (err) {
+        console.error('Error assigning conversation:', err);
+        res.status(500).json({ error: 'Failed to assign conversation', details: err.message });
     }
 });
 
@@ -4010,6 +4644,14 @@ app.get('/campaigns/:campaignId/recipients', authenticate, async (req, res) => {
     try {
         const { campaignId } = req.params;
         const tenantId = req.user.tenantId;
+
+        // Verify isolation for employee
+        if (req.user.role === 'employee' && req.user.employeeId) {
+            const camp = await Campaign.findOne({ tenantId, id: campaignId }).select('createdBy').lean();
+            if (camp && camp.createdBy && camp.createdBy !== req.user.employeeId.toString()) {
+                return res.status(403).json({ error: 'Access denied: You do not have permission to view this campaign recipients' });
+            }
+        }
 
         // Fetch all recipients for this campaign
         const recipients = await Recipient.find({ tenantId, campaignId }).lean();
@@ -5792,6 +6434,8 @@ async function saveChatbotMessageToDB({
     const convUpdate = {
         lastMessage: preview,
         lastActive: now,
+        lastEmployeeMessage: preview,
+        lastEmployeeActive: now,
         hasReply: true, // Always mark visible — both bot-sent and customer replies
     };
     if (name && name !== 'Unknown Sender' && name !== 'Unknown') convUpdate.name = name;
@@ -6898,6 +7542,8 @@ async function handleLiveChat(tenantId, message, profileName, from) {
     const liveConvUpdate = {
         lastMessage: lastMessagePreview,
         lastActive: new Date(),
+        lastEmployeeMessage: lastMessagePreview,
+        lastEmployeeActive: new Date(),
         hasReply: true
     };
     if (profileName && profileName !== 'Unknown Sender' && profileName !== 'Unknown' && profileName.trim().length > 0) {
@@ -7151,6 +7797,25 @@ webhookIngestionService.setHandler(async (body, ctx) => {
                         }).catch(e => console.warn('[Catalog] Error logging order to chat:', e.message));
 
                         console.log(`[Catalog] ✅ Order from ${from} saved for tenant ${tenantId}, total: ${totalAmount}`);
+
+                        // Auto-send payment link if tenant configured Direct Bank/UPI and auto-send
+                        try {
+                            const orderTenant = await Tenant.findById(tenantId);
+                            const dest = CatalogService.getTenantPaymentDestination(orderTenant);
+                            const autoSend = (orderTenant?.payoutConfig?.autoSendOnOrder !== false) && (orderTenant?.upiPaymentConfig?.autoSendOnOrder !== false);
+                            if (dest && autoSend) {
+                                CatalogService.sendPaymentLinkForOrder({
+                                    io,
+                                    Message,
+                                    Conversation,
+                                    razorpay,
+                                }, orderTenant, newOrder).catch(autoErr => {
+                                    console.warn('[Catalog] Auto send UPI payment link warning:', autoErr.message);
+                                });
+                            }
+                        } catch (tenantFetchErr) {
+                            console.warn('[Catalog] Error checking tenant auto-send UPI:', tenantFetchErr.message);
+                        }
                     } catch (orderErr) {
                         console.error('[Catalog] ❌ Order processing error:', orderErr.message);
                     }
@@ -7358,51 +8023,154 @@ io.on('connection', (socket) => {
 
     socket.on('join', async (tenantId) => {
         socket.join(tenantId);
-        console.log(` Tenant ${tenantId} joined socket room`);
+        const isEmployee = socket.user?.role === 'employee';
+        const employeeId = socket.user?.employeeId;
 
-        // Send initial conversations
-        try {
-            const convs = await Conversation.find({ tenantId, hasReply: true })
-                .sort({ lastActive: -1 }).lean();
-            const enriched = await enrichConversationsWithNames(tenantId, convs);
-            const formattedConvs = enriched.map(function (c) {
-                return {
-                    id: c.contactId,
-                    name: c.name || c.contactId,
-                    avatarUrl: c.avatarUrl || null,
-                    lastMessage: c.lastMessage || "",
-                    lastActive: c.lastActive,
-                    hasReply: c.hasReply || false
-                };
-            });
-            socket.emit("conversations_update", formattedConvs);
-        } catch (e) { console.error("Socket init conversations error:", e); }
+        if (isEmployee && employeeId) {
+            socket.join(`${tenantId}:employee:${employeeId}`);
+            console.log(` Employee ${employeeId} (${socket.user.email}) joined room ${tenantId}:employee:${employeeId}`);
+        } else {
+            socket.join(`${tenantId}:admin`);
+            console.log(` Master Tenant Admin (${socket.user?.email}) joined room ${tenantId}:admin`);
+        }
 
-        // Send initial campaigns
-        try {
-            const campaigns = await Campaign.find({ tenantId })
-                .sort({ timestamp: -1 }).lean();
-            const campaignIds = campaigns.map(c => c.id);
-            const pendingPhases = await ScheduledRetryPhase.find({
-                campaignId: { $in: campaignIds },
-                status: { $in: ['pending', 'executing'] }
-            }).select('campaignId').lean();
-            const pendingSet = new Set(pendingPhases.map(p => p.campaignId));
-            const enriched = campaigns.map(c => ({ ...c, hasPendingRetry: pendingSet.has(c.id) }));
-            socket.emit('campaigns_update', enriched);
-        } catch (e) { console.error('Socket init campaigns error:', e); }
+        // Send initial conversations with role-based isolation (with retry on transient network drops)
+        const sendInitialConversations = async (retryCount = 0) => {
+            try {
+                const query = { tenantId };
+                if (isEmployee && employeeId) {
+                    query.assignedTo = employeeId;
+                }
+                const convs = await Conversation.find(query)
+                    .sort(isEmployee ? { lastEmployeeActive: -1, lastActive: -1 } : { lastActive: -1 }).lean();
+
+                const enriched = await enrichConversationsWithNames(tenantId, convs);
+
+                const formattedConvs = await Promise.all(enriched.map(async function (c) {
+                    let lastMsg = c.lastMessage || "";
+                    let lastAct = c.lastActive;
+
+                    if (isEmployee) {
+                        if (c.lastEmployeeMessage !== undefined && c.lastEmployeeMessage !== null) {
+                            lastMsg = c.lastEmployeeMessage;
+                            lastAct = c.lastEmployeeActive || c.lastActive;
+                        } else {
+                            // Find latest non-admin message for employee preview fallback
+                            const lastNonAdmin = await Message.findOne({
+                                tenantId: c.tenantId,
+                                contactId: c.contactId,
+                                $or: [
+                                    { isMe: false },
+                                    { source: { $regex: '^chatbot' } },
+                                    { senderId: { $nin: ['admin', 'Admin', null], $exists: true } }
+                                ]
+                            }).sort({ timestamp: -1, _id: -1 }).lean();
+
+                            if (lastNonAdmin) {
+                                const previewOpts = {
+                                    text: ['image', 'video', 'audio', 'document'].includes(lastNonAdmin.messageType)
+                                        ? (lastNonAdmin.messageType === 'document' ? lastNonAdmin.text : '')
+                                        : (lastNonAdmin.messageType === 'text' ? lastNonAdmin.text : undefined),
+                                    templateName: lastNonAdmin.templateName,
+                                    templateBody: lastNonAdmin.templateBody,
+                                };
+                                lastMsg = buildPreview(lastNonAdmin.messageType || 'text', previewOpts) || lastNonAdmin.text || '';
+                                lastAct = lastNonAdmin.timestamp || c.lastActive;
+                            } else {
+                                lastMsg = '';
+                            }
+
+                            Conversation.updateOne(
+                                { _id: c._id },
+                                { $set: { lastEmployeeMessage: lastMsg, lastEmployeeActive: lastAct } }
+                            ).catch(() => {});
+                        }
+                    }
+
+                    return {
+                        id: c.contactId,
+                        name: c.name || c.contactId,
+                        avatarUrl: c.avatarUrl || null,
+                        lastMessage: lastMsg,
+                        lastActive: lastAct,
+                        hasReply: c.hasReply || false,
+                        assignedTo: c.assignedTo || null,
+                        assignedToName: c.assignedToName || null,
+                        assignedAt: c.assignedAt || null,
+                    };
+                }));
+
+                const dedupedInitial = new Map();
+                for (const item of formattedConvs) {
+                    const normKey = normalizePhoneNumber(item.id, 'IN') || String(item.id).replace(/\D/g, '');
+                    if (!dedupedInitial.has(normKey)) {
+                        item.id = normKey;
+                        dedupedInitial.set(normKey, item);
+                    } else {
+                        const existing = dedupedInitial.get(normKey);
+                        if (!existing.avatarUrl && item.avatarUrl) {
+                            existing.avatarUrl = item.avatarUrl;
+                        }
+                        if ((!existing.name || existing.name === existing.id) && item.name && item.name !== item.id) {
+                            existing.name = item.name;
+                        }
+                        if (!existing.assignedTo && item.assignedTo) {
+                            existing.assignedTo = item.assignedTo;
+                            existing.assignedToName = item.assignedToName;
+                            existing.assignedAt = item.assignedAt;
+                        }
+                        if (item.lastActive && (!existing.lastActive || new Date(item.lastActive) > new Date(existing.lastActive))) {
+                            existing.lastActive = item.lastActive;
+                            existing.lastMessage = item.lastMessage;
+                        }
+                    }
+                }
+                socket.emit("conversations_update", Array.from(dedupedInitial.values()));
+            } catch (e) {
+                const isNetworkError = e.name === 'PoolClearedOnNetworkError' || e.name === 'MongoNetworkTimeoutError' || e.name === 'MongoServerSelectionError' || e.message?.includes('interrupted due to server monitor timeout');
+                if (retryCount < 2 && isNetworkError) {
+                    setTimeout(() => sendInitialConversations(retryCount + 1), 1500);
+                } else {
+                    console.error("Socket init conversations error:", e.message || e);
+                }
+            }
+        };
+        sendInitialConversations();
+
+        // Send initial campaigns with role-based isolation (with retry on transient network drops)
+        const sendInitialCampaigns = async (retryCount = 0) => {
+            try {
+                const campaignMatch = { tenantId };
+                if (isEmployee && employeeId) {
+                    campaignMatch.createdBy = employeeId.toString();
+                }
+                const campaigns = await Campaign.find(campaignMatch)
+                    .sort({ timestamp: -1 }).lean();
+                const campaignIds = campaigns.map(c => c.id);
+                const pendingPhases = await ScheduledRetryPhase.find({
+                    campaignId: { $in: campaignIds },
+                    status: { $in: ['pending', 'executing'] }
+                }).select('campaignId').lean();
+                const pendingSet = new Set(pendingPhases.map(p => p.campaignId));
+                const enriched = campaigns.map(c => ({ ...c, hasPendingRetry: pendingSet.has(c.id) }));
+                socket.emit('campaigns_update', enriched);
+            } catch (e) {
+                const isNetworkError = e.name === 'PoolClearedOnNetworkError' || e.name === 'MongoNetworkTimeoutError' || e.name === 'MongoServerSelectionError' || e.message?.includes('interrupted due to server monitor timeout');
+                if (retryCount < 2 && isNetworkError) {
+                    setTimeout(() => sendInitialCampaigns(retryCount + 1), 1500);
+                } else {
+                    console.error('Socket init campaigns error:', e.message || e);
+                }
+            }
+        };
+        sendInitialCampaigns();
     });
 
     socket.on('get_messages', async (contactId) => {
         try {
             const tenantId = socket.user && socket.user.tenantId;
             if (!tenantId || !contactId) return;
-            const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
-            const messages = await Message.find({ 
-                tenantId, 
-                contactId,
-                timestamp: { $gte: fifteenDaysAgo }
-            })
+            const messages = await Message.find({ tenantId, contactId })
                 .sort({ timestamp: 1 }).lean();
             const formatted = messages.map(function (m) {
                 return {
@@ -7419,8 +8187,6 @@ io.on('connection', (socket) => {
                     wamid: m.wamid || null,
                     contextMessageId: m.contextMessageId || null,
                     replyContextPreview: m.replyContextPreview || null,
-                    isDeleted: m.isDeleted === true,
-                    deletedAt: m.deletedAt || null,
                 };
             });
             socket.emit('messages_' + contactId, formatted);
@@ -7436,9 +8202,7 @@ io.on('connection', (socket) => {
 async function broadcastConversations(tenantId) {
     try {
         const convs = await Conversation.find({ tenantId })
-            .sort({ lastActive: -1 })
-            .limit(500)
-            .lean();
+            .sort({ lastActive: -1 }).lean();
         const enriched = await enrichConversationsWithNames(tenantId, convs);
         const formatted = enriched.map(function (c) {
             return {
@@ -7463,7 +8227,7 @@ async function broadcastMessages(tenantId, contactId) {
             timestamp: { $gte: fifteenDaysAgo }
         })
             .sort({ timestamp: 1 }).lean();
-        const formatted = messages.map(function (m) {
+        const formattedAll = messages.map(function (m) {
             return {
                 id: m._id.toString(),
                 text: m.text || "",
@@ -7481,11 +8245,30 @@ async function broadcastMessages(tenantId, contactId) {
                 status: m.status || 'sent',
                 errorDetails: m.errorDetails || null,
                 source: m.source || null,
-                isDeleted: m.isDeleted === true,
-                deletedAt: m.deletedAt || null,
+                senderId: m.senderId || null,
+                senderName: m.senderName || null,
             };
         });
-        io.to(tenantId).emit("messages_" + contactId, formatted);
+
+        // 1. Emit all messages to Master Tenant Admin room
+        io.to(`${tenantId}:admin`).emit("messages_" + contactId, formattedAll);
+
+        // 2. Filter messages for employees (hide messages sent by master tenant)
+        const formattedEmployee = formattedAll.filter(function (m) {
+            if (!m.isMe) return true;
+            if (m.source && m.source.startsWith('chatbot')) return true;
+            if (m.senderId === 'admin' || m.senderName === 'Admin') return false;
+            if (!m.senderId) return false;
+            return true;
+        });
+
+        // 3. Emit isolated employee messages to connected employee sockets
+        const activeSockets = await io.in(tenantId).fetchSockets();
+        for (const s of activeSockets) {
+            if (s.user && s.user.role === 'employee') {
+                s.emit("messages_" + contactId, formattedEmployee);
+            }
+        }
     } catch (e) { console.error("broadcastMessages error:", e); }
 }
 
@@ -7500,7 +8283,32 @@ async function broadcastCampaigns(tenantId) {
         }).select('campaignId').lean();
         const pendingSet = new Set(pendingPhases.map(p => p.campaignId));
         const enriched = campaigns.map(c => ({ ...c, hasPendingRetry: pendingSet.has(c.id) }));
-        io.to(tenantId).emit('campaigns_update', enriched);
+
+        // 1. Emit full list to Master Tenant Admin room
+        io.to(`${tenantId}:admin`).emit('campaigns_update', enriched);
+
+        // 2. Map campaigns by createdBy employeeId
+        const employeeCampaignsMap = {};
+        for (const c of enriched) {
+            if (c.createdBy && c.createdBy !== 'admin') {
+                const empId = c.createdBy.toString();
+                if (!employeeCampaignsMap[empId]) {
+                    employeeCampaignsMap[empId] = [];
+                }
+                employeeCampaignsMap[empId].push(c);
+            }
+        }
+
+        // 3. Emit isolated campaign list to each connected socket
+        const activeSockets = await io.in(tenantId).fetchSockets();
+        for (const s of activeSockets) {
+            if (s.user && s.user.role === 'employee' && s.user.employeeId) {
+                const empId = s.user.employeeId.toString();
+                s.emit('campaigns_update', employeeCampaignsMap[empId] || []);
+            } else if (!s.user || s.user.role !== 'employee') {
+                s.emit('campaigns_update', enriched);
+            }
+        }
     } catch (e) { console.error('broadcastCampaigns error:', e); }
 }
 
@@ -7541,8 +8349,13 @@ const catalogController = createCatalogController({
 app.get('/api/catalog/catalogs', authenticate, catalogController.getCatalogs);
 app.post('/api/catalog/sync', authenticate, catalogController.syncCatalogs);
 app.post('/api/catalog/catalogs/select', authenticate, catalogController.selectCatalog);
+app.delete('/api/catalog/catalogs/:catalogId', authenticate, catalogController.removeCatalog);
 app.get('/api/catalog/commerce-settings', authenticate, catalogController.getCommerceSettings);
 app.post('/api/catalog/commerce-settings', authenticate, catalogController.updateCommerceSettings);
+app.get('/api/catalog/payout-settings', authenticate, catalogController.getPayoutSettings);
+app.post('/api/catalog/payout-settings', authenticate, catalogController.updatePayoutSettings);
+app.get('/api/catalog/upi-settings', authenticate, catalogController.getUpiSettings);
+app.post('/api/catalog/upi-settings', authenticate, catalogController.updateUpiSettings);
 app.get('/api/catalog/products', authenticate, catalogController.getProducts);
 app.post('/api/catalog/products', authenticate, catalogController.addProduct);
 app.post('/api/catalog/send-catalog-message', authenticate, catalogController.sendCatalogMessage);
@@ -7554,8 +8367,12 @@ app.patch('/api/catalog/orders/:id/status', authenticate, catalogController.upda
 app.post('/api/catalog/orders/:id/send-payment-link', authenticate, catalogController.sendPaymentLink);
 app.post('/api/catalog/orders/:id/mark-paid', authenticate, catalogController.markOrderPaid);
 app.post('/api/catalog/orders/:id/verify-payment', authenticate, catalogController.verifyOrderPayment);
+app.get('/pay/upi/:orderId', catalogController.renderUpiPaymentPage);
+app.post('/api/catalog/orders/:id/customer-reported-paid', catalogController.customerReportedPaid);
 app.get('/catalog/order-success', catalogController.handleOrderSuccessCallback);
 app.post('/api/catalog/payment-webhook', catalogController.handlePaymentWebhook);
+app.get('/pay/cashfree/:orderId', catalogController.renderCashfreePaymentPage);
+app.post('/api/catalog/cashfree-webhook', catalogController.handleCashfreeWebhook);
 
 //  Scheduled Campaign Runner (checks every minute) 
 async function runScheduledCampaigns() {
@@ -7620,6 +8437,8 @@ async function runScheduledCampaigns() {
                     totalCount: sc.recipients.length,
                     successCount: 0,
                     failureCount: 0,
+                    createdBy: sc.createdBy || 'admin',
+                    createdByName: sc.createdByName || 'Admin',
                     ...lifecycleFields
                 });
             }
@@ -7647,11 +8466,12 @@ async function runScheduledCampaigns() {
                 const messageDocs = [];
 
                 await Promise.all(chunk.map(async (recipient) => {
-                    const to = recipient.mobileNumber || recipient.to;
-                    if (!to) {
+                    const rawTo = recipient.mobileNumber || recipient.to;
+                    if (!rawTo) {
                         failure++;
                         return;
                     }
+                    const to = normalizePhoneNumber(rawTo, tenant?.defaultCountry || 'IN') || String(rawTo).replace(/\D/g, '');
                     try {
                         const components = [];
                         if (sc.mediaId && sc.mediaType) {
@@ -8736,9 +9556,15 @@ app.get('/api/leads/webhook-secret', authenticate, async (req, res) => {
 
 // ── Default Country Code Settings ─────────────────────────────────────────────
 
-// GET /api/settings/country — returns tenant's current defaultCountry
+// GET /api/settings/country — returns tenant's current defaultCountry (or employee's if logged in)
 app.get('/api/settings/country', authenticate, async (req, res) => {
     try {
+        if (req.user.role === 'employee' && req.user.employeeId) {
+            const employee = await Employee.findById(req.user.employeeId).select('defaultCountry');
+            if (employee && employee.defaultCountry) {
+                return res.json({ defaultCountry: employee.defaultCountry });
+            }
+        }
         const tenant = await Tenant.findById(req.user.tenantId).select('defaultCountry');
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
         res.json({ defaultCountry: tenant.defaultCountry || 'IN' });
@@ -8748,7 +9574,7 @@ app.get('/api/settings/country', authenticate, async (req, res) => {
     }
 });
 
-// PATCH /api/settings/country — updates tenant's defaultCountry
+// PATCH /api/settings/country — updates tenant's or employee's defaultCountry
 app.patch('/api/settings/country', authenticate, async (req, res) => {
     try {
         const { defaultCountry } = req.body;
@@ -8760,7 +9586,11 @@ app.patch('/api/settings/country', authenticate, async (req, res) => {
         if (!/^[A-Z]{2,3}$/.test(code)) {
             return res.status(400).json({ error: 'Invalid country code format. Use ISO 3166-1 alpha-2 (e.g. IN, US, AU)' });
         }
-        await Tenant.findByIdAndUpdate(req.user.tenantId, { defaultCountry: code });
+        if (req.user.role === 'employee' && req.user.employeeId) {
+            await Employee.findByIdAndUpdate(req.user.employeeId, { defaultCountry: code });
+        } else {
+            await Tenant.findByIdAndUpdate(req.user.tenantId, { defaultCountry: code });
+        }
         res.json({ ok: true, defaultCountry: code });
     } catch (err) {
         console.error('[CountrySettings] PATCH error:', err.message);

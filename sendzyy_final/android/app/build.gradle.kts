@@ -14,8 +14,8 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
     id("com.google.gms.google-services")
 }
-
-android {
+         
+android {x
     namespace = "com.iflorainfopvtltd.sendzyy"
     compileSdk = 36
     ndkVersion = flutter.ndkVersion

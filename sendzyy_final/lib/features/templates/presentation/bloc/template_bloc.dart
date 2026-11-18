@@ -127,7 +127,9 @@ class TemplateLoaded extends TemplateState {
     final q = searchQuery ?? this.searchQuery;
     final cat = clearCategory ? null : (selectedCategory ?? this.selectedCategory);
     final filtered = templates.where((t) {
-      final nameMatch = q.isEmpty || (t['name'] as String).toLowerCase().contains(q.toLowerCase());
+      final nameMatch = q.isEmpty ||
+          (t['name'] as String).toLowerCase().contains(q.toLowerCase()) ||
+          ((t['createdByName'] as String?)?.toLowerCase().contains(q.toLowerCase()) ?? false);
       final catMatch = cat == null || (t['category'] as String?)?.toUpperCase() == cat.toUpperCase();
       return nameMatch && catMatch;
     }).toList();

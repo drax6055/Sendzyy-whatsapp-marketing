@@ -15,13 +15,33 @@ class SyncCatalogsWithMeta extends CatalogEvent {}
 
 class SelectActiveCatalog extends CatalogEvent {
   final String catalogId;
-  SelectActiveCatalog(this.catalogId);
+  final String? name;
+  SelectActiveCatalog(this.catalogId, {this.name});
+}
+
+class RemoveCatalogEvent extends CatalogEvent {
+  final String catalogId;
+  RemoveCatalogEvent(this.catalogId);
 }
 
 class UpdateCommerceSettings extends CatalogEvent {
   final bool? cartEnabled;
   final bool? catalogVisible;
   UpdateCommerceSettings({this.cartEnabled, this.catalogVisible});
+}
+
+class LoadUpiPaymentSettings extends CatalogEvent {}
+
+class UpdateUpiPaymentSettingsEvent extends CatalogEvent {
+  final UpiPaymentSettings upiSettings;
+  UpdateUpiPaymentSettingsEvent(this.upiSettings);
+}
+
+class LoadPayoutSettings extends CatalogEvent {}
+
+class UpdatePayoutSettingsEvent extends CatalogEvent {
+  final TenantPayoutSettings payoutSettings;
+  UpdatePayoutSettingsEvent(this.payoutSettings);
 }
 
 class LoadProducts extends CatalogEvent {
@@ -91,6 +111,10 @@ class CatalogSettingsLoading extends CatalogState {}
 
 class CatalogSettingsLoaded extends CatalogState {
   final CatalogCommerceSettings settings;
+  final UpiPaymentSettings? upiSettings;
+  final bool isSavingUpiSettings;
+  final TenantPayoutSettings? payoutSettings;
+  final bool isSavingPayoutSettings;
   final List<CatalogProduct> products;
   final List<CatalogInfo> catalogs;
   final String? activeCatalogId;
@@ -107,6 +131,10 @@ class CatalogSettingsLoaded extends CatalogState {
 
   CatalogSettingsLoaded({
     required this.settings,
+    this.upiSettings,
+    this.isSavingUpiSettings = false,
+    this.payoutSettings,
+    this.isSavingPayoutSettings = false,
     this.products = const [],
     this.catalogs = const [],
     this.activeCatalogId,
@@ -141,6 +169,10 @@ class CatalogSettingsLoaded extends CatalogState {
 
   CatalogSettingsLoaded copyWith({
     CatalogCommerceSettings? settings,
+    UpiPaymentSettings? upiSettings,
+    bool? isSavingUpiSettings,
+    TenantPayoutSettings? payoutSettings,
+    bool? isSavingPayoutSettings,
     List<CatalogProduct>? products,
     List<CatalogInfo>? catalogs,
     String? activeCatalogId,
@@ -160,6 +192,10 @@ class CatalogSettingsLoaded extends CatalogState {
   }) {
     return CatalogSettingsLoaded(
       settings: settings ?? this.settings,
+      upiSettings: upiSettings ?? this.upiSettings,
+      isSavingUpiSettings: isSavingUpiSettings ?? this.isSavingUpiSettings,
+      payoutSettings: payoutSettings ?? this.payoutSettings,
+      isSavingPayoutSettings: isSavingPayoutSettings ?? this.isSavingPayoutSettings,
       products: products ?? this.products,
       catalogs: catalogs ?? this.catalogs,
       activeCatalogId: activeCatalogId ?? this.activeCatalogId,
@@ -191,8 +227,13 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
 
   CatalogBloc(this._repository) : super(CatalogInitial()) {
     on<LoadCommerceSettings>(_onLoadCommerceSettings);
+    on<LoadUpiPaymentSettings>(_onLoadUpiPaymentSettings);
+    on<UpdateUpiPaymentSettingsEvent>(_onUpdateUpiPaymentSettings);
+    on<LoadPayoutSettings>(_onLoadPayoutSettings);
+    on<UpdatePayoutSettingsEvent>(_onUpdatePayoutSettings);
     on<SyncCatalogsWithMeta>(_onSyncCatalogsWithMeta);
     on<SelectActiveCatalog>(_onSelectActiveCatalog);
+    on<RemoveCatalogEvent>(_onRemoveCatalog);
     on<UpdateCommerceSettings>(_onUpdateCommerceSettings);
     on<LoadProducts>(_onLoadProducts);
     on<LoadOrders>(_onLoadOrders);
@@ -230,6 +271,8 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
       final settings = await _repository.getCommerceSettings();
       String? activeId;
       List<CatalogInfo> catalogsList = [];
+      UpiPaymentSettings? upiSettings;
+      TenantPayoutSettings? payoutSettings;
 
       try {
         final catResult = await _repository.getCatalogs();
@@ -237,8 +280,18 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
         catalogsList = catResult.catalogs;
       } catch (_) {}
 
+      try {
+        upiSettings = await _repository.getUpiPaymentSettings();
+      } catch (_) {}
+
+      try {
+        payoutSettings = await _repository.getPayoutSettings();
+      } catch (_) {}
+
       emit(CatalogSettingsLoaded(
         settings: settings,
+        upiSettings: upiSettings,
+        payoutSettings: payoutSettings,
         catalogs: catalogsList,
         activeCatalogId: activeId,
       ));
@@ -300,9 +353,33 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
   ) async {
     final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
     try {
-      await _repository.selectCatalog(event.catalogId);
+      await _repository.selectCatalog(event.catalogId, name: event.name);
+
+      List<CatalogInfo> freshCatalogs = [];
+      try {
+        final catResult = await _repository.getCatalogs();
+        freshCatalogs = catResult.catalogs;
+      } catch (_) {
+        if (current != null) {
+          final exists = current.catalogs.any((c) => c.catalogId == event.catalogId);
+          if (!exists) {
+            freshCatalogs = [
+              ...current.catalogs,
+              CatalogInfo(
+                catalogId: event.catalogId,
+                name: event.name ?? 'Catalog ${event.catalogId}',
+                vertical: 'commerce',
+                isDefault: true,
+              )
+            ];
+          } else {
+            freshCatalogs = current.catalogs;
+          }
+        }
+      }
+
       if (current != null) {
-        final updatedCatalogs = current.catalogs.map((c) {
+        final updatedCatalogs = freshCatalogs.map((c) {
           return CatalogInfo(
             catalogId: c.catalogId,
             name: c.name,
@@ -312,13 +389,47 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
           );
         }).toList();
 
+        final catName = updatedCatalogs.firstWhere(
+          (c) => c.catalogId == event.catalogId,
+          orElse: () => CatalogInfo(
+            catalogId: event.catalogId,
+            name: event.name ?? event.catalogId,
+            vertical: 'commerce',
+          ),
+        ).name;
+
         emit(current.copyWith(
           catalogs: updatedCatalogs,
           activeCatalogId: event.catalogId,
-          successMessage: 'Active catalog switched to ${event.catalogId}',
+          successMessage: 'Switched active catalog to "$catName"',
         ));
       }
       add(LoadProducts(catalogId: event.catalogId));
+    } catch (e) {
+      if (current != null) {
+        emit(current.copyWith(
+          errorMessage: e.toString().replaceAll('Exception: ', ''),
+        ));
+      }
+    }
+  }
+
+  Future<void> _onRemoveCatalog(
+    RemoveCatalogEvent event,
+    Emitter<CatalogState> emit,
+  ) async {
+    final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
+    try {
+      await _repository.removeCatalog(event.catalogId);
+      final catResult = await _repository.getCatalogs();
+      if (current != null) {
+        emit(current.copyWith(
+          catalogs: catResult.catalogs,
+          activeCatalogId: catResult.activeCatalogId,
+          successMessage: 'Catalog removed successfully',
+        ));
+      }
+      add(LoadProducts(catalogId: catResult.activeCatalogId));
     } catch (e) {
       if (current != null) {
         emit(current.copyWith(
@@ -360,6 +471,86 @@ class CatalogBloc extends Bloc<CatalogEvent, CatalogState> {
         ));
       } else {
         emit(CatalogError(e.toString().replaceAll('Exception: ', '')));
+      }
+    }
+  }
+
+  Future<void> _onLoadUpiPaymentSettings(
+    LoadUpiPaymentSettings event,
+    Emitter<CatalogState> emit,
+  ) async {
+    final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
+    try {
+      final upi = await _repository.getUpiPaymentSettings();
+      if (current != null) {
+        emit(current.copyWith(upiSettings: upi));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _onUpdateUpiPaymentSettings(
+    UpdateUpiPaymentSettingsEvent event,
+    Emitter<CatalogState> emit,
+  ) async {
+    final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
+    if (current != null) {
+      emit(current.copyWith(isSavingUpiSettings: true, clearError: true));
+    }
+    try {
+      await _repository.updateUpiPaymentSettings(event.upiSettings);
+      if (current != null) {
+        emit(current.copyWith(
+          isSavingUpiSettings: false,
+          upiSettings: event.upiSettings,
+          successMessage: 'UPI payment settings saved successfully!',
+        ));
+      }
+    } catch (e) {
+      if (current != null) {
+        emit(current.copyWith(
+          isSavingUpiSettings: false,
+          errorMessage: e.toString().replaceAll('Exception: ', ''),
+        ));
+      }
+    }
+  }
+
+  Future<void> _onLoadPayoutSettings(
+    LoadPayoutSettings event,
+    Emitter<CatalogState> emit,
+  ) async {
+    final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
+    try {
+      final payout = await _repository.getPayoutSettings();
+      if (current != null) {
+        emit(current.copyWith(payoutSettings: payout));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _onUpdatePayoutSettings(
+    UpdatePayoutSettingsEvent event,
+    Emitter<CatalogState> emit,
+  ) async {
+    final current = state is CatalogSettingsLoaded ? state as CatalogSettingsLoaded : null;
+    if (current != null) {
+      emit(current.copyWith(isSavingPayoutSettings: true, clearError: true));
+    }
+    try {
+      await _repository.updatePayoutSettings(event.payoutSettings);
+      if (current != null) {
+        emit(current.copyWith(
+          isSavingPayoutSettings: false,
+          payoutSettings: event.payoutSettings,
+          successMessage: 'Bank payout & settlement settings saved successfully! Automatic payment verification is active.',
+        ));
+      }
+    } catch (e) {
+      if (current != null) {
+        emit(current.copyWith(
+          isSavingPayoutSettings: false,
+          errorMessage: e.toString().replaceAll('Exception: ', ''),
+        ));
       }
     }
   }
