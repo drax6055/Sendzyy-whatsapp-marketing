@@ -4,6 +4,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:iFloraBuzz/core/di/injection.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
+import 'package:iFloraBuzz/core/utils/responsive_helper.dart';
 import 'package:iFloraBuzz/core/utils/web_helper.dart';
 import 'package:iFloraBuzz/core/widgets/compact_date_range_picker.dart';
 import 'package:iFloraBuzz/features/leads/presentation/widgets/meta_trigger_dialog.dart';
@@ -51,6 +52,13 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
   bool _pagesExpanded = false;
 
   final TextEditingController _searchController = TextEditingController();
+
+  // Sendzyy Palette constants for consistent clean styling
+  static const Color _metaBlue = Color(0xFF1877F2);
+  static const Color _textDark = Color(0xFF1E293B);
+  static const Color _textMuted = Color(0xFF64748B);
+  static const Color _borderColor = Color(0xFFE2E8F0);
+  static const Color _bgSoft = Color(0xFFF8FAFC);
 
   @override
   void initState() {
@@ -191,27 +199,38 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
         showDialog(
           context: context,
           builder: (_) => AlertDialog(
-            backgroundColor: AppTheme.cardColor,
+            backgroundColor: Colors.white,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: Row(
               children: [
-                const Icon(Icons.check_circle, color: Colors.greenAccent),
+                const Icon(Icons.check_circle_rounded, color: AppTheme.primaryColor),
                 const SizedBox(width: 8),
-                Text(data['healthy'] == true ? 'Connection Healthy' : 'Action Required'),
+                Text(
+                  data['healthy'] == true ? 'Connection Healthy' : 'Action Required',
+                  style: const TextStyle(color: _textDark, fontWeight: FontWeight.bold, fontSize: 16),
+                ),
               ],
             ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(data['message']?.toString() ?? 'Page token and permissions are active.', style: const TextStyle(color: Colors.white70)),
+                Text(
+                  data['message']?.toString() ?? 'Page token and permissions are active.',
+                  style: const TextStyle(color: _textDark, fontSize: 13),
+                ),
                 const SizedBox(height: 12),
-                Text('• Webhook Subscribed: ${data['isSubscribed'] == true ? "YES" : "NO"}'),
-                Text('• Forms Discovered: ${data['formsDiscovered'] ?? 0}'),
+                Text('• Webhook Subscribed: ${data['isSubscribed'] == true ? "YES" : "NO"}',
+                    style: const TextStyle(color: _textMuted, fontSize: 12)),
+                Text('• Forms Discovered: ${data['formsDiscovered'] ?? 0}',
+                    style: const TextStyle(color: _textMuted, fontSize: 12)),
               ],
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close', style: TextStyle(color: AppTheme.secondaryColor)),
+              ),
             ],
           ),
         );
@@ -221,21 +240,24 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
         showDialog(
           context: context,
           builder: (_) => AlertDialog(
-            backgroundColor: AppTheme.cardColor,
+            backgroundColor: Colors.white,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: const Row(
               children: [
-                Icon(Icons.warning_amber_rounded, color: Colors.amberAccent),
+                Icon(Icons.warning_amber_rounded, color: Colors.amber),
                 SizedBox(width: 8),
-                Text('Access Diagnostic Alert'),
+                Text('Access Diagnostic Alert', style: TextStyle(color: _textDark, fontWeight: FontWeight.bold, fontSize: 16)),
               ],
             ),
             content: Text(
               'Diagnostic test returned error:\n\n$e\n\nEnsure user has "Leads Access" in Meta Business Settings.',
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
+              style: const TextStyle(color: _textDark, fontSize: 13),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close', style: TextStyle(color: AppTheme.secondaryColor)),
+              ),
             ],
           ),
         );
@@ -271,7 +293,7 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
       await _fetchLeads();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg), backgroundColor: Colors.green),
+          SnackBar(content: Text(msg), backgroundColor: AppTheme.secondaryColor),
         );
       }
     } catch (e) {
@@ -324,33 +346,36 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = ResponsiveHelper.isMobile(context);
+
     return Scaffold(
-      backgroundColor: AppTheme.scaffoldBackgroundColor,
+      backgroundColor: AppTheme.backgroundColor,
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor))
           : RefreshIndicator(
+              color: AppTheme.primaryColor,
               onRefresh: _fetchMetaStatusAndData,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(24),
+                padding: EdgeInsets.all(isMobile ? 14 : 24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildHeader(),
+                    _buildHeader(isMobile),
                     if (_error != null) ...[
                       const SizedBox(height: 16),
                       _buildErrorBanner(),
                     ],
-                    const SizedBox(height: 20),
-                    _buildConnectionBanner(),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 18),
+                    _buildConnectionBanner(isMobile),
+                    const SizedBox(height: 18),
                     _buildPagesAccordion(),
-                    const SizedBox(height: 20),
-                    _buildKpiMetricsRow(),
-                    const SizedBox(height: 20),
-                    _buildFiltersCard(),
-                    const SizedBox(height: 20),
-                    _buildLeadsTableCard(),
+                    const SizedBox(height: 18),
+                    _buildKpiMetricsRow(isMobile),
+                    const SizedBox(height: 18),
+                    _buildFiltersCard(isMobile),
+                    const SizedBox(height: 18),
+                    _buildLeadsTableCard(isMobile),
                   ],
                 ),
               ),
@@ -362,39 +387,91 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.redAccent.withValues(alpha: 0.12),
+        color: Colors.red.shade50,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)),
+        border: Border.all(color: Colors.red.shade200),
       ),
       child: Row(
         children: [
-          const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 20),
+          Icon(Icons.error_outline_rounded, color: Colors.red.shade700, size: 20),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               _error ?? 'An unexpected error occurred while loading Meta leads data.',
-              style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+              style: TextStyle(color: Colors.red.shade800, fontSize: 13),
             ),
           ),
           TextButton(
             onPressed: _fetchMetaStatusAndData,
-            child: const Text('Retry', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            child: Text('Retry', style: TextStyle(color: Colors.red.shade900, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildHeader() {
+  Widget _buildHeader(bool isMobile) {
+    if (isMobile) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: _metaBlue.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const FaIcon(FontAwesomeIcons.facebook, color: _metaBlue, size: 22),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Meta Ads Leads',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _textDark),
+                ),
+              ),
+              IconButton(
+                onPressed: _fetchMetaStatusAndData,
+                icon: const Icon(Icons.refresh_rounded, color: _textMuted),
+                tooltip: 'Refresh Leads',
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Facebook & Instagram Instant Forms + Click-to-WhatsApp (CTWA) CRM Ingestion',
+            style: TextStyle(fontSize: 12, color: _textMuted),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _openTriggersDialog,
+              icon: const Icon(Icons.bolt_rounded, size: 16, color: AppTheme.secondaryColor),
+              label: const Text('Automation Rules'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.secondaryColor,
+                side: const BorderSide(color: AppTheme.secondaryColor, width: 1.2),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return Row(
       children: [
         Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: const Color(0xFF1877F2).withValues(alpha: 0.15),
+            color: _metaBlue.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const FaIcon(FontAwesomeIcons.facebook, color: Color(0xFF1877F2), size: 24),
+          child: const FaIcon(FontAwesomeIcons.facebook, color: _metaBlue, size: 24),
         ),
         const SizedBox(width: 14),
         const Expanded(
@@ -403,75 +480,130 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
             children: [
               Text(
                 'Meta Ads Leads',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: _textDark),
               ),
               SizedBox(height: 2),
               Text(
                 'Facebook & Instagram Instant Forms + Click-to-WhatsApp (CTWA) CRM Ingestion',
-                style: TextStyle(fontSize: 13, color: Colors.white70),
+                style: TextStyle(fontSize: 13, color: _textMuted),
               ),
             ],
           ),
         ),
         OutlinedButton.icon(
           onPressed: _openTriggersDialog,
-          icon: const Icon(Icons.bolt_rounded, size: 16, color: Color(0xFF1877F2)),
+          icon: const Icon(Icons.bolt_rounded, size: 16, color: AppTheme.secondaryColor),
           label: const Text('Automation Rules'),
           style: OutlinedButton.styleFrom(
-            side: const BorderSide(color: Color(0xFF1877F2)),
+            foregroundColor: AppTheme.secondaryColor,
+            side: const BorderSide(color: AppTheme.secondaryColor, width: 1.2),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         ),
         const SizedBox(width: 10),
         IconButton(
           onPressed: _fetchMetaStatusAndData,
-          icon: const Icon(Icons.refresh_rounded, color: Colors.white70),
+          icon: const Icon(Icons.refresh_rounded, color: _textMuted),
           tooltip: 'Refresh Leads',
         ),
       ],
     );
   }
 
-  Widget _buildConnectionBanner() {
+  Widget _buildConnectionBanner(bool isMobile) {
     if (!_isConnected) {
+      if (isMobile) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _borderColor),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2)),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: _metaBlue.withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const FaIcon(FontAwesomeIcons.facebookF, color: _metaBlue, size: 18),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Connect Facebook & Instagram Pages',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _textDark),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Receive Instant Form lead submissions in real-time (< 3 seconds) and automatically dispatch approved WhatsApp greeting templates.',
+                style: TextStyle(fontSize: 12, color: _textMuted, height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _connectFacebook,
+                  icon: const FaIcon(FontAwesomeIcons.facebook, size: 15),
+                  label: const Text('Connect Facebook'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _metaBlue,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
       return Container(
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: AppTheme.cardColor,
+          color: Colors.white,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFF1877F2).withValues(alpha: 0.3)),
-          gradient: LinearGradient(
-            colors: [
-              const Color(0xFF1877F2).withValues(alpha: 0.08),
-              AppTheme.cardColor,
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          border: Border.all(color: _borderColor),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 10, offset: const Offset(0, 2)),
+          ],
         ),
         child: Row(
           children: [
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFF1877F2).withValues(alpha: 0.2),
+                color: _metaBlue.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: const FaIcon(FontAwesomeIcons.facebookF, color: Color(0xFF1877F2), size: 22),
+              child: const FaIcon(FontAwesomeIcons.facebookF, color: _metaBlue, size: 22),
             ),
             const SizedBox(width: 16),
-            Expanded(
+            const Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     'Connect Facebook & Instagram Pages',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _textDark),
                   ),
-                  const SizedBox(height: 4),
+                  SizedBox(height: 4),
                   Text(
                     'Receive Instant Form lead submissions in real-time (< 3 seconds) and automatically dispatch approved WhatsApp greeting templates.',
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade400, height: 1.4),
+                    style: TextStyle(fontSize: 12, color: _textMuted, height: 1.4),
                   ),
                 ],
               ),
@@ -482,8 +614,10 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
               icon: const FaIcon(FontAwesomeIcons.facebook, size: 16),
               label: const Text('Connect Facebook'),
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF1877F2),
+                backgroundColor: _metaBlue,
+                foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
             ),
           ],
@@ -493,22 +627,90 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
 
     final fbUser = _connection?['fbUserName'] ?? 'Authorized User';
 
+    if (isMobile) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _borderColor),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 6, offset: const Offset(0, 2)),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.check_circle_rounded, color: AppTheme.secondaryColor, size: 18),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Connected as $fbUser',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textDark),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.green.shade200),
+                  ),
+                  child: Text(
+                    'Webhook Active',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green.shade800),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${_pages.length} Connected Page(s) • ${_forms.length} Instant Form(s) registered',
+              style: const TextStyle(fontSize: 12, color: _textMuted),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _connectFacebook,
+                icon: const Icon(Icons.sync_rounded, size: 16, color: _metaBlue),
+                label: const Text('Reconnect / Refresh', style: TextStyle(color: _metaBlue, fontSize: 12)),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       decoration: BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 10, offset: const Offset(0, 2)),
+        ],
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Colors.green.withValues(alpha: 0.15),
+              color: AppTheme.primaryColor.withValues(alpha: 0.15),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.check_circle_rounded, color: Colors.greenAccent, size: 20),
+            child: const Icon(Icons.check_circle_rounded, color: AppTheme.secondaryColor, size: 20),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -519,19 +721,19 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                   children: [
                     Text(
                       'Connected as $fbUser',
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textDark),
                     ),
                     const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.green.withValues(alpha: 0.15),
+                        color: Colors.green.shade50,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                        border: Border.all(color: Colors.green.shade200),
                       ),
-                      child: const Text(
+                      child: Text(
                         'Webhook Active',
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.greenAccent),
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green.shade800),
                       ),
                     ),
                   ],
@@ -539,15 +741,15 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                 const SizedBox(height: 2),
                 Text(
                   '${_pages.length} Connected Page(s) • ${_forms.length} Instant Form(s) registered',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                  style: const TextStyle(fontSize: 12, color: _textMuted),
                 ),
               ],
             ),
           ),
           TextButton.icon(
             onPressed: _connectFacebook,
-            icon: const Icon(Icons.sync_rounded, size: 16, color: Color(0xFF1877F2)),
-            label: const Text('Reconnect / Refresh', style: TextStyle(color: Color(0xFF1877F2))),
+            icon: const Icon(Icons.sync_rounded, size: 16, color: _metaBlue),
+            label: const Text('Reconnect / Refresh', style: TextStyle(color: _metaBlue)),
           ),
         ],
       ),
@@ -559,26 +761,31 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
 
     return Container(
       decoration: BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2)),
+        ],
       ),
       child: ExpansionTile(
         initiallyExpanded: _pagesExpanded,
         onExpansionChanged: (v) => setState(() => _pagesExpanded = v),
         title: Row(
           children: [
-            const Icon(Icons.view_list_rounded, size: 20, color: Color(0xFF1877F2)),
+            const Icon(Icons.view_list_rounded, size: 20, color: _metaBlue),
             const SizedBox(width: 12),
-            Text(
-              'Connected Facebook Pages & Instant Forms (${_pages.length})',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+            Expanded(
+              child: Text(
+                'Connected Facebook Pages & Instant Forms (${_pages.length})',
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textDark),
+              ),
             ),
           ],
         ),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         children: [
-          const Divider(color: Colors.white10),
+          const Divider(color: _borderColor),
           for (final page in _pages) ...[
             _buildPageCard(page),
             const SizedBox(height: 12),
@@ -597,59 +804,62 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppTheme.surfaceColor,
+        color: _bgSoft,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const FaIcon(FontAwesomeIcons.facebook, size: 18, color: Color(0xFF1877F2)),
+              const FaIcon(FontAwesomeIcons.facebook, size: 18, color: _metaBlue),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(pageName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white)),
-                    Text('Page ID: $pageId', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+                    Text(pageName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _textDark)),
+                    Text('Page ID: $pageId', style: const TextStyle(fontSize: 11, color: _textMuted)),
                   ],
                 ),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: isSubscribed ? Colors.green.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.15),
+                  color: isSubscribed ? Colors.green.shade50 : Colors.amber.shade50,
                   borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: isSubscribed ? Colors.green.shade200 : Colors.amber.shade200),
                 ),
                 child: Text(
                   isSubscribed ? 'Subscribed' : 'Not Subscribed',
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
-                    color: isSubscribed ? Colors.greenAccent : Colors.amberAccent,
+                    color: isSubscribed ? Colors.green.shade800 : Colors.amber.shade900,
                   ),
                 ),
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: () => _testPageAccess(page['id']),
-                icon: const Icon(Icons.health_and_safety_outlined, size: 14),
-                label: const Text('Test Access', style: TextStyle(fontSize: 11)),
+                icon: const Icon(Icons.health_and_safety_outlined, size: 14, color: AppTheme.secondaryColor),
+                label: const Text('Test Access', style: TextStyle(fontSize: 11, color: AppTheme.secondaryColor)),
                 style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: _borderColor),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
               ),
             ],
           ),
           if (pageForms.isNotEmpty) ...[
             const SizedBox(height: 12),
-            const Divider(color: Colors.white10),
+            const Divider(color: _borderColor),
             const SizedBox(height: 8),
             Text(
               'Instant Forms (${pageForms.length})',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white70),
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _textDark),
             ),
             const SizedBox(height: 8),
             for (final f in pageForms) _buildFormRow(f),
@@ -669,19 +879,20 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _borderColor),
       ),
       child: Row(
         children: [
-          const Icon(Icons.assignment_outlined, size: 16, color: Colors.white54),
+          const Icon(Icons.assignment_outlined, size: 16, color: _textMuted),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(formName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
-                Text('ID: $formId', style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+                Text(formName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
+                Text('ID: $formId', style: const TextStyle(fontSize: 10, color: _textMuted)),
               ],
             ),
           ),
@@ -689,28 +900,38 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
             children: [
               Text(
                 isSyncEnabled ? 'Sync Enabled' : 'Sync Paused',
-                style: TextStyle(fontSize: 11, color: isSyncEnabled ? Colors.greenAccent : Colors.grey),
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: isSyncEnabled ? AppTheme.secondaryColor : _textMuted,
+                ),
               ),
               Transform.scale(
                 scale: 0.75,
                 child: Switch(
                   value: isSyncEnabled,
                   onChanged: (_) => _toggleFormSync(form),
-                  activeTrackColor: const Color(0xFF1877F2),
+                  activeThumbColor: AppTheme.primaryColor,
+                  activeTrackColor: AppTheme.primaryColor.withValues(alpha: 0.3),
                 ),
               ),
               const SizedBox(width: 8),
               ElevatedButton.icon(
                 onPressed: isSyncing ? null : () => _syncFormNow(form),
                 icon: isSyncing
-                    ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    ? const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
                     : const Icon(Icons.download_rounded, size: 14),
                 label: const Text('Sync now', style: TextStyle(fontSize: 11)),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1877F2).withValues(alpha: 0.2),
-                  foregroundColor: const Color(0xFF1877F2),
+                  backgroundColor: AppTheme.secondaryColor,
+                  foregroundColor: Colors.white,
                   elevation: 0,
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
               ),
             ],
@@ -720,7 +941,39 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
     );
   }
 
-  Widget _buildKpiMetricsRow() {
+  Widget _buildKpiMetricsRow(bool isMobile) {
+    if (isMobile) {
+      return Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: _buildKpiCard('Total Meta Leads', _analytics['total'].toString(), Icons.campaign_rounded, _metaBlue),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _buildKpiCard('Leads Today', _analytics['today'].toString(), Icons.today_rounded, AppTheme.accentColor),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _buildKpiCard('Contacted', _analytics['contacted'].toString(), Icons.send_rounded, Colors.purple),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _buildKpiCard('Engaged (Replied)', _analytics['engaged'].toString(), Icons.forum_rounded, Colors.orange.shade800),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _buildKpiCard('Converted', _analytics['converted'].toString(), Icons.verified_rounded, AppTheme.secondaryColor),
+        ],
+      );
+    }
+
     return LayoutBuilder(
       builder: (ctx, constraints) {
         final double width = (constraints.maxWidth - 48) / 5;
@@ -728,25 +981,28 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
           spacing: 12,
           runSpacing: 12,
           children: [
-            _buildKpiCard('Total Meta Leads', _analytics['total'].toString(), Icons.campaign_rounded, const Color(0xFF1877F2), width),
-            _buildKpiCard('Leads Today', _analytics['today'].toString(), Icons.today_rounded, Colors.tealAccent, width),
-            _buildKpiCard('Contacted (Templates)', _analytics['contacted'].toString(), Icons.send_rounded, Colors.purpleAccent, width),
-            _buildKpiCard('Engaged (Replied)', _analytics['engaged'].toString(), Icons.forum_rounded, Colors.amberAccent, width),
-            _buildKpiCard('Converted', _analytics['converted'].toString(), Icons.verified_rounded, Colors.greenAccent, width),
+            _buildKpiCard('Total Meta Leads', _analytics['total'].toString(), Icons.campaign_rounded, _metaBlue, width: width),
+            _buildKpiCard('Leads Today', _analytics['today'].toString(), Icons.today_rounded, AppTheme.accentColor, width: width),
+            _buildKpiCard('Contacted (Templates)', _analytics['contacted'].toString(), Icons.send_rounded, Colors.purple, width: width),
+            _buildKpiCard('Engaged (Replied)', _analytics['engaged'].toString(), Icons.forum_rounded, Colors.orange.shade800, width: width),
+            _buildKpiCard('Converted', _analytics['converted'].toString(), Icons.verified_rounded, AppTheme.secondaryColor, width: width),
           ],
         );
       },
     );
   }
 
-  Widget _buildKpiCard(String title, String value, IconData icon, Color color, double width) {
+  Widget _buildKpiCard(String title, String value, IconData icon, Color color, {double? width}) {
     return Container(
-      width: width < 160 ? 160 : width,
+      width: width != null ? (width < 160 ? 160 : width) : double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 6, offset: const Offset(0, 2)),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -754,75 +1010,90 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey.shade400)),
-              Icon(icon, size: 18, color: color),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: _textMuted),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, size: 16, color: color),
+              ),
             ],
           ),
           const SizedBox(height: 8),
           Text(
             value,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: _textDark),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildFiltersCard() {
+  Widget _buildFiltersCard(bool isMobile) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2)),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: InputDecoration(
-                    hintText: 'Search leads by name, phone, email, campaign, ad...',
-                    hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                    prefixIcon: const Icon(Icons.search, size: 18, color: Colors.grey),
-                    suffixIcon: _searchQuery.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear, size: 16),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                              _fetchLeads();
-                            },
-                          )
-                        : null,
-                    filled: true,
-                    fillColor: AppTheme.surfaceColor,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                  ),
-                  onSubmitted: (v) {
-                    setState(() => _searchQuery = v.trim());
-                    _fetchLeads();
-                  },
-                ),
+          if (isMobile) ...[
+            TextField(
+              controller: _searchController,
+              style: const TextStyle(color: _textDark, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: 'Search leads...',
+                hintStyle: const TextStyle(color: _textMuted, fontSize: 13),
+                prefixIcon: const Icon(Icons.search, size: 18, color: _textMuted),
+                suffixIcon: _searchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 16, color: _textMuted),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _searchQuery = '');
+                          _fetchLeads();
+                        },
+                      )
+                    : null,
+                filled: true,
+                fillColor: _bgSoft,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
               ),
-              const SizedBox(width: 12),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.date_range_rounded, size: 16),
+              onSubmitted: (v) {
+                setState(() => _searchQuery = v.trim());
+                _fetchLeads();
+              },
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.date_range_rounded, size: 16, color: _textDark),
                 label: Text(
                   _dateRange != null
                       ? '${DateFormat('MMM dd').format(_dateRange!.start)} - ${DateFormat('MMM dd').format(_dateRange!.end)}'
                       : 'Date Range',
-                  style: const TextStyle(fontSize: 12),
+                  style: const TextStyle(fontSize: 12, color: _textDark),
                 ),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white70,
-                  side: const BorderSide(color: Colors.white24),
+                  side: const BorderSide(color: _borderColor),
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
                 onPressed: () async {
                   final picked = await showCompactDateRangePicker(
@@ -835,15 +1106,73 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                   }
                 },
               ),
-            ],
-          ),
+            ),
+          ] else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    style: const TextStyle(color: _textDark, fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Search leads by name, phone, email, campaign, ad...',
+                      hintStyle: const TextStyle(color: _textMuted, fontSize: 13),
+                      prefixIcon: const Icon(Icons.search, size: 18, color: _textMuted),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 16, color: _textMuted),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                                _fetchLeads();
+                              },
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: _bgSoft,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                    ),
+                    onSubmitted: (v) {
+                      setState(() => _searchQuery = v.trim());
+                      _fetchLeads();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.date_range_rounded, size: 16, color: _textDark),
+                  label: Text(
+                    _dateRange != null
+                        ? '${DateFormat('MMM dd').format(_dateRange!.start)} - ${DateFormat('MMM dd').format(_dateRange!.end)}'
+                        : 'Date Range',
+                    style: const TextStyle(fontSize: 12, color: _textDark),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: _borderColor),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () async {
+                    final picked = await showCompactDateRangePicker(
+                      context: context,
+                      initialDateRange: _dateRange,
+                    );
+                    if (picked != null) {
+                      setState(() => _dateRange = picked);
+                      _fetchLeads();
+                    }
+                  },
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           Wrap(
-            spacing: 12,
+            spacing: 10,
             runSpacing: 10,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              // Ad Type Filter
               _buildDropdownFilter(
                 label: 'Type',
                 value: _selectedAdType,
@@ -857,7 +1186,6 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                   _fetchLeads();
                 },
               ),
-              // Platform Filter
               _buildDropdownFilter(
                 label: 'Platform',
                 value: _selectedPlatform,
@@ -871,7 +1199,6 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                   _fetchLeads();
                 },
               ),
-              // Form Filter
               if (_forms.isNotEmpty)
                 _buildDropdownFilter(
                   label: 'Form',
@@ -891,7 +1218,6 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
                     _fetchLeads();
                   },
                 ),
-              // Status Filter
               _buildDropdownFilter(
                 label: 'Status',
                 value: _selectedStatus,
@@ -924,58 +1250,81 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       decoration: BoxDecoration(
-        color: AppTheme.surfaceColor,
+        color: _bgSoft,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           value: value,
           items: items,
           onChanged: onChanged,
-          dropdownColor: AppTheme.surfaceColor,
-          style: const TextStyle(fontSize: 12, color: Colors.white),
-          icon: const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 18),
+          dropdownColor: Colors.white,
+          style: const TextStyle(fontSize: 12, color: _textDark),
+          icon: const Icon(Icons.arrow_drop_down, color: _textMuted, size: 18),
         ),
       ),
     );
   }
 
-  Widget _buildLeadsTableCard() {
+  Widget _buildLeadsTableCard(bool isMobile) {
     if (_leads.isEmpty) {
       return Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 48),
+        padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 16),
         decoration: BoxDecoration(
-          color: AppTheme.cardColor,
+          color: Colors.white,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
+          border: Border.all(color: _borderColor),
         ),
         child: Column(
           children: [
-            const Icon(Icons.campaign_outlined, size: 48, color: Colors.grey),
+            Icon(Icons.campaign_outlined, size: 48, color: Colors.grey.shade400),
             const SizedBox(height: 12),
             const Text(
               'No Meta Ads Leads Found',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _textDark),
             ),
             const SizedBox(height: 6),
             Text(
               _searchQuery.isNotEmpty
                   ? 'No results matching "$_searchQuery"'
                   : 'Instant Form submissions from Facebook & Instagram will display here within seconds.',
-              style: TextStyle(fontSize: 13, color: Colors.grey.shade400),
+              style: const TextStyle(fontSize: 13, color: _textMuted),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
       );
     }
 
+    if (isMobile) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'Meta Leads (${_leads.length})',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _textDark),
+            ),
+          ),
+          for (final lead in _leads) ...[
+            _buildMobileLeadCard(lead),
+            const SizedBox(height: 10),
+          ],
+        ],
+      );
+    }
+
     return Container(
       decoration: BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: _borderColor),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2)),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -987,140 +1336,318 @@ class _MetaAdsLeadsPageState extends State<MetaAdsLeadsPage> {
               children: [
                 Text(
                   'Meta Leads (${_leads.length})',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _textDark),
                 ),
-                Text(
+                const Text(
                   'Auto-synced via Meta Webhooks & Graph API v26.0',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+                  style: TextStyle(fontSize: 11, color: _textMuted),
                 ),
               ],
             ),
           ),
-          const Divider(height: 1, color: Colors.white10),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              headingRowColor: WidgetStateProperty.all(AppTheme.surfaceColor),
-              columns: const [
-                DataColumn(label: Text('Contact', style: TextStyle(fontWeight: FontWeight.bold))),
-                DataColumn(label: Text('Type & Platform', style: TextStyle(fontWeight: FontWeight.bold))),
-                DataColumn(label: Text('Form / Campaign', style: TextStyle(fontWeight: FontWeight.bold))),
-                DataColumn(label: Text('Submission Date', style: TextStyle(fontWeight: FontWeight.bold))),
-                DataColumn(label: Text('Status', style: TextStyle(fontWeight: FontWeight.bold))),
-                DataColumn(label: Text('Actions', style: TextStyle(fontWeight: FontWeight.bold))),
-              ],
-              rows: _leads.map((lead) {
-                final name = lead['name']?.toString() ?? 'Unnamed Lead';
-                final phone = lead['mobileNumber']?.toString() ?? '';
-                final needsAttention = lead['needsAttention'] == true;
-                final adType = lead['adType']?.toString() ?? (lead['meta']?['adType']?.toString() ?? 'instant_form');
-                final platform = lead['platform']?.toString() ?? (lead['meta']?['platform']?.toString() ?? 'unknown');
-                final formName = lead['meta']?['formName']?.toString() ?? lead['formName']?.toString() ?? 'Instant Form';
-                final campaignName = lead['meta']?['campaignName']?.toString() ?? '';
-                final createdAt = DateTime.tryParse(lead['createdAt']?.toString() ?? '');
-                final status = lead['status']?.toString() ?? 'new';
-
-                return DataRow(
-                  cells: [
-                    // Contact
-                    DataCell(
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13)),
-                          Row(
-                            children: [
-                              Text(phone.isNotEmpty ? '+$phone' : 'No phone number',
-                                  style: TextStyle(fontSize: 11, color: phone.isNotEmpty ? Colors.grey.shade400 : Colors.redAccent)),
-                              if (needsAttention) ...[
-                                const SizedBox(width: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(4)),
-                                  child: const Text('Needs Attention', style: TextStyle(fontSize: 9, color: Colors.redAccent, fontWeight: FontWeight.bold)),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ],
+          const Divider(height: 1, color: _borderColor),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final double tableWidth = constraints.maxWidth > 950 ? constraints.maxWidth : 950.0;
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: tableWidth,
+                  child: DataTable(
+                    dataRowMinHeight: 56,
+                    dataRowMaxHeight: 68,
+                    columnSpacing: 16,
+                    horizontalMargin: 20,
+                    headingRowColor: WidgetStateProperty.all(_bgSoft),
+                    headingTextStyle: const TextStyle(fontWeight: FontWeight.bold, color: _textDark, fontSize: 13),
+                    columns: const [
+                      DataColumn(
+                        label: Text('Contact'),
+                        columnWidth: FlexColumnWidth(2.3),
                       ),
-                    ),
-                    // Type & Platform
-                    DataCell(
-                      Row(
-                        children: [
-                          if (platform == 'ig')
-                            const FaIcon(FontAwesomeIcons.instagram, size: 14, color: Colors.pinkAccent)
-                          else
-                            const FaIcon(FontAwesomeIcons.facebook, size: 14, color: Color(0xFF1877F2)),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: adType == 'ctwa' ? Colors.teal.withValues(alpha: 0.15) : Colors.purple.withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              adType == 'ctwa' ? 'CTWA' : (platform == 'ig' ? 'IG Form' : 'FB Form'),
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: adType == 'ctwa' ? Colors.tealAccent : Colors.purpleAccent,
+                      DataColumn(
+                        label: Text('Type & Platform'),
+                        columnWidth: FlexColumnWidth(1.5),
+                      ),
+                      DataColumn(
+                        label: Text('Form / Campaign'),
+                        columnWidth: FlexColumnWidth(2.4),
+                      ),
+                      DataColumn(
+                        label: Text('Submission Date'),
+                        columnWidth: FlexColumnWidth(1.8),
+                      ),
+                      DataColumn(
+                        label: Text('Status'),
+                        columnWidth: FlexColumnWidth(1.2),
+                      ),
+                      DataColumn(
+                        label: Text('Actions'),
+                        columnWidth: FlexColumnWidth(1.0),
+                      ),
+                    ],
+                    rows: _leads.map((lead) {
+                      final name = lead['name']?.toString() ?? 'Unnamed Lead';
+                      final phone = lead['mobileNumber']?.toString() ?? '';
+                      final needsAttention = lead['needsAttention'] == true;
+                      final adType = lead['adType']?.toString() ?? (lead['meta']?['adType']?.toString() ?? 'instant_form');
+                      final platform = lead['platform']?.toString() ?? (lead['meta']?['platform']?.toString() ?? 'unknown');
+                      final formName = lead['meta']?['formName']?.toString() ?? lead['formName']?.toString() ?? 'Instant Form';
+                      final campaignName = lead['meta']?['campaignName']?.toString() ?? '';
+                      final createdAt = DateTime.tryParse(lead['createdAt']?.toString() ?? '');
+                      final status = lead['status']?.toString() ?? 'new';
+
+                      return DataRow(
+                        cells: [
+                          // Contact
+                          DataCell(
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, color: _textDark, fontSize: 13),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        phone.isNotEmpty ? '+$phone' : 'No phone number',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: phone.isNotEmpty ? _textMuted : Colors.red.shade700,
+                                        ),
+                                      ),
+                                      if (needsAttention) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                          decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(4)),
+                                          child: Text('Needs Attention', style: TextStyle(fontSize: 9, color: Colors.red.shade800, fontWeight: FontWeight.bold)),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ],
                               ),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                    // Form / Campaign
-                    DataCell(
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(formName, style: const TextStyle(fontSize: 12, color: Colors.white)),
-                          if (campaignName.isNotEmpty)
-                            Text(campaignName, style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
-                        ],
-                      ),
-                    ),
-                    // Submission Date
-                    DataCell(
-                      Text(
-                        createdAt != null ? DateFormat('MMM dd, yyyy • hh:mm a').format(createdAt) : '—',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
-                      ),
-                    ),
-                    // Status
-                    DataCell(
-                      _StatusPillDropdown(
-                        status: status,
-                        onChanged: (newSt) => _updateLeadStatus(lead['_id'], newSt),
-                      ),
-                    ),
-                    // Actions
-                    DataCell(
-                      Row(
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.visibility_outlined, size: 18, color: Color(0xFF1877F2)),
-                            tooltip: 'View Touchpoint Attribution',
-                            onPressed: () => _showLeadDetailsDrawer(lead),
-                          ),
-                          if (phone.isNotEmpty)
-                            IconButton(
-                              icon: const FaIcon(FontAwesomeIcons.whatsapp, size: 18, color: Colors.greenAccent),
-                              tooltip: 'Open in WhatsApp',
-                              onPressed: () => webOpenUrl('https://wa.me/$phone'),
+                          // Type & Platform
+                          DataCell(
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (platform == 'ig')
+                                  const FaIcon(FontAwesomeIcons.instagram, size: 14, color: Colors.pink)
+                                else
+                                  const FaIcon(FontAwesomeIcons.facebook, size: 14, color: _metaBlue),
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: adType == 'ctwa' ? Colors.teal.shade50 : Colors.purple.shade50,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: adType == 'ctwa' ? Colors.teal.shade200 : Colors.purple.shade200),
+                                  ),
+                                  child: Text(
+                                    adType == 'ctwa' ? 'CTWA' : (platform == 'ig' ? 'IG Form' : 'FB Form'),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: adType == 'ctwa' ? Colors.teal.shade800 : Colors.purple.shade800,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
+                          ),
+                          // Form / Campaign
+                          DataCell(
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    formName,
+                                    style: const TextStyle(fontSize: 12, color: _textDark),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  if (campaignName.isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      campaignName,
+                                      style: const TextStyle(fontSize: 10, color: _textMuted),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                          // Submission Date
+                          DataCell(
+                            Text(
+                              createdAt != null ? DateFormat('MMM dd, yyyy • hh:mm a').format(createdAt) : '—',
+                              style: const TextStyle(fontSize: 11, color: _textMuted),
+                            ),
+                          ),
+                          // Status
+                          DataCell(
+                            _StatusPillDropdown(
+                              status: status,
+                              onChanged: (newSt) => _updateLeadStatus(lead['_id'], newSt),
+                            ),
+                          ),
+                          // Actions
+                          DataCell(
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.visibility_outlined, size: 18, color: _metaBlue),
+                                  tooltip: 'View Touchpoint Attribution',
+                                  onPressed: () => _showLeadDetailsDrawer(lead),
+                                ),
+                                if (phone.isNotEmpty)
+                                  IconButton(
+                                    icon: const FaIcon(FontAwesomeIcons.whatsapp, size: 18, color: AppTheme.primaryColor),
+                                    tooltip: 'Open in WhatsApp',
+                                    onPressed: () => webOpenUrl('https://wa.me/$phone'),
+                                  ),
+                              ],
+                            ),
+                          ),
                         ],
+                      );
+                    }).toList(),
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileLeadCard(Map<String, dynamic> lead) {
+    final name = lead['name']?.toString() ?? 'Unnamed Lead';
+    final phone = lead['mobileNumber']?.toString() ?? '';
+    final adType = lead['adType']?.toString() ?? (lead['meta']?['adType']?.toString() ?? 'instant_form');
+    final platform = lead['platform']?.toString() ?? (lead['meta']?['platform']?.toString() ?? 'unknown');
+    final formName = lead['meta']?['formName']?.toString() ?? lead['formName']?.toString() ?? 'Instant Form';
+    final campaignName = lead['meta']?['campaignName']?.toString() ?? '';
+    final createdAt = DateTime.tryParse(lead['createdAt']?.toString() ?? '');
+    final status = lead['status']?.toString() ?? 'new';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _borderColor),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.02), blurRadius: 6, offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    if (platform == 'ig')
+                      const FaIcon(FontAwesomeIcons.instagram, size: 15, color: Colors.pink)
+                    else
+                      const FaIcon(FontAwesomeIcons.facebook, size: 15, color: _metaBlue),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _textDark),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
-                );
-              }).toList(),
-            ),
+                ),
+              ),
+              _StatusPillDropdown(
+                status: status,
+                onChanged: (newSt) => _updateLeadStatus(lead['_id'], newSt),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Icon(Icons.phone_outlined, size: 13, color: phone.isNotEmpty ? _textMuted : Colors.red.shade700),
+              const SizedBox(width: 4),
+              Text(
+                phone.isNotEmpty ? '+$phone' : 'No phone number',
+                style: TextStyle(fontSize: 12, color: phone.isNotEmpty ? _textMuted : Colors.red.shade700),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: adType == 'ctwa' ? Colors.teal.shade50 : Colors.purple.shade50,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  adType == 'ctwa' ? 'CTWA' : (platform == 'ig' ? 'IG Form' : 'FB Form'),
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: adType == 'ctwa' ? Colors.teal.shade800 : Colors.purple.shade800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Divider(height: 1, color: _borderColor),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(formName, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: _textDark)),
+                    if (campaignName.isNotEmpty)
+                      Text(campaignName, style: const TextStyle(fontSize: 10, color: _textMuted)),
+                    if (createdAt != null)
+                      Text(DateFormat('MMM dd, hh:mm a').format(createdAt), style: const TextStyle(fontSize: 10, color: _textMuted)),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.visibility_outlined, size: 18, color: _metaBlue),
+                tooltip: 'Details',
+                onPressed: () => _showLeadDetailsDrawer(lead),
+              ),
+              if (phone.isNotEmpty)
+                IconButton(
+                  icon: const FaIcon(FontAwesomeIcons.whatsapp, size: 18, color: AppTheme.primaryColor),
+                  tooltip: 'WhatsApp',
+                  onPressed: () => webOpenUrl('https://wa.me/$phone'),
+                ),
+            ],
           ),
         ],
       ),
@@ -1137,35 +1664,54 @@ class _StatusPillDropdown extends StatelessWidget {
   Color _getStatusColor(String s) {
     switch (s) {
       case 'new':
-        return Colors.blue;
+        return Colors.blue.shade700;
       case 'contacted':
-        return Colors.purpleAccent;
+        return Colors.purple.shade700;
       case 'engaged':
-        return Colors.amberAccent;
+        return Colors.orange.shade800;
       case 'converted':
-        return Colors.greenAccent;
+        return AppTheme.secondaryColor;
       case 'failed':
-        return Colors.redAccent;
+        return Colors.red.shade700;
       default:
-        return Colors.grey;
+        return Colors.grey.shade700;
+    }
+  }
+
+  Color _getStatusBg(String s) {
+    switch (s) {
+      case 'new':
+        return Colors.blue.shade50;
+      case 'contacted':
+        return Colors.purple.shade50;
+      case 'engaged':
+        return Colors.orange.shade50;
+      case 'converted':
+        return Colors.green.shade50;
+      case 'failed':
+        return Colors.red.shade50;
+      default:
+        return Colors.grey.shade100;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final color = _getStatusColor(status);
+    final bg = _getStatusBg(status);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
+        color: bg,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           value: status,
           isDense: true,
-          dropdownColor: AppTheme.cardColor,
+          dropdownColor: Colors.white,
           icon: Icon(Icons.arrow_drop_down, color: color, size: 16),
           style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color),
           items: const [
@@ -1189,6 +1735,37 @@ class _LeadDetailsDrawer extends StatelessWidget {
 
   const _LeadDetailsDrawer({required this.lead});
 
+  static const Color _textDark = Color(0xFF1E293B);
+  static const Color _textMuted = Color(0xFF64748B);
+  static const Color _borderColor = Color(0xFFE2E8F0);
+  static const Color _bgSoft = Color(0xFFF8FAFC);
+  static const Color _metaBlue = Color(0xFF1877F2);
+
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _textDark),
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(label, style: const TextStyle(fontSize: 11, color: _textMuted, fontWeight: FontWeight.w500)),
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: _textDark)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final meta = (lead['meta'] as Map<String, dynamic>?) ?? {};
@@ -1203,7 +1780,7 @@ class _LeadDetailsDrawer extends StatelessWidget {
       height: MediaQuery.of(context).size.height * 0.85,
       padding: const EdgeInsets.all(24),
       decoration: const BoxDecoration(
-        color: AppTheme.cardColor,
+        color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(
@@ -1217,29 +1794,29 @@ class _LeadDetailsDrawer extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1877F2).withValues(alpha: 0.15),
+                      color: _metaBlue.withValues(alpha: 0.12),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.person, color: Color(0xFF1877F2)),
+                    child: const Icon(Icons.person, color: _metaBlue),
                   ),
                   const SizedBox(width: 12),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                      Text(phone.isNotEmpty ? '+$phone' : 'No phone number', style: const TextStyle(fontSize: 13, color: Colors.white70)),
+                      Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _textDark)),
+                      Text(phone.isNotEmpty ? '+$phone' : 'No phone number', style: const TextStyle(fontSize: 13, color: _textMuted)),
                     ],
                   ),
                 ],
               ),
               IconButton(
-                icon: const Icon(Icons.close_rounded, color: Colors.grey),
+                icon: const Icon(Icons.close_rounded, color: _textMuted),
                 onPressed: () => Navigator.pop(context),
               ),
             ],
           ),
           const SizedBox(height: 16),
-          const Divider(color: Colors.white10),
+          const Divider(color: _borderColor),
           const SizedBox(height: 12),
           Expanded(
             child: SingleChildScrollView(
@@ -1251,7 +1828,11 @@ class _LeadDetailsDrawer extends StatelessWidget {
                   const SizedBox(height: 8),
                   Container(
                     padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: AppTheme.surfaceColor, borderRadius: BorderRadius.circular(12)),
+                    decoration: BoxDecoration(
+                      color: _bgSoft,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: _borderColor),
+                    ),
                     child: Column(
                       children: [
                         _buildDetailRow('Platform', meta['platform'] == 'ig' ? 'Instagram' : 'Facebook'),
@@ -1274,7 +1855,11 @@ class _LeadDetailsDrawer extends StatelessWidget {
                     const SizedBox(height: 8),
                     Container(
                       padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(color: AppTheme.surfaceColor, borderRadius: BorderRadius.circular(12)),
+                      decoration: BoxDecoration(
+                        color: _bgSoft,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: _borderColor),
+                      ),
                       child: Column(
                         children: [
                           if (email.isNotEmpty) _buildDetailRow('Email', email),
@@ -1288,36 +1873,45 @@ class _LeadDetailsDrawer extends StatelessWidget {
                   ],
 
                   // Touchpoint History
-                  _buildSectionTitle('Attribution Touchpoints (${touchpoints.length})'),
-                  const SizedBox(height: 8),
-                  for (final tp in touchpoints) ...[
+                  if (touchpoints.isNotEmpty) ...[
+                    _buildSectionTitle('Touchpoint History (${touchpoints.length})'),
+                    const SizedBox(height: 8),
                     Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: AppTheme.surfaceColor,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white10),
+                        color: _bgSoft,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: _borderColor),
                       ),
-                      child: Row(
+                      child: Column(
                         children: [
-                          const Icon(Icons.circle, size: 8, color: Color(0xFF1877F2)),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '${tp['adType'] == 'ctwa' ? "Click-to-WhatsApp" : "Instant Form"} • ${tp['formName'] ?? tp['adName'] ?? "Ad"}',
-                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
-                                ),
-                                Text(
-                                  tp['at'] != null ? DateFormat('MMM dd, yyyy • hh:mm a').format(DateTime.parse(tp['at'])) : '—',
-                                  style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
-                                ),
-                              ],
+                          for (final tp in touchpoints)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(Icons.circle, size: 8, color: _metaBlue),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          tp['event']?.toString() ?? 'Event',
+                                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark),
+                                        ),
+                                        if (tp['timestamp'] != null)
+                                          Text(
+                                            DateFormat('MMM dd, hh:mm a').format(DateTime.parse(tp['timestamp'])),
+                                            style: const TextStyle(fontSize: 10, color: _textMuted),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
                         ],
                       ),
                     ),
@@ -1326,23 +1920,6 @@ class _LeadDetailsDrawer extends StatelessWidget {
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white70));
-  }
-
-  Widget _buildDetailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 140, child: Text(label, style: TextStyle(fontSize: 12, color: Colors.grey.shade400))),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w500))),
         ],
       ),
     );

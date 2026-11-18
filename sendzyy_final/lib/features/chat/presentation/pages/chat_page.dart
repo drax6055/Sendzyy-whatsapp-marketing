@@ -866,12 +866,16 @@ class _ChatPageState extends State<ChatPage> {
               child: Builder(
                 builder: (context) {
                   final reversedMessages = state.messages.reversed.toList();
+                  final hasMessages = reversedMessages.isNotEmpty;
                   return ListView.builder(
                     controller: _messagesScrollController,
                     reverse: true,
                     physics: const AlwaysScrollableScrollPhysics(),
-                    itemCount: reversedMessages.length,
+                    itemCount: reversedMessages.length + (hasMessages ? 1 : 0),
                     itemBuilder: (context, index) {
+                      if (hasMessages && index == reversedMessages.length) {
+                        return _buildHistoryLimitBanner();
+                      }
                       final msg = reversedMessages[index];
                       return _buildMessageBubble(msg, state.messages);
                     },
@@ -888,6 +892,37 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+
+  Widget _buildHistoryLimitBanner() {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 16),
+      alignment: Alignment.center,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.amber.shade50.withValues(alpha: 0.85),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.amber.shade200, width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.history_toggle_off_rounded, size: 14, color: Colors.amber.shade900),
+            const SizedBox(width: 6),
+            Text(
+              'Showing messages from the last 15 days',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w500,
+                color: Colors.amber.shade900,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildMessageBubble(Map<String, dynamic> msg, List<Map<String, dynamic>> allMessages) {
     final bloc = context.read<ChatBloc>();
     final isMobile = ResponsiveHelper.isMobile(context);
@@ -895,8 +930,8 @@ class _ChatPageState extends State<ChatPage> {
     return MessageRenderer(
       key: ValueKey(msgKey),
       msg: msg,
-      allMessages: allMessages,
       maxWidth: MediaQuery.of(context).size.width * (isMobile ? 0.75 : 0.4),
+      allMessages: allMessages,
       formatTime: _formatMessageTime,
       baseUrl: AppConstants.baseUrl,
       authToken: bloc.authToken,
@@ -1108,8 +1143,7 @@ class _ChatPageState extends State<ChatPage> {
                   'Send Attachment',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                const SizedBox(height: 20),
-                // Row 1: Camera options (mobile only) + Gallery/File options
+                const SizedBox(height: 20),   
                 if (!kIsWeb) ...[
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -3129,6 +3163,7 @@ class _HoverableMessageBubbleState extends State<_HoverableMessageBubble> {
           Flexible(child: widget.child),
           if (_isHovered && widget.isMe && widget.onReply != null) replyBtn,
         ],
+
       ),
     );
   }

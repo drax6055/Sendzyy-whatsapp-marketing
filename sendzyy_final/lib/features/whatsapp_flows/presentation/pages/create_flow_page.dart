@@ -309,11 +309,14 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create WhatsApp Flow', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(
+          isDesktop ? 'Create WhatsApp Flow' : 'Create Flow',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
         elevation: 0,
         actions: [
           Padding(
-            padding: const EdgeInsets.only(right: 16),
+            padding: EdgeInsets.only(right: isDesktop ? 16 : 12),
             child: ElevatedButton.icon(
               onPressed: _isPublishing ? null : _handleSaveAndPublish,
               icon: _isPublishing
@@ -322,11 +325,11 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : const Icon(Icons.rocket_launch_rounded, size: 18),
-              label: Text(_isPublishing ? 'Publishing...' : 'Save & Publish to Meta'),
+                  : const Icon(Icons.rocket_launch_rounded, size: 16),
+              label: Text(_isPublishing ? 'Publishing...' : (isDesktop ? 'Save & Publish to Meta' : 'Publish')),
               style: ElevatedButton.styleFrom(
                 minimumSize: Size.zero,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: EdgeInsets.symmetric(horizontal: isDesktop ? 16 : 12, vertical: 8),
                 backgroundColor: const Color(0xFF25D366),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -507,40 +510,56 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
             validator: (v) => (v == null || v.trim().isEmpty) ? 'Please enter a title' : null,
           ),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  key: ValueKey('category_dropdown_$_selectedCategory'),
-                  initialValue: _selectedCategory,
-                  decoration: _buildInputDecoration(labelText: 'Category'),
-                  items: const [
-                    DropdownMenuItem(value: 'LEAD_GENERATION', child: Text('Lead Generation')),
-                    DropdownMenuItem(value: 'APPOINTMENT_BOOKING', child: Text('Appointment Booking')),
-                    DropdownMenuItem(value: 'CUSTOMER_SUPPORT', child: Text('Customer Support')),
-                    DropdownMenuItem(value: 'SURVEY', child: Text('Survey / Feedback')),
-                    DropdownMenuItem(value: 'SIGN_UP', child: Text('Sign Up / Registration')),
-                    DropdownMenuItem(value: 'SIGN_IN', child: Text('Sign In / Authentication')),
-                    DropdownMenuItem(value: 'CONTACT_US', child: Text('Contact Us')),
-                    DropdownMenuItem(value: 'OTHER', child: Text('Other')),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isNarrow = constraints.maxWidth < 550;
+              final categoryField = DropdownButtonFormField<String>(
+                key: ValueKey('category_dropdown_$_selectedCategory'),
+                initialValue: _selectedCategory,
+                isExpanded: true,
+                decoration: _buildInputDecoration(labelText: 'Category'),
+                items: const [
+                  DropdownMenuItem(value: 'LEAD_GENERATION', child: Text('Lead Generation')),
+                  DropdownMenuItem(value: 'APPOINTMENT_BOOKING', child: Text('Appointment Booking')),
+                  DropdownMenuItem(value: 'CUSTOMER_SUPPORT', child: Text('Customer Support')),
+                  DropdownMenuItem(value: 'SURVEY', child: Text('Survey / Feedback')),
+                  DropdownMenuItem(value: 'SIGN_UP', child: Text('Sign Up / Registration')),
+                  DropdownMenuItem(value: 'SIGN_IN', child: Text('Sign In / Authentication')),
+                  DropdownMenuItem(value: 'CONTACT_US', child: Text('Contact Us')),
+                  DropdownMenuItem(value: 'OTHER', child: Text('Other')),
+                ],
+                onChanged: (val) {
+                  if (val != null) setState(() => _selectedCategory = val);
+                },
+              );
+
+              final ctaField = TextFormField(
+                controller: _ctaController,
+                onChanged: (_) => setState(() {}),
+                decoration: _buildInputDecoration(
+                  labelText: 'Button Label (CTA)',
+                  hintText: 'e.g. Open Form / Book Now',
+                ),
+              );
+
+              if (isNarrow) {
+                return Column(
+                  children: [
+                    categoryField,
+                    const SizedBox(height: 16),
+                    ctaField,
                   ],
-                  onChanged: (val) {
-                    if (val != null) setState(() => _selectedCategory = val);
-                  },
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: TextFormField(
-                  controller: _ctaController,
-                  onChanged: (_) => setState(() {}),
-                  decoration: _buildInputDecoration(
-                    labelText: 'Button Label (CTA)',
-                    hintText: 'e.g. Open Form / Book Now',
-                  ),
-                ),
-              ),
-            ],
+                );
+              }
+
+              return Row(
+                children: [
+                  Expanded(child: categoryField),
+                  const SizedBox(width: 16),
+                  Expanded(child: ctaField),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 16),
           TextFormField(
@@ -558,23 +577,27 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Form Questions & Fields', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  Text(
-                    '${_fields.length} questions in this flow (drag handle to reorder)',
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                  ),
-                ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Form Questions & Fields', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    Text(
+                      '${_fields.length} questions in this flow (drag handle to reorder)',
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 8),
               ElevatedButton.icon(
                 onPressed: _addNewField,
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('Add Field'),
                 style: ElevatedButton.styleFrom(
                   minimumSize: Size.zero,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   backgroundColor: AppTheme.primaryColor,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -661,18 +684,21 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
           // Tabs: [ Without endpoint ] | [ With endpoint ]
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                _buildEndpointTabButton(
-                  title: 'Without endpoint',
-                  type: MetaFlowEndpointType.withoutEndpoint,
-                ),
-                const SizedBox(width: 8),
-                _buildEndpointTabButton(
-                  title: 'With endpoint',
-                  type: MetaFlowEndpointType.withEndpoint,
-                ),
-              ],
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildEndpointTabButton(
+                    title: 'Without endpoint',
+                    type: MetaFlowEndpointType.withoutEndpoint,
+                  ),
+                  const SizedBox(width: 8),
+                  _buildEndpointTabButton(
+                    title: 'With endpoint',
+                    type: MetaFlowEndpointType.withEndpoint,
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -787,7 +813,8 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                   ),
                   const SizedBox(height: 3),
                   if (template.hasEndpointInfo) ...[
-                    Row(
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Text(
                           'Endpoint template available. ',
@@ -883,38 +910,43 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                     color: typeColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
                     field.type.toUpperCase(),
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: typeColor),
+                    style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: typeColor),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 Text(
                   '#${index + 1}',
                   style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF94A3B8)),
                 ),
                 const Spacer(),
                 Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('Required', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF475569))),
-                    const SizedBox(width: 4),
-                    Switch(
-                      value: field.required,
-                      activeThumbColor: AppTheme.primaryColor,
-                      onChanged: (val) {
-                        setState(() => field.required = val);
-                      },
+                    const Text('Req', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500, color: Color(0xFF475569))),
+                    const SizedBox(width: 2),
+                    Transform.scale(
+                      scale: 0.8,
+                      child: Switch(
+                        value: field.required,
+                        activeThumbColor: AppTheme.primaryColor,
+                        onChanged: (val) {
+                          setState(() => field.required = val);
+                        },
+                      ),
                     ),
-                    const SizedBox(width: 4),
                     IconButton(
                       tooltip: 'Delete field',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                       icon: const Icon(Icons.delete_outline, color: Color(0xFFEF4444), size: 20),
                       onPressed: () {
                         setState(() => _fields.removeAt(index));
@@ -943,10 +975,12 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
             // Options Input for dropdown / radio / checkbox
             if (field.type == 'dropdown' || field.type == 'radio' || field.type == 'checkbox') ...[
               const SizedBox(height: 14),
-              Row(
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 6,
+                runSpacing: 4,
                 children: [
                   const Text('Answer Choices (one per line):', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF334155))),
-                  const SizedBox(width: 6),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                     decoration: BoxDecoration(

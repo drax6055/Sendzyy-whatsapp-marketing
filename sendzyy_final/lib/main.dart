@@ -48,7 +48,7 @@ void main() async {
     debugPrint('[CountryCodeService] Init error: $e');
   }
   runApp(const MyApp());
-}
+} 
 
 class MyApp extends StatefulWidget {
   const MyApp({super.key});

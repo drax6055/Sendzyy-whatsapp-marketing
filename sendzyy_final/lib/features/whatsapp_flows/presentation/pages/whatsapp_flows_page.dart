@@ -836,32 +836,78 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                                 backgroundColor: Color(0xFFDCFCE7),
                                 child: Icon(Icons.check, color: Color(0xFF16A34A), size: 18),
                               ),
-                              title: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      sub.contactName.isNotEmpty ? sub.contactName : sub.contactId,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                                    ),
-                                  ),
-                                  if (sub.flowName.isNotEmpty)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFEFF6FF),
-                                        borderRadius: BorderRadius.circular(6),
-                                        border: Border.all(color: const Color(0xFFBFDBFE)),
-                                      ),
-                                      child: Text(
-                                        sub.flowName,
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: Color(0xFF2563EB),
+                              title: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final isTileMobile = constraints.maxWidth < 450;
+                                  if (isTileMobile) {
+                                    return Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          sub.contactName.isNotEmpty ? sub.contactName : sub.contactId,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        if (sub.flowName.isNotEmpty) ...[
+                                          const SizedBox(height: 5),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFEFF6FF),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(color: const Color(0xFFBFDBFE)),
+                                            ),
+                                            child: Text(
+                                              sub.flowName,
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                                color: Color(0xFF2563EB),
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    );
+                                  }
+
+                                  return Row(
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          sub.contactName.isNotEmpty ? sub.contactName : sub.contactId,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                          overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
-                                    ),
-                                ],
+                                      if (sub.flowName.isNotEmpty) ...[
+                                        const SizedBox(width: 8),
+                                        Flexible(
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFEFF6FF),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(color: const Color(0xFFBFDBFE)),
+                                            ),
+                                            child: Text(
+                                              sub.flowName,
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                                color: Color(0xFF2563EB),
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  );
+                                },
                               ),
                               subtitle: Padding(
                                 padding: const EdgeInsets.only(top: 4),
@@ -892,9 +938,12 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                                           ),
                                           const Spacer(),
                                           if (sub.flowName.isNotEmpty)
-                                            Text(
-                                              'Flow: ${sub.flowName}',
-                                              style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                                            Flexible(
+                                              child: Text(
+                                                'Flow: ${sub.flowName}',
+                                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
                                             ),
                                         ],
                                       ),
@@ -927,139 +976,195 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
     final bool filterMatchesFlow = hasFilter && _flows.any((f) => f.flowId == _selectedFlowFilterId);
     final dropdownValue = hasFilter && filterMatchesFlow ? _selectedFlowFilterId! : 'all';
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            hasFilter ? Icons.filter_alt_rounded : Icons.filter_alt_outlined,
-            size: 18,
-            color: hasFilter ? const Color(0xFF16A34A) : Colors.grey.shade600,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 560;
+
+        final dropdownWidget = Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: hasFilter ? const Color(0xFF86EFAC) : const Color(0xFFE2E8F0),
+            ),
           ),
-          const SizedBox(width: 8),
-          const Text(
-            'Filter by Template:',
-            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF475569)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: hasFilter ? const Color(0xFF86EFAC) : const Color(0xFFE2E8F0),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: dropdownValue,
+              isExpanded: true,
+              icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF64748B)),
+              style: const TextStyle(fontSize: 13, color: Color(0xFF1E293B)),
+              items: [
+                DropdownMenuItem<String>(
+                  value: 'all',
+                  child: Row(
+                    children: [
+                      const Text('All Templates / Flows', style: TextStyle(fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade200,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '${_flows.fold<int>(0, (sum, f) => sum + f.submissionsCount)}',
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade700, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: dropdownValue,
-                  isExpanded: true,
-                  icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF64748B)),
-                  style: const TextStyle(fontSize: 13, color: Color(0xFF1E293B)),
-                  items: [
-                    DropdownMenuItem<String>(
-                      value: 'all',
-                      child: Row(
-                        children: [
-                          const Text('All Templates / Flows', style: TextStyle(fontWeight: FontWeight.w600)),
-                          const Spacer(),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade200,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              '${_flows.fold<int>(0, (sum, f) => sum + f.submissionsCount)}',
-                              style: TextStyle(fontSize: 11, color: Colors.grey.shade700, fontWeight: FontWeight.bold),
+                ..._flows.map((flow) {
+                  final isSelected = _selectedFlowFilterId == flow.flowId;
+                  return DropdownMenuItem<String>(
+                    value: flow.flowId,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            flow.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                              color: isSelected ? const Color(0xFF16A34A) : const Color(0xFF1E293B),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                    ..._flows.map((flow) {
-                      final isSelected = _selectedFlowFilterId == flow.flowId;
-                      return DropdownMenuItem<String>(
-                        value: flow.flowId,
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                flow.name,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                  color: isSelected ? const Color(0xFF16A34A) : const Color(0xFF1E293B),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: flow.submissionsCount > 0 ? const Color(0xFFDCFCE7) : Colors.grey.shade100,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                '${flow.submissionsCount}',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: flow.submissionsCount > 0 ? const Color(0xFF16A34A) : Colors.grey.shade600,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
-                      );
-                    }),
-                  ],
-                  onChanged: (newFlowId) {
-                    if (newFlowId == null) return;
-                    setState(() {
-                      if (newFlowId == 'all') {
-                        _selectedFlowFilterId = null;
-                        _selectedFlowFilterName = null;
-                      } else {
-                        _selectedFlowFilterId = newFlowId;
-                        final matched = _flows.where((f) => f.flowId == newFlowId).firstOrNull;
-                        _selectedFlowFilterName = matched?.name ?? newFlowId;
-                      }
-                    });
-                    _loadSubmissions(flowId: newFlowId);
-                  },
-                ),
-              ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: flow.submissionsCount > 0 ? const Color(0xFFDCFCE7) : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '${flow.submissionsCount}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: flow.submissionsCount > 0 ? const Color(0xFF16A34A) : Colors.grey.shade600,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+              onChanged: (newFlowId) {
+                if (newFlowId == null) return;
+                setState(() {
+                  if (newFlowId == 'all') {
+                    _selectedFlowFilterId = null;
+                    _selectedFlowFilterName = null;
+                  } else {
+                    _selectedFlowFilterId = newFlowId;
+                    final matched = _flows.where((f) => f.flowId == newFlowId).firstOrNull;
+                    _selectedFlowFilterName = matched?.name ?? newFlowId;
+                  }
+                });
+                _loadSubmissions(flowId: newFlowId);
+              },
             ),
           ),
-          if (hasFilter) ...[
-            const SizedBox(width: 8),
-            TextButton.icon(
-              onPressed: () {
-                setState(() {
-                  _selectedFlowFilterId = null;
-                  _selectedFlowFilterName = null;
-                });
-                _loadSubmissions(flowId: 'all');
-              },
-              icon: const Icon(Icons.clear, size: 14, color: Color(0xFFEF4444)),
-              label: const Text('Show All', style: TextStyle(fontSize: 12, color: Color(0xFFEF4444), fontWeight: FontWeight.w600)),
-              style: TextButton.styleFrom(
-                backgroundColor: const Color(0xFFFEF2F2),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                minimumSize: const Size(0, 36),
-              ),
+        );
+
+        if (isMobile) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
             ),
-          ],
-        ],
-      ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      hasFilter ? Icons.filter_alt_rounded : Icons.filter_alt_outlined,
+                      size: 16,
+                      color: hasFilter ? const Color(0xFF16A34A) : Colors.grey.shade600,
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'Filter by Template:',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5, color: Color(0xFF475569)),
+                    ),
+                    const Spacer(),
+                    if (hasFilter)
+                      TextButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            _selectedFlowFilterId = null;
+                            _selectedFlowFilterName = null;
+                          });
+                          _loadSubmissions(flowId: 'all');
+                        },
+                        icon: const Icon(Icons.clear, size: 14, color: Color(0xFFEF4444)),
+                        label: const Text('Show All', style: TextStyle(fontSize: 11, color: Color(0xFFEF4444), fontWeight: FontWeight.w600)),
+                        style: TextButton.styleFrom(
+                          backgroundColor: const Color(0xFFFEF2F2),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          minimumSize: const Size(0, 30),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                dropdownWidget,
+              ],
+            ),
+          );
+        }
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                hasFilter ? Icons.filter_alt_rounded : Icons.filter_alt_outlined,
+                size: 18,
+                color: hasFilter ? const Color(0xFF16A34A) : Colors.grey.shade600,
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Filter by Template:',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Color(0xFF475569)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: dropdownWidget),
+              if (hasFilter) ...[
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _selectedFlowFilterId = null;
+                      _selectedFlowFilterName = null;
+                    });
+                    _loadSubmissions(flowId: 'all');
+                  },
+                  icon: const Icon(Icons.clear, size: 14, color: Color(0xFFEF4444)),
+                  label: const Text('Show All', style: TextStyle(fontSize: 12, color: Color(0xFFEF4444), fontWeight: FontWeight.w600)),
+                  style: TextButton.styleFrom(
+                    backgroundColor: const Color(0xFFFEF2F2),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    minimumSize: const Size(0, 36),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 

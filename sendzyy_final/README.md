@@ -1,6 +1,5 @@
-# send_o
-
-A new Flutter project.
+# Sendzyy
+WhatsApp Official API
 
 ## Getting Started
 

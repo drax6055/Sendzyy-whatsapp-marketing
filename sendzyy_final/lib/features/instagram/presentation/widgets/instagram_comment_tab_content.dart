@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:iFloraBuzz/core/theme/app_theme.dart';
 import 'package:iFloraBuzz/features/instagram/data/models/instagram_comment_models.dart';
 
@@ -392,46 +391,145 @@ class _CommentAutomationCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                // Active toggle switch
-                Switch(
-                  value: automation.isActive,
-                  onChanged: (_) => onToggle(),
-                  activeThumbColor: Colors.purple.shade600,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                const SizedBox(width: 6),
-                // Active badge
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: automation.isActive ? Colors.purple.shade100 : Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    automation.isActive ? 'Active' : 'Inactive',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: automation.isActive ? Colors.purple.shade900 : Colors.grey.shade600,
-                    ),
-                  ),
-                ),
                 const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  tooltip: 'Edit Automation',
-                  onPressed: onEdit,
-                  color: Colors.grey.shade700,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: Icon(Icons.delete_outline_rounded, size: 18, color: Colors.red.shade400),
-                  tooltip: 'Delete Automation',
-                  onPressed: onDelete,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
+
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isMobile = MediaQuery.of(context).size.width < 600;
+
+                    final statusBadge = InkWell(
+                      onTap: onToggle,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: automation.isActive ? Colors.purple.shade100 : Colors.grey.shade200,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          automation.isActive ? 'Active' : 'Inactive',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: automation.isActive ? Colors.purple.shade900 : Colors.grey.shade600,
+                          ),
+                        ),
+                      ),
+                    );
+
+                    if (isMobile) {
+                      return Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          statusBadge,
+                          const SizedBox(width: 4),
+                          PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert_rounded, size: 20, color: Color(0xFF64748B)),
+                            tooltip: 'Options',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            color: Colors.white,
+                            elevation: 3,
+                            onSelected: (val) {
+                              if (val == 'toggle') {
+                                onToggle();
+                              } else if (val == 'edit') {
+                                onEdit();
+                              } else if (val == 'delete') {
+                                onDelete();
+                              }
+                            },
+                            itemBuilder: (context) => [
+                              PopupMenuItem(
+                                value: 'toggle',
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      automation.isActive
+                                          ? Icons.pause_circle_outline_rounded
+                                          : Icons.play_circle_outline_rounded,
+                                      size: 18,
+                                      color: automation.isActive ? Colors.orange.shade700 : AppTheme.primaryColor,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      automation.isActive ? 'Pause Automation' : 'Activate Automation',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: automation.isActive ? Colors.orange.shade800 : AppTheme.primaryColor,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuDivider(height: 1),
+                              PopupMenuItem(
+                                value: 'edit',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.edit_outlined, size: 18, color: Colors.grey.shade700),
+                                    const SizedBox(width: 10),
+                                    const Text(
+                                      'Edit Automation',
+                                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuDivider(height: 1),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.delete_outline_rounded, size: 18, color: Colors.red.shade600),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      'Delete Automation',
+                                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.red.shade600),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Active toggle switch
+                        Switch(
+                          value: automation.isActive,
+                          onChanged: (_) => onToggle(),
+                          activeThumbColor: Colors.purple.shade600,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        const SizedBox(width: 6),
+                        statusBadge,
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                          tooltip: 'Edit Automation',
+                          onPressed: onEdit,
+                          color: Colors.grey.shade700,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: Icon(Icons.delete_outline_rounded, size: 18, color: Colors.red.shade400),
+                          tooltip: 'Delete Automation',
+                          onPressed: onDelete,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),

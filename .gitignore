@@ -59,7 +59,6 @@ build/
 .gradle/
 **/android/.gradle/
 **/android/local.properties
-**/android/key.properties
 **/android/app/src/main/assets/flutter_assets
 **/android/app/build/
 **/android/build/

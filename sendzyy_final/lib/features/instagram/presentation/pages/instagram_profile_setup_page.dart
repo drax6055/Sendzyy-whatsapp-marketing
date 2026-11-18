@@ -1,4 +1,3 @@
-import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:dio/dio.dart';
@@ -219,7 +218,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                 ],
               ),
               content: Container(
-                width: 600, // Constrain width of the dialog content
+                constraints: const BoxConstraints(maxWidth: 550),
                 child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -347,43 +346,47 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
   @override
   Widget build(BuildContext context) {
     final bool isConnected = _instagramProfile != null && (_instagramProfile!['connected'] ?? false);
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final bool isMobile = screenWidth < 700;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(32),
+      padding: EdgeInsets.all(isMobile ? 16 : 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Header
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Profile & Setup',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.secondaryColor,
-                          ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Connect and configure your Instagram Business Profile',
-                      style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
-              if (!isConnected && !_isLoading)
-                Tooltip(
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isHeaderMobile = constraints.maxWidth < 600;
+
+              final titleCol = Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Profile & Setup',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.secondaryColor,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Connect and configure your Instagram Business Profile',
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                  ),
+                ],
+              );
+
+              Widget? actionButton;
+              if (!isConnected && !_isLoading) {
+                actionButton = Tooltip(
                   message: 'Connect Instagram',
                   child: ElevatedButton(
                     onPressed: _showConnectionDialog,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.primaryColor,
                       foregroundColor: Colors.white,
-                      minimumSize: const Size(120, 44),
+                      minimumSize: Size(isHeaderMobile ? double.infinity : 120, 44),
                       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -397,32 +400,56 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         SizedBox(width: 8),
-                        Icon(Icons.arrow_forward_rounded),
+                        Icon(Icons.arrow_forward_rounded, size: 18),
                       ],
                     ),
                   ),
-                ),
-              if (isConnected && !_isLoading)
-                OutlinedButton.icon(
+                );
+              } else if (isConnected && !_isLoading) {
+                actionButton = OutlinedButton.icon(
                   onPressed: _disconnectProfile,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.red.shade700,
                     side: BorderSide(color: Colors.red.shade200),
-                    minimumSize: const Size(120, 44),
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    minimumSize: Size(isHeaderMobile ? double.infinity : 120, 42),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  icon: const Icon(Icons.link_off_rounded),
+                  icon: const Icon(Icons.link_off_rounded, size: 18),
                   label: const Text(
                     'Disconnect',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                   ),
-                ),
-            ],
+                );
+              }
+
+              if (isHeaderMobile) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    titleCol,
+                    if (actionButton != null) ...[
+                      const SizedBox(height: 16),
+                      actionButton,
+                    ],
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  Expanded(child: titleCol),
+                  if (actionButton != null) ...[
+                    const SizedBox(width: 16),
+                    actionButton,
+                  ],
+                ],
+              );
+            },
           ),
-          const SizedBox(height: 32),
+          SizedBox(height: isMobile ? 20 : 32),
 
           // Main Content Area
           if (_isLoading)
@@ -487,8 +514,6 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
     final String? profilePic = _detailedProfile?['profile_picture_url']?.toString();
     final dynamic followerRaw = _detailedProfile?['followers_count'];
     final int? followerCount = followerRaw is int ? followerRaw : (followerRaw != null ? int.tryParse(followerRaw.toString()) : null);
-    final bool? isUserFollowBusiness = _detailedProfile?['is_user_follow_business'] as bool?;
-    final bool? isBusinessFollowUser = _detailedProfile?['is_business_follow_user'] as bool?;
 
     String expiryFormatted = 'N/A';
     if (tokenExpiryStr != null && tokenExpiryStr.isNotEmpty) {
@@ -514,212 +539,230 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(32),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.04),
-                blurRadius: 20,
-                offset: const Offset(0, 4),
-              ),
-            ],
-            border: Border.all(color: Colors.grey.shade100),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Top Action Row (Token Expiry + Refresh + Info)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  if (expiryFormatted != 'N/A') ...[
-                    Text(
-                      'Token Expiry: $expiryFormatted',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.grey.shade900,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  // Refresh detailed profile button
-                  Tooltip(
-                    message: 'Refresh Profile Details',
-                    child: SizedBox(
-                      width: 32,
-                      height: 32,
-                      child: IconButton(
-                        icon: _isRefreshingDetail
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Icon(Icons.refresh_rounded, color: Colors.blue.shade400, size: 20),
-                        onPressed: _isRefreshingDetail ? null : _fetchDetailedProfile,
-                        padding: const EdgeInsets.all(4),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: IconButton(
-                      icon: Icon(Icons.info_outline_rounded, color: Colors.red.shade400, size: 20),
-                      onPressed: () => _showTokenInfoDialog(context),
-                      tooltip: 'Token Info',
-                      padding: const EdgeInsets.all(4),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final isCardMobile = constraints.maxWidth < 650;
 
-              // Profile Info Row
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
+            final connectedBadge = Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                border: Border.all(color: Colors.green.shade100),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Profile picture with Instagram gradient border
                   Container(
-                    padding: const EdgeInsets.all(3),
+                    width: 8,
+                    height: 8,
                     decoration: const BoxDecoration(
+                      color: Colors.green,
                       shape: BoxShape.circle,
-                      gradient: RadialGradient(
-                        colors: [
-                          Color(0xFFFFB700),
-                          Color(0xFFFF007F),
-                          Color(0xFF8000FF),
-                        ],
-                        center: Alignment(0.6, -0.6),
-                        radius: 1.0,
-                      ),
-                    ),
-                    child: CircleAvatar(
-                      radius: 36,
-                      backgroundColor: Colors.grey.shade100,
-                      child: profilePic != null
-                          ? ClipOval(
-                              child: Image.network(
-                                profilePic,
-                                width: 72,
-                                height: 72,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => const Icon(
-                                  Icons.account_circle_outlined,
-                                  size: 48,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                            )
-                          : const Icon(
-                              Icons.account_circle_outlined,
-                              size: 48,
-                              color: Colors.grey,
-                            ),
                     ),
                   ),
-                  const SizedBox(width: 24),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Name + Connected badge
-                        Row(
-                          children: [
-                            Text(
-                              name,
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.green.shade50,
-                                border: Border.all(color: Colors.green.shade100),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 8,
-                                    height: 8,
-                                    decoration: const BoxDecoration(
-                                      color: Colors.green,
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'Connected',
-                                    style: TextStyle(
-                                      color: Colors.green.shade800,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '@$username',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: Colors.black,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Instagram ID: $maskedId',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black,
-                          ),
-                        ),
-                        // Detailed profile chips
-                        if (_isRefreshingDetail) ...[
-                          const SizedBox(height: 12),
-                          const SizedBox(
-                            height: 16,
-                            width: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        ] else if (_detailedProfile != null) ...[
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 10,
-                            runSpacing: 8,
-                            children: [
-                              if (followerCount != null)
-                                _buildInfoChip(
-                                  icon: Icons.people_alt_outlined,
-                                  label: '${formatCount(followerCount)} Followers',
-                                  color: Colors.blue,
-                                ),
-                            ],
-                          ),
-                        ],
-                      ],
+                  const SizedBox(width: 6),
+                  Text(
+                    'Connected',
+                    style: TextStyle(
+                      color: Colors.green.shade800,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                 ],
               ),
-            ],
-          ),
+            );
+
+            final avatar = Container(
+              padding: const EdgeInsets.all(3),
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    Color(0xFFFFB700),
+                    Color(0xFFFF007F),
+                    Color(0xFF8000FF),
+                  ],
+                  center: Alignment(0.6, -0.6),
+                  radius: 1.0,
+                ),
+              ),
+              child: CircleAvatar(
+                radius: isCardMobile ? 32 : 36,
+                backgroundColor: Colors.grey.shade100,
+                child: profilePic != null
+                    ? ClipOval(
+                        child: Image.network(
+                          profilePic,
+                          width: isCardMobile ? 64 : 72,
+                          height: isCardMobile ? 64 : 72,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const Icon(
+                            Icons.account_circle_outlined,
+                            size: 44,
+                            color: Colors.grey,
+                          ),
+                        ),
+                      )
+                    : const Icon(
+                        Icons.account_circle_outlined,
+                        size: 44,
+                        color: Colors.grey,
+                      ),
+              ),
+            );
+
+            final profileDetails = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Name + Connected badge using Wrap so it never overflows
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 10,
+                  runSpacing: 6,
+                  children: [
+                    Text(
+                      name,
+                      style: TextStyle(
+                        fontSize: isCardMobile ? 18 : 20,
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF0F172A),
+                      ),
+                    ),
+                    connectedBadge,
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '@$username',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF334155),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Instagram ID: $maskedId',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                // Detailed profile chips
+                if (_isRefreshingDetail) ...[
+                  const SizedBox(height: 10),
+                  const SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ] else if (_detailedProfile != null) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      if (followerCount != null)
+                        _buildInfoChip(
+                          icon: Icons.people_alt_outlined,
+                          label: '${formatCount(followerCount)} Followers',
+                          color: Colors.blue,
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            );
+
+            return Container(
+              width: double.infinity,
+              padding: EdgeInsets.all(isCardMobile ? 18 : 28),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.04),
+                    blurRadius: 20,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+                border: Border.all(color: Colors.grey.shade100),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Top Action Row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      if (expiryFormatted != 'N/A')
+                        Flexible(
+                          child: Text(
+                            'Token Expiry: $expiryFormatted',
+                            style: TextStyle(
+                              fontSize: isCardMobile ? 11 : 12,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.grey.shade900,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        )
+                      else
+                        const Spacer(),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Tooltip(
+                            message: 'Refresh Profile Details',
+                            child: SizedBox(
+                              width: 32,
+                              height: 32,
+                              child: IconButton(
+                                icon: _isRefreshingDetail
+                                    ? const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      )
+                                    : Icon(Icons.refresh_rounded, color: Colors.blue.shade400, size: 20),
+                                onPressed: _isRefreshingDetail ? null : _fetchDetailedProfile,
+                                padding: const EdgeInsets.all(4),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          SizedBox(
+                            width: 32,
+                            height: 32,
+                            child: IconButton(
+                              icon: Icon(Icons.info_outline_rounded, color: Colors.red.shade400, size: 20),
+                              onPressed: () => _showTokenInfoDialog(context),
+                              tooltip: 'Token Info',
+                              padding: const EdgeInsets.all(4),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Profile Info Row
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      avatar,
+                      SizedBox(width: isCardMobile ? 14 : 24),
+                      Expanded(child: profileDetails),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
         ),
 
         const SizedBox(height: 24),
@@ -733,7 +776,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
             borderRadius: BorderRadius.circular(20),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.04),
+                color: Colors.black.withValues(alpha: 0.04),
                 blurRadius: 20,
                 offset: const Offset(0, 4),
               ),
@@ -822,7 +865,9 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                               ? NetworkImage(_insightsProfile!['profile_picture_url'])
                               : null,
                           onBackgroundImageError: _insightsProfile!['profile_picture_url'] != null ? (_, __) {} : null,
-                          child: const Icon(Icons.person, size: 42, color: Colors.grey),
+                          child: _insightsProfile!['profile_picture_url'] != null
+                              ? null
+                              : const Icon(Icons.person, size: 42, color: Colors.grey),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -893,20 +938,23 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            _buildTabChip(
-                              index: 0,
-                              icon: Icons.grid_on_rounded,
-                              label: 'Posts (${postsList.length})',
-                            ),
-                            const SizedBox(width: 12),
-                            _buildTabChip(
-                              index: 1,
-                              icon: Icons.video_collection_rounded,
-                              label: 'Reels (${reelsList.length})',
-                            ),
-                          ],
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              _buildTabChip(
+                                index: 0,
+                                icon: Icons.grid_on_rounded,
+                                label: 'Posts (${postsList.length})',
+                              ),
+                              const SizedBox(width: 12),
+                              _buildTabChip(
+                                index: 1,
+                                icon: Icons.video_collection_rounded,
+                                label: 'Reels (${reelsList.length})',
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 16),
 
@@ -975,7 +1023,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                                           padding: const EdgeInsets.all(8),
                                           decoration: BoxDecoration(
                                             gradient: LinearGradient(
-                                              colors: [Colors.transparent, Colors.black.withOpacity(0.85)],
+                                              colors: [Colors.transparent, Colors.black.withValues(alpha: 0.85)],
                                               begin: Alignment.topCenter,
                                               end: Alignment.bottomCenter,
                                             ),
@@ -994,7 +1042,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                                           child: Container(
                                             padding: const EdgeInsets.all(10),
                                             decoration: BoxDecoration(
-                                              color: Colors.black.withOpacity(0.65),
+                                              color: Colors.black.withValues(alpha: 0.65),
                                               shape: BoxShape.circle,
                                             ),
                                             child: const Icon(
@@ -1011,7 +1059,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                                         child: Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                                           decoration: BoxDecoration(
-                                            color: Colors.black.withOpacity(0.7),
+                                            color: Colors.black.withValues(alpha: 0.7),
                                             borderRadius: BorderRadius.circular(6),
                                           ),
                                           child: Row(
@@ -1098,8 +1146,8 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
-        border: Border.all(color: color.withOpacity(0.2)),
+        color: color.withValues(alpha: 0.08),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -1198,7 +1246,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
         border: Border.all(color: Colors.grey.shade100),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
@@ -1262,42 +1310,6 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFeatureRow(IconData icon, String title, String subtitle) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppTheme.primaryColor.withOpacity(0.08),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: AppTheme.primaryColor, size: 20),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: TextStyle(color: Colors.grey.shade500, fontSize: 13, height: 1.3),
-                ),
-              ],
-            ),
-          )
         ],
       ),
     );
@@ -1447,7 +1459,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                       ElevatedButton.icon(
                         onPressed: () {
                           if (mediaUrl.isNotEmpty) {
-                            html.window.open(mediaUrl, '_blank');
+                            webOpenUrl(mediaUrl);
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -1470,7 +1482,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                   height: 460,
                   width: double.infinity,
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.03),
+                    color: Colors.black.withValues(alpha: 0.03),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.grey.shade200),
                   ),
@@ -1506,7 +1518,7 @@ class _InstagramProfileSetupPageState extends State<InstagramProfileSetupPage> {
                   if (permalink != null)
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: () => html.window.open(permalink, '_blank'),
+                        onPressed: () => webOpenUrl(permalink),
                         icon: const Icon(Icons.open_in_new, size: 16),
                         label: const Text('Open on Instagram'),
                       ),

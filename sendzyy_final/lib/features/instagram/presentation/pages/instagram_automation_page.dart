@@ -712,87 +712,121 @@ class _InstagramAutomationPageState extends State<InstagramAutomationPage> {
   }
 
   Widget _buildNotConnectedBanner() {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.amber.shade50,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.amber.shade200),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.amber.shade100,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.warning_amber_rounded,
-              color: Colors.amber.shade900,
-              size: 22,
-            ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 650;
+
+        final iconBadge = Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.amber.shade100,
+            shape: BoxShape.circle,
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Instagram Account Not Connected',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    color: Colors.amber.shade900,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Connect your Instagram Business account to activate automated quick replies and webhook triggers.',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: Colors.amber.shade800,
-                  ),
-                ),
-              ],
-            ),
+          child: Icon(
+            Icons.warning_amber_rounded,
+            color: Colors.amber.shade900,
+            size: 22,
           ),
-          const SizedBox(width: 16),
-          OutlinedButton.icon(
-            onPressed: _redirectToProfileSetup,
-            style: OutlinedButton.styleFrom(
-              side: BorderSide(color: Colors.amber.shade700),
-              foregroundColor: Colors.amber.shade900,
-              minimumSize: const Size(175, 42),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
+        );
+
+        final textColumn = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Instagram Account Not Connected',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: Colors.amber.shade900,
               ),
             ),
-            icon: const Icon(Icons.link_rounded, size: 16),
-            label: const Text(
-              'Go to Profile & Setup',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+            const SizedBox(height: 4),
+            Text(
+              'Connect your Instagram Business account to activate automated quick replies and webhook triggers.',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: Colors.amber.shade800,
+              ),
+            ),
+          ],
+        );
+
+        final actionBtn = OutlinedButton.icon(
+          onPressed: _redirectToProfileSetup,
+          style: OutlinedButton.styleFrom(
+            side: BorderSide(color: Colors.amber.shade700),
+            foregroundColor: Colors.amber.shade900,
+            minimumSize: Size(isMobile ? double.infinity : 175, 42),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
             ),
           ),
-        ],
-      ),
+          icon: const Icon(Icons.link_rounded, size: 16),
+          label: const Text(
+            'Go to Profile & Setup',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+          ),
+        );
+
+        if (isMobile) {
+          return Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.amber.shade50,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.amber.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    iconBadge,
+                    const SizedBox(width: 12),
+                    Expanded(child: textColumn),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                actionBtn,
+              ],
+            ),
+          );
+        }
+
+        return Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: Colors.amber.shade50,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.amber.shade200),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              iconBadge,
+              const SizedBox(width: 16),
+              Expanded(child: textColumn),
+              const SizedBox(width: 16),
+              actionBtn,
+            ],
+          ),
+        );
+      },
     );
   }
 
   Widget _buildTabsHeader() {
-    return Container(
-      decoration: const BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1.5),
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 650;
+
+        final tabsRow = SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               // 1. Quick Replies Tab
@@ -890,8 +924,8 @@ class _InstagramAutomationPageState extends State<InstagramAutomationPage> {
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                           decoration: BoxDecoration(
                             color: _activeTabIndex == 1
-                                ? AppTheme.primaryColor.withValues(alpha: 0.12)
-                                : Colors.grey.shade200,
+                            ? AppTheme.primaryColor.withValues(alpha: 0.12)
+                            : Colors.grey.shade200,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Text(
@@ -910,29 +944,69 @@ class _InstagramAutomationPageState extends State<InstagramAutomationPage> {
               ),
             ],
           ),
+        );
 
-          // Right Button
-          if (_isConnected && ((_activeTabIndex == 0 && _automations.isNotEmpty) || (_activeTabIndex == 1 && _commentAutomations.isNotEmpty)))
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: ElevatedButton.icon(
-                onPressed: _activeTabIndex == 0 ? () => _openDialog() : () => _openCommentDialog(),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.primaryColor,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(160, 38),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                icon: const Icon(Icons.add_rounded, size: 18),
-                label: Text(
-                  _activeTabIndex == 0 ? 'New Automation' : 'New Comment Automation',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-              ),
+        final showActionBtn = _isConnected &&
+            ((_activeTabIndex == 0 && _automations.isNotEmpty) ||
+                (_activeTabIndex == 1 && _commentAutomations.isNotEmpty));
+
+        Widget actionButton({bool fullWidth = false}) {
+          return ElevatedButton.icon(
+            onPressed: _activeTabIndex == 0 ? () => _openDialog() : () => _openCommentDialog(),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryColor,
+              foregroundColor: Colors.white,
+              minimumSize: Size(fullWidth ? double.infinity : 160, 38),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
-        ],
-      ),
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: Text(
+              _activeTabIndex == 0 ? 'New Automation' : 'New Comment Automation',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+          );
+        }
+
+        if (isMobile) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                decoration: const BoxDecoration(
+                  border: Border(
+                    bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1.5),
+                  ),
+                ),
+                child: tabsRow,
+              ),
+              if (showActionBtn) ...[
+                const SizedBox(height: 12),
+                actionButton(fullWidth: true),
+              ],
+            ],
+          );
+        }
+
+        return Container(
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1.5),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: tabsRow),
+              if (showActionBtn)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: actionButton(fullWidth: false),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1253,86 +1327,176 @@ class _AutomationCard extends StatelessWidget {
               borderRadius:
                   const BorderRadius.vertical(top: Radius.circular(16)),
             ),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [
-                        Color(0xFFFFB700),
-                        Color(0xFFFF007F),
-                        Color(0xFF8000FF),
-                      ],
-                      begin: Alignment.bottomLeft,
-                      end: Alignment.topRight,
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(
-                    Icons.quickreply_rounded,
-                    color: Colors.white,
-                    size: 14,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    automation.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-                // Active toggle switch
-                Switch(
-                  value: automation.isActive,
-                  onChanged: (_) => onToggle(),
-                  activeThumbColor: Colors.blue.shade600,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                const SizedBox(width: 6),
-                // Active badge
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: automation.isActive
-                        ? Colors.blue.shade100
-                        : Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    automation.isActive ? 'Active' : 'Inactive',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isMobile = constraints.maxWidth < 520;
+
+                final statusBadge = InkWell(
+                  onTap: onToggle,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
                       color: automation.isActive
-                          ? Colors.blue.shade800
-                          : Colors.grey.shade600,
+                          ? Colors.blue.shade100
+                          : Colors.grey.shade200,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      automation.isActive ? 'Active' : 'Inactive',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: automation.isActive
+                            ? Colors.blue.shade800
+                            : Colors.grey.shade600,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  onPressed: onEdit,
-                  tooltip: 'Edit',
-                  color: Colors.grey.shade700,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-                const SizedBox(width: 10),
-                IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                  onPressed: onDelete,
-                  tooltip: 'Delete',
-                  color: Colors.red.shade400,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              ],
+                );
+
+                return Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [
+                            Color(0xFFFFB700),
+                            Color(0xFFFF007F),
+                            Color(0xFF8000FF),
+                          ],
+                          begin: Alignment.bottomLeft,
+                          end: Alignment.topRight,
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(
+                        Icons.quickreply_rounded,
+                        color: Colors.white,
+                        size: 14,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        automation.name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+
+                    if (isMobile) ...[
+                      statusBadge,
+                      const SizedBox(width: 4),
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_vert_rounded, size: 20, color: Color(0xFF64748B)),
+                        tooltip: 'Options',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        color: Colors.white,
+                        elevation: 3,
+                        onSelected: (val) {
+                          if (val == 'toggle') {
+                            onToggle();
+                          } else if (val == 'edit') {
+                            onEdit();
+                          } else if (val == 'delete') {
+                            onDelete();
+                          }
+                        },
+                        itemBuilder: (context) => [
+                          PopupMenuItem(
+                            value: 'toggle',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  automation.isActive
+                                      ? Icons.pause_circle_outline_rounded
+                                      : Icons.play_circle_outline_rounded,
+                                  size: 18,
+                                  color: automation.isActive ? Colors.orange.shade700 : AppTheme.primaryColor,
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  automation.isActive ? 'Pause Automation' : 'Activate Automation',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: automation.isActive ? Colors.orange.shade800 : AppTheme.primaryColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuDivider(height: 1),
+                          PopupMenuItem(
+                            value: 'edit',
+                            child: Row(
+                              children: [
+                                Icon(Icons.edit_outlined, size: 18, color: Colors.grey.shade700),
+                                const SizedBox(width: 10),
+                                const Text(
+                                  'Edit',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuDivider(height: 1),
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: Row(
+                              children: [
+                                Icon(Icons.delete_outline_rounded, size: 18, color: Colors.red.shade600),
+                                const SizedBox(width: 10),
+                                Text(
+                                  'Delete',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.red.shade600),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ] else ...[
+                      // Active toggle switch
+                      Switch(
+                        value: automation.isActive,
+                        onChanged: (_) => onToggle(),
+                        activeThumbColor: Colors.blue.shade600,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      const SizedBox(width: 6),
+                      statusBadge,
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        onPressed: onEdit,
+                        tooltip: 'Edit',
+                        color: Colors.grey.shade700,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                        onPressed: onDelete,
+                        tooltip: 'Delete',
+                        color: Colors.red.shade400,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ],
+                );
+              },
             ),
           ),
 

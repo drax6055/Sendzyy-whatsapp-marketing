@@ -9,12 +9,17 @@
 # Google Play Core (Flutter Deferred Components)
 -dontwarn com.google.android.play.core.**
 
-# Keep Flutter Local Notifications
+# Keep Firebase & Notifications
 -keep class com.dexterous.flutterlocalnotifications.** { *; }
-
-# Keep WebRTC & Firebase
--keep class org.webrtc.** { *; }
 -keep class com.google.firebase.** { *; }
+
+# R8 Bitmap & Optimization rules
+-dontwarn org.webrtc.**
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+}
 
 # General ProGuard safety
 -keepattributes *Annotation*

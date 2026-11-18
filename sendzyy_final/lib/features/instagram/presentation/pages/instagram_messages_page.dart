@@ -711,41 +711,57 @@ class _InstagramMessagesViewState extends State<_InstagramMessagesView> {
             ),
           ),
 
+          const SizedBox(width: 8),
+
           // Human Takeover Action Toggle Button
-          InkWell(
-            onTap: () {
-              context.read<InstagramChatBloc>().add(
-                    ToggleConversationHumanTakeover(!conv.isHumanTakeover),
-                  );
-            },
-            borderRadius: BorderRadius.circular(20),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: conv.isHumanTakeover ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: conv.isHumanTakeover ? const Color(0xFF3B82F6) : const Color(0xFFCBD5E1),
+          Tooltip(
+            message: conv.isHumanTakeover
+                ? 'Agent Mode (Tap to pause bot)'
+                : 'Bot Active (Tap for agent takeover)',
+            child: InkWell(
+              onTap: () {
+                context.read<InstagramChatBloc>().add(
+                      ToggleConversationHumanTakeover(!conv.isHumanTakeover),
+                    );
+              },
+              borderRadius: BorderRadius.circular(isMobile ? 24 : 20),
+              child: Container(
+                padding: isMobile
+                    ? const EdgeInsets.all(8)
+                    : const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: conv.isHumanTakeover ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+                  shape: isMobile ? BoxShape.circle : BoxShape.rectangle,
+                  borderRadius: isMobile ? null : BorderRadius.circular(20),
+                  border: Border.all(
+                    color: conv.isHumanTakeover ? const Color(0xFF3B82F6) : const Color(0xFFCBD5E1),
+                  ),
                 ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    conv.isHumanTakeover ? Icons.person_rounded : Icons.smart_toy_outlined,
-                    size: 14,
-                    color: conv.isHumanTakeover ? const Color(0xFF2563EB) : const Color(0xFF475569),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    conv.isHumanTakeover ? 'Agent Mode (Pause Bot)' : 'Bot Active (Takeover)',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: conv.isHumanTakeover ? const Color(0xFF1D4ED8) : const Color(0xFF334155),
-                    ),
-                  ),
-                ],
+                child: isMobile
+                    ? Icon(
+                        conv.isHumanTakeover ? Icons.person_rounded : Icons.smart_toy_outlined,
+                        size: 18,
+                        color: conv.isHumanTakeover ? const Color(0xFF2563EB) : const Color(0xFF475569),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            conv.isHumanTakeover ? Icons.person_rounded : Icons.smart_toy_outlined,
+                            size: 14,
+                            color: conv.isHumanTakeover ? const Color(0xFF2563EB) : const Color(0xFF475569),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            conv.isHumanTakeover ? 'Agent Mode (Pause Bot)' : 'Bot Active (Takeover)',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: conv.isHumanTakeover ? const Color(0xFF1D4ED8) : const Color(0xFF334155),
+                            ),
+                          ),
+                        ],
+                      ),
               ),
             ),
           ),

@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/utils/responsive_helper.dart';
 
 class MetaTriggerDialog extends StatefulWidget {
   final List<Map<String, dynamic>> forms;
@@ -20,6 +21,11 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
   List<Map<String, dynamic>> _chatbots = [];
   List<Map<String, dynamic>> _templates = [];
 
+  static const Color _textDark = Color(0xFF1E293B);
+  static const Color _textMuted = Color(0xFF64748B);
+  static const Color _borderColor = Color(0xFFE2E8F0);
+  static const Color _metaBlue = Color(0xFF1877F2);
+  
   @override
   void initState() {
     super.initState();
@@ -136,14 +142,16 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = ResponsiveHelper.isMobile(context);
+
     return Dialog(
-      backgroundColor: AppTheme.cardColor,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: EdgeInsets.symmetric(horizontal: isMobile ? 14 : 40, vertical: 24),
       child: Container(
         width: 750,
-        height: 600,
-        padding: const EdgeInsets.all(24),
+        height: isMobile ? MediaQuery.of(context).size.height * 0.85 : 600,
+        padding: EdgeInsets.all(isMobile ? 16 : 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -152,10 +160,10 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1877F2).withValues(alpha: 0.15),
+                    color: _metaBlue.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.bolt_rounded, color: Color(0xFF1877F2), size: 24),
+                  child: Icon(Icons.bolt_rounded, color: _metaBlue, size: 22),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -164,12 +172,12 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
                     children: [
                       Text(
                         'Meta Ads Automation Rules',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _textDark),
                       ),
                       SizedBox(height: 2),
                       Text(
                         'Auto-dispatch WhatsApp templates and launch chatbots for FB & IG leads',
-                        style: TextStyle(fontSize: 12, color: Colors.white60),
+                        style: TextStyle(fontSize: 11, color: _textMuted),
                       ),
                     ],
                   ),
@@ -177,26 +185,30 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
                 FilledButton.icon(
                   onPressed: () => _openCreateOrEditRuleModal(),
                   icon: const Icon(Icons.add_rounded, size: 16),
-                  label: const Text('Add Rule'),
-                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFF1877F2)),
+                  label: Text(isMobile ? 'Add' : 'Add Rule'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.secondaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 4),
                 IconButton(
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                  icon: const Icon(Icons.close_rounded, color: _textMuted),
                 ),
               ],
             ),
-            const Divider(height: 32, color: Colors.white12),
+            const Divider(height: 24, color: _borderColor),
             Expanded(
               child: _loading
-                  ? const Center(child: CircularProgressIndicator())
+                  ? const Center(child: CircularProgressIndicator(color: AppTheme.primaryColor))
                   : _triggers.isEmpty
                       ? _buildEmptyState()
                       : ListView.separated(
                           itemCount: _triggers.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 12),
-                          itemBuilder: (ctx, i) => _buildRuleItem(_triggers[i]),
+                          separatorBuilder: (_, __) => const SizedBox(height: 10),
+                          itemBuilder: (ctx, i) => _buildRuleItem(_triggers[i], isMobile),
                         ),
             ),
           ],
@@ -210,26 +222,27 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.bolt_outlined, size: 56, color: Colors.white.withValues(alpha: 0.2)),
+          Icon(Icons.bolt_outlined, size: 48, color: Colors.grey.shade400),
           const SizedBox(height: 12),
           const Text(
-            'No Meta Ads Automation Rules Configured',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white70),
+            'No Automation Rules Configured',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _textDark),
           ),
           const SizedBox(height: 6),
           const Text(
-            'Create a rule to instantly greet Instant Form and Click-to-WhatsApp leads on WhatsApp.',
-            style: TextStyle(fontSize: 12, color: Colors.white38),
+            'Create a rule to instantly message leads when they submit a Meta Instant Form or initiate a CTWA conversation.',
             textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: _textMuted),
           ),
           const SizedBox(height: 16),
-          OutlinedButton.icon(
+          ElevatedButton.icon(
             onPressed: () => _openCreateOrEditRuleModal(),
             icon: const Icon(Icons.add_rounded, size: 16),
             label: const Text('Create First Rule'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFF1877F2),
-              side: const BorderSide(color: Color(0xFF1877F2)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.secondaryColor,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
           ),
         ],
@@ -237,7 +250,7 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
     );
   }
 
-  Widget _buildRuleItem(Map<String, dynamic> trigger) {
+  Widget _buildRuleItem(Map<String, dynamic> trigger, bool isMobile) {
     final adType = trigger['adType']?.toString() ?? 'any';
     final isInstantForm = adType == 'instant_form';
     final formName = trigger['formName']?.toString();
@@ -249,27 +262,27 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
     final botName = bot['name']?.toString() ?? (chatbotId != null && chatbotId.isNotEmpty ? 'Linked Bot' : null);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.04),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _borderColor),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: (isInstantForm ? const Color(0xFF1877F2) : const Color(0xFF25D366)).withValues(alpha: 0.15),
+              color: (isInstantForm ? _metaBlue : AppTheme.primaryColor).withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
               isInstantForm ? Icons.assignment_outlined : Icons.touch_app_outlined,
               size: 20,
-              color: isInstantForm ? const Color(0xFF1877F2) : const Color(0xFF25D366),
+              color: isInstantForm ? _metaBlue : AppTheme.secondaryColor,
             ),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -277,39 +290,52 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
                 Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.white10,
+                        color: Colors.white,
                         borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: _borderColor),
                       ),
                       child: Text(
                         isInstantForm ? 'Instant Form' : (adType == 'ctwa' ? 'Click-to-WhatsApp' : 'All Meta Ads'),
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white70),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: _textDark),
                       ),
                     ),
                     if (formName != null && formName.isNotEmpty) ...[
                       const SizedBox(width: 8),
-                      Text(
-                        'Form: $formName',
-                        style: const TextStyle(fontSize: 12, color: Colors.white60),
+                      Expanded(
+                        child: Text(
+                          'Form: $formName',
+                          style: const TextStyle(fontSize: 11, color: _textMuted),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                   ],
                 ),
                 const SizedBox(height: 6),
-                Row(
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 4,
                   children: [
-                    if (templateName != null && templateName.isNotEmpty) ...[
-                      const Icon(Icons.send_rounded, size: 13, color: Colors.greenAccent),
-                      const SizedBox(width: 4),
-                      Text('Template: $templateName', style: const TextStyle(fontSize: 13, color: Colors.white)),
-                    ],
-                    if (botName != null) ...[
-                      const SizedBox(width: 12),
-                      const Icon(Icons.smart_toy_outlined, size: 13, color: Colors.blueAccent),
-                      const SizedBox(width: 4),
-                      Text('Follow-up Bot: $botName', style: const TextStyle(fontSize: 13, color: Colors.white70)),
-                    ],
+                    if (templateName != null && templateName.isNotEmpty)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.send_rounded, size: 12, color: AppTheme.secondaryColor),
+                          const SizedBox(width: 4),
+                          Text('Template: $templateName', style: const TextStyle(fontSize: 12, color: _textDark, fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                    if (botName != null)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.smart_toy_outlined, size: 12, color: _metaBlue),
+                          const SizedBox(width: 4),
+                          Text('Bot: $botName', style: const TextStyle(fontSize: 12, color: _textMuted)),
+                        ],
+                      ),
                   ],
                 ),
               ],
@@ -318,11 +344,12 @@ class _MetaTriggerDialogState extends State<MetaTriggerDialog> {
           Switch(
             value: isActive,
             onChanged: (_) => _toggleTrigger(trigger),
-            activeColor: const Color(0xFF1877F2),
+            activeThumbColor: AppTheme.primaryColor,
+            activeTrackColor: AppTheme.primaryColor.withValues(alpha: 0.3),
           ),
           IconButton(
             onPressed: () => _openCreateOrEditRuleModal(existing: trigger),
-            icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white60),
+            icon: const Icon(Icons.edit_outlined, size: 18, color: _textMuted),
             tooltip: 'Edit Rule',
           ),
           IconButton(
@@ -371,6 +398,10 @@ class _MetaRuleEditorModalState extends State<_MetaRuleEditorModal> {
   Map<String, String> _variableMapping = {};
   int _varCount = 0;
 
+  static const Color _textDark = Color(0xFF1E293B);
+  static const Color _textMuted = Color(0xFF64748B);
+  static const Color _borderColor = Color(0xFFE2E8F0);
+  
   static const List<Map<String, String>> _leadFields = [
     {'value': 'name', 'label': 'Name'},
     {'value': 'mobileNumber', 'label': 'Mobile Number'},
@@ -397,38 +428,29 @@ class _MetaRuleEditorModalState extends State<_MetaRuleEditorModal> {
     _requireConsent = e?['requireConsent'] == true;
     _cooldownDays = (e?['cooldownDays'] as num?)?.toInt() ?? 7;
 
-    if (e?['variableMapping'] != null) {
-      _variableMapping = Map<String, String>.from(e!['variableMapping'] as Map);
-    }
-
-    if (_selectedTemplateName != null) {
-      _updateTemplateVarCount(_selectedTemplateName!);
-    }
-  }
-
-  void _updateTemplateVarCount(String tplName) {
-    final tpl = widget.templates.firstWhere((t) => t['name'] == tplName, orElse: () => {});
-    setState(() {
-      _varCount = (tpl['varCount'] as num?)?.toInt() ?? 0;
-      _selectedTemplateLanguage = tpl['language']?.toString() ?? 'en_US';
-
-      // Auto-assign default mappings if empty
-      for (int i = 1; i <= _varCount; i++) {
-        final k = i.toString();
-        if (!_variableMapping.containsKey(k)) {
-          _variableMapping[k] = i == 1 ? 'name' : (i == 2 ? 'formName' : 'mobileNumber');
-        }
-      }
-    });
-  }
-
-  Future<void> _saveRule() async {
-    if (_adType == 'instant_form' && (_selectedTemplateName == null || _selectedTemplateName!.isEmpty)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select an approved WhatsApp template for Instant Forms.')),
+    if (e?['variableMapping'] != null && e!['variableMapping'] is Map) {
+      _variableMapping = Map<String, String>.from(
+        (e['variableMapping'] as Map).map((k, v) => MapEntry(k.toString(), v.toString())),
       );
+    }
+
+    _updateVarCount();
+  }
+
+  void _updateVarCount() {
+    if (_selectedTemplateName == null) {
+      _varCount = 0;
       return;
     }
+    final tmpl = widget.templates.firstWhere(
+      (t) => t['name'] == _selectedTemplateName,
+      orElse: () => {'varCount': 0},
+    );
+    _varCount = (tmpl['varCount'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
 
     setState(() => _saving = true);
 
@@ -474,13 +496,15 @@ class _MetaRuleEditorModalState extends State<_MetaRuleEditorModal> {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = ResponsiveHelper.isMobile(context);
+
     return Dialog(
-      backgroundColor: AppTheme.cardColor,
+      backgroundColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+      insetPadding: EdgeInsets.symmetric(horizontal: isMobile ? 14 : 40, vertical: 24),
       child: Container(
         width: 600,
-        padding: const EdgeInsets.all(24),
+        padding: EdgeInsets.all(isMobile ? 16 : 24),
         child: SingleChildScrollView(
           child: Form(
             key: _formKey,
@@ -493,169 +517,209 @@ class _MetaRuleEditorModalState extends State<_MetaRuleEditorModal> {
                   children: [
                     Text(
                       widget.existing != null ? 'Edit Automation Rule' : 'New Automation Rule',
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: _textDark),
                     ),
                     IconButton(
                       onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                      icon: const Icon(Icons.close_rounded, color: _textMuted),
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                // Ad Type Segmented Selector
-                const Text('Trigger Scope', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _buildScopeChip('Instant Forms', 'instant_form'),
-                    const SizedBox(width: 8),
-                    _buildScopeChip('Click-to-WhatsApp (CTWA)', 'ctwa'),
-                    const SizedBox(width: 8),
-                    _buildScopeChip('All Meta Ads', 'any'),
+                const Divider(height: 20, color: _borderColor),
+                const SizedBox(height: 6),
+
+                // Ad Type Selector
+                const Text('Triggering Ad Type', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
+                const SizedBox(height: 6),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'instant_form', label: Text('Instant Forms', style: TextStyle(fontSize: 12))),
+                    ButtonSegment(value: 'ctwa', label: Text('Click-to-WhatsApp', style: TextStyle(fontSize: 12))),
+                    ButtonSegment(value: 'any', label: Text('Any Ad', style: TextStyle(fontSize: 12))),
                   ],
+                  selected: {_adType},
+                  onSelectionChanged: (set) => setState(() => _adType = set.first),
+                  style: ButtonStyle(
+                    backgroundColor: WidgetStateProperty.resolveWith((states) {
+                      if (states.contains(WidgetState.selected)) {
+                        return AppTheme.secondaryColor.withValues(alpha: 0.12);
+                      }
+                      return Colors.white;
+                    }),
+                    foregroundColor: WidgetStateProperty.resolveWith((states) {
+                      if (states.contains(WidgetState.selected)) {
+                        return AppTheme.secondaryColor;
+                      }
+                      return _textMuted;
+                    }),
+                  ),
                 ),
                 const SizedBox(height: 16),
-                // Form dropdown (if instant_form)
-                if (_adType == 'instant_form') ...[
-                  const Text('Select Instant Form (Optional)', style: TextStyle(color: Colors.white70, fontSize: 13)),
+
+                // Form selector (only for instant forms)
+                if (_adType != 'ctwa') ...[
+                  const Text('Apply to Instant Form', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
                   const SizedBox(height: 6),
-                  DropdownButtonFormField<String?>(
-                    initialValue: _selectedFormId,
-                    dropdownColor: AppTheme.cardColor,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: _inputDecoration('All Forms (Catch-all)'),
+                  DropdownButtonFormField<String>(
+                    value: _selectedFormId,
+                    decoration: _inputDecoration('All Instant Forms (Default)'),
+                    dropdownColor: Colors.white,
+                    style: const TextStyle(color: _textDark, fontSize: 13),
                     items: [
-                      const DropdownMenuItem<String?>(value: null, child: Text('All Forms (Catch-all)')),
-                      ...widget.forms.map((f) => DropdownMenuItem<String?>(
+                      const DropdownMenuItem(value: null, child: Text('All Instant Forms')),
+                      ...widget.forms.map((f) => DropdownMenuItem(
                             value: f['formId']?.toString(),
-                            child: Text(f['name']?.toString() ?? f['formId'].toString()),
+                            child: Text(f['name']?.toString() ?? '', overflow: TextOverflow.ellipsis),
                           )),
                     ],
-                    onChanged: (val) => setState(() => _selectedFormId = val),
+                    onChanged: (v) => setState(() => _selectedFormId = v),
                   ),
                   const SizedBox(height: 16),
                 ],
-                // 24-hr Policy Notice
-                if (_adType == 'instant_form') ...[
+
+                // Action Template Selector
+                const Text('Auto-Send WhatsApp Template', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  value: _selectedTemplateName,
+                  decoration: _inputDecoration('Select an Approved Template'),
+                  dropdownColor: Colors.white,
+                  style: const TextStyle(color: _textDark, fontSize: 13),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('None (Skip automated greeting)')),
+                    ...widget.templates.map((t) => DropdownMenuItem(
+                          value: t['name']?.toString(),
+                          child: Text('${t['name']} (${t['language']})', overflow: TextOverflow.ellipsis),
+                        )),
+                  ],
+                  onChanged: (v) {
+                    setState(() {
+                      _selectedTemplateName = v;
+                      final tmpl = widget.templates.firstWhere((t) => t['name'] == v, orElse: () => {});
+                      _selectedTemplateLanguage = tmpl['language']?.toString() ?? 'en_US';
+                      _updateVarCount();
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                // Variable Mapping Fields
+                if (_varCount > 0) ...[
+                  const Text('Template Variable Mapping', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
+                  const SizedBox(height: 6),
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.blueAccent.withValues(alpha: 0.1),
+                      color: const Color(0xFFF8FAFC),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.3)),
+                      border: Border.all(color: _borderColor),
                     ),
-                    child: const Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.info_outline_rounded, color: Colors.blueAccent, size: 18),
-                        SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'Meta Policy: Instant Form leads require an approved WhatsApp Template message first. If a chatbot is selected below, it will trigger automatically as soon as the lead replies.',
-                            style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                    child: Column(
+                      children: List.generate(_varCount, (i) {
+                        final varKey = '{{${i + 1}}}';
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 50,
+                                child: Text(varKey, style: const TextStyle(fontWeight: FontWeight.bold, color: AppTheme.secondaryColor)),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  value: _variableMapping[varKey],
+                                  decoration: _inputDecoration('Map from Lead field'),
+                                  dropdownColor: Colors.white,
+                                  style: const TextStyle(color: _textDark, fontSize: 13),
+                                  items: _leadFields
+                                      .map((f) => DropdownMenuItem(value: f['value'], child: Text(f['label']!)))
+                                      .toList(),
+                                  onChanged: (v) {
+                                    setState(() {
+                                      if (v != null) {
+                                        _variableMapping[varKey] = v;
+                                      } else {
+                                        _variableMapping.remove(varKey);
+                                      }
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
                           ),
-                        ),
-                      ],
+                        );
+                      }),
                     ),
                   ),
                   const SizedBox(height: 16),
                 ],
-                // Template dropdown
-                const Text('WhatsApp Greeting Template', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+
+                // Follow-up Chatbot Selector
+                const Text('Connect Follow-Up Chatbot (Optional)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
                 const SizedBox(height: 6),
                 DropdownButtonFormField<String>(
-                  initialValue: _selectedTemplateName,
-                  dropdownColor: AppTheme.cardColor,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: _inputDecoration('Select an approved template'),
-                  items: widget.templates.map((t) {
-                    final name = t['name']?.toString() ?? '';
-                    final vars = t['varCount'] ?? 0;
-                    return DropdownMenuItem<String>(
-                      value: name,
-                      child: Text('$name ($vars variables)'),
-                    );
-                  }).toList(),
-                  onChanged: (val) {
-                    if (val != null) {
-                      _selectedTemplateName = val;
-                      _updateTemplateVarCount(val);
-                    }
-                  },
-                ),
-                // Variable Mappings
-                if (_varCount > 0) ...[
-                  const SizedBox(height: 16),
-                  const Text('Template Variable Mappings', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  for (int i = 1; i <= _varCount; i++) _buildVarMappingRow(i.toString()),
-                ],
-                const SizedBox(height: 16),
-                // Follow-up Chatbot
-                const Text('Follow-up Chatbot (Optional)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
-                DropdownButtonFormField<String?>(
-                  initialValue: _selectedChatbotId,
-                  dropdownColor: AppTheme.cardColor,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: _inputDecoration('None (Template only)'),
+                  value: _selectedChatbotId,
+                  decoration: _inputDecoration('Select Chatbot flow'),
+                  dropdownColor: Colors.white,
+                  style: const TextStyle(color: _textDark, fontSize: 13),
                   items: [
-                    const DropdownMenuItem<String?>(value: null, child: Text('None (Template only)')),
-                    ...widget.chatbots.map((b) => DropdownMenuItem<String?>(
+                    const DropdownMenuItem(value: null, child: Text('No chatbot (Live agents handle reply)')),
+                    ...widget.chatbots.map((b) => DropdownMenuItem(
                           value: b['_id']?.toString(),
-                          child: Text(b['name']?.toString() ?? 'Chatbot'),
+                          child: Text(b['name']?.toString() ?? '', overflow: TextOverflow.ellipsis),
                         )),
                   ],
-                  onChanged: (val) => setState(() => _selectedChatbotId = val),
+                  onChanged: (v) => setState(() => _selectedChatbotId = v),
                 ),
                 const SizedBox(height: 16),
-                // Cooldown & Consent
+
+                // Cooldown Setting
                 Row(
                   children: [
-                    Expanded(
+                    const Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Cooldown (Days)', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                          const SizedBox(height: 4),
-                          TextFormField(
-                            initialValue: _cooldownDays.toString(),
-                            keyboardType: TextInputType.number,
-                            style: const TextStyle(color: Colors.white, fontSize: 13),
-                            decoration: _inputDecoration('7'),
-                            onChanged: (val) => _cooldownDays = int.tryParse(val) ?? 7,
-                          ),
+                          Text('Cooldown Period (Days)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textDark)),
+                          Text('Prevents repeated spam messages to the same lead within N days', style: TextStyle(fontSize: 11, color: _textMuted)),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('Require Opt-in Consent', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                        value: _requireConsent,
-                        activeColor: const Color(0xFF1877F2),
-                        onChanged: (val) => setState(() => _requireConsent = val ?? false),
+                    SizedBox(
+                      width: 80,
+                      child: TextFormField(
+                        initialValue: _cooldownDays.toString(),
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(color: _textDark),
+                        decoration: _inputDecoration('7'),
+                        onChanged: (v) => _cooldownDays = int.tryParse(v) ?? 7,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 24),
-                // Action Buttons
+
+                // Action buttons
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                      child: const Text('Cancel', style: TextStyle(color: _textMuted)),
                     ),
                     const SizedBox(width: 12),
                     FilledButton(
-                      onPressed: _saving ? null : _saveRule,
-                      style: FilledButton.styleFrom(backgroundColor: const Color(0xFF1877F2)),
+                      onPressed: _saving ? null : _submit,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.secondaryColor,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
                       child: _saving
                           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Text('Save Rule'),
+                          : Text(widget.existing != null ? 'Save Changes' : 'Create Rule'),
                     ),
                   ],
                 ),
@@ -667,62 +731,16 @@ class _MetaRuleEditorModalState extends State<_MetaRuleEditorModal> {
     );
   }
 
-  Widget _buildScopeChip(String label, String value) {
-    final selected = _adType == value;
-    return ChoiceChip(
-      label: Text(label, style: TextStyle(fontSize: 12, color: selected ? Colors.white : Colors.white60)),
-      selected: selected,
-      selectedColor: const Color(0xFF1877F2),
-      backgroundColor: Colors.white10,
-      onSelected: (_) => setState(() => _adType = value),
-    );
-  }
-
-  Widget _buildVarMappingRow(String varNum) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(color: Colors.white12, borderRadius: BorderRadius.circular(6)),
-            child: Text('{{$varNum}}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-          ),
-          const SizedBox(width: 12),
-          const Icon(Icons.arrow_forward_rounded, size: 14, color: Colors.white38),
-          const SizedBox(width: 12),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              initialValue: _variableMapping[varNum] ?? 'name',
-              dropdownColor: AppTheme.cardColor,
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-              decoration: _inputDecoration('Field'),
-              items: _leadFields.map((f) => DropdownMenuItem<String>(
-                    value: f['value'],
-                    child: Text(f['label']!),
-                  )).toList(),
-              onChanged: (val) {
-                if (val != null) {
-                  setState(() => _variableMapping[varNum] = val);
-                }
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   InputDecoration _inputDecoration(String hint) {
     return InputDecoration(
       hintText: hint,
-      hintStyle: const TextStyle(color: Colors.white30, fontSize: 12),
+      hintStyle: const TextStyle(color: _textMuted, fontSize: 13),
       filled: true,
-      fillColor: Colors.white.withValues(alpha: 0.05),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Colors.white12)),
-      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Colors.white12)),
-      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF1877F2))),
+      fillColor: const Color(0xFFF8FAFC),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: _borderColor)),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: _borderColor)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppTheme.primaryColor, width: 1.5)),
     );
   }
 }
