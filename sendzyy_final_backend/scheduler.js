@@ -536,6 +536,44 @@ function startWebhookRecoveryCron() {
  * @param {mongoose.Model} [RecipientModel] - Optional Recipient model
  * @returns {cron.ScheduledTask}
  */
+
+/**
+ * Daily cleanup of processed raw webhook logs (Runs daily at 03:00 AM)
+ * Deletes write-ahead logs that are already processed and older than 24h
+ * to prevent database bloat.
+ * @returns {cron.ScheduledTask}
+ */
+function startProcessedWebhookCleanupCron() {
+    return cron.schedule('0 3 * * *', async () => {
+        try {
+            const WebhookRawLog = mongoose.models.WebhookRawLog || mongoose.model('WebhookRawLog');
+            const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            const res = await WebhookRawLog.deleteMany({
+                status: 'processed',
+                createdAt: { $lt: oneDayAgo }
+            });
+                        if (res.deletedCount > 0) {
+                console.log(`[Scheduler] Cleaned up ${res.deletedCount} processed webhook raw log(s) older than 24h.`);
+            }
+
+            // Also purge soft-deleted notifications older than 3 days
+            try {
+                const Notification = mongoose.models.Notification || mongoose.model('Notification');
+                const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+                const notifRes = await Notification.deleteMany({
+                    isDeleted: true,
+                    updatedAt: { $lt: threeDaysAgo }
+                });
+                if (notifRes.deletedCount > 0) {
+                    console.log(`[Scheduler] Cleaned up ${notifRes.deletedCount} soft-deleted notification(s) older than 3 days.`);
+                }
+            } catch (_) {}
+        } catch (err) {
+            console.error('[Scheduler] Error cleaning up processed webhook logs:', err.message);
+        }
+    });
+}
+
 function startMetaReconciliationCron(TenantModel, RecipientModel) {
     return cron.schedule('30 2 * * *', async () => {
         try {
@@ -643,6 +681,8 @@ async function initScheduler(retryScheduler, ScheduledRetryPhase, Tenant, transp
 
     // Meta Analytics Daily Reconciliation cron: 02:30 UTC
     startMetaReconciliationCron(Tenant);
+    // Processed webhook raw logs daily cleanup: 03:00 AM
+    startProcessedWebhookCleanupCron();
 
     return task;
 }
@@ -655,6 +695,7 @@ module.exports = {
     startTokenExpiryWatcherCron,
     startWebhookRecoveryCron,
     startMetaReconciliationCron,
+    startProcessedWebhookCleanupCron,
 };
 
 

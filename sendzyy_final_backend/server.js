@@ -66,6 +66,8 @@ if (process.env.MONGODB_URI) {
             } catch (_) {
                 // Index may not exist — that's fine
             }
+            // Synchronize database performance & TTL indexes on startup
+            await syncDatabaseOptimizationIndexes();
         })
         .catch(err => console.error(' MongoDB connection error:', err));
 } else {
@@ -73,6 +75,56 @@ if (process.env.MONGODB_URI) {
 }
 
 //  Schemas 
+
+async function syncDatabaseOptimizationIndexes() {
+    try {
+        console.log('[Startup] Synchronizing database performance & TTL indexes...');
+        // 1. Messages: 15-day TTL index (1296000 seconds) + compound indexes
+        const msgCol = mongoose.connection.collection('messages');
+        try { await msgCol.createIndex({ timestamp: 1 }, { expireAfterSeconds: 1296000, background: true }); } catch (_) {}
+        try { await msgCol.createIndex({ tenantId: 1, contactId: 1, timestamp: -1 }, { background: true }); } catch (_) {}
+        try { await msgCol.createIndex({ tenantId: 1, timestamp: -1 }, { background: true }); } catch (_) {}
+
+        // 2. StatusMappings: 7-day TTL index (604800 seconds) + query index
+        const smCol = mongoose.connection.collection('statusmappings');
+        try { await smCol.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800, background: true }); } catch (_) {}
+        try { await smCol.createIndex({ tenantId: 1, campaignId: 1 }, { background: true }); } catch (_) {}
+
+        // 3. WebhookLogs: 7-day TTL index (604800 seconds)
+        const wlCol = mongoose.connection.collection('webhooklogs');
+        try { await wlCol.createIndex({ timestamp: 1 }, { expireAfterSeconds: 604800, background: true }); } catch (_) {}
+
+        // 4. WebhookRawLogs: 3-day TTL index (259200 seconds)
+        const wrlCol = mongoose.connection.collection('webhookrawlogs');
+        try { await wrlCol.dropIndex('receivedAt_1'); } catch (_) {}
+        try { await wrlCol.createIndex({ receivedAt: 1 }, { expireAfterSeconds: 259200, background: true }); } catch (_) {}
+
+        // 5. Notifications: compound index for tenant listing + 30-day TTL index (2592000 seconds)
+        const notifCol = mongoose.connection.collection('notifications');
+        try { await notifCol.createIndex({ tenantId: 1, createdAt: -1 }, { background: true }); } catch (_) {}
+        try { await notifCol.createIndex({ createdAt: 1 }, { expireAfterSeconds: 2592000, background: true }); } catch (_) {}
+
+        // 6. Recipients: 90-day TTL index (7776000 seconds) + backfill createdAt if missing
+        const recCol = mongoose.connection.collection('recipients');
+        try {
+            await recCol.updateMany(
+                { createdAt: { $exists: false } },
+                [{ $set: { createdAt: { $toDate: '$_id' } } }]
+            );
+        } catch (_) {}
+        try { await recCol.createIndex({ createdAt: 1 }, { expireAfterSeconds: 7776000, background: true }); } catch (_) {}
+
+        // 7. Conversations: compound indexes for high-speed sidebar listing
+        const convCol = mongoose.connection.collection('conversations');
+        try { await convCol.createIndex({ tenantId: 1, lastActive: -1 }, { background: true }); } catch (_) {}
+        try { await convCol.createIndex({ tenantId: 1, hasReply: 1, lastActive: -1 }, { background: true }); } catch (_) {}
+
+        console.log('[Startup] Database performance & TTL indexes synchronized successfully.');
+    } catch (err) {
+        console.warn('[Startup] Index synchronization notice:', err.message);
+    }
+}
+
 const tenantSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
@@ -258,6 +310,8 @@ const conversationSchema = new mongoose.Schema({
     hasReply: { type: Boolean, default: false },
 }, { timestamps: true });
 conversationSchema.index({ tenantId: 1, contactId: 1 }, { unique: true });
+conversationSchema.index({ tenantId: 1, lastActive: -1 });
+conversationSchema.index({ tenantId: 1, hasReply: 1, lastActive: -1 });
 const Conversation = mongoose.model('Conversation', conversationSchema);
 
 const messageSchema = new mongoose.Schema({
@@ -266,7 +320,7 @@ const messageSchema = new mongoose.Schema({
     text: String,
     isMe: Boolean,
     time: String,
-    timestamp: { type: Date, default: Date.now },
+    timestamp: { type: Date, default: Date.now, expires: 1296000 }, // TTL 15 days
     // Structured message metadata (optional — legacy docs without these fields remain readable)
     messageType: { type: String },          // 'text'|'template'|'image'|'video'|'audio'|'voice'|'document'|'sticker'|'location'|'contacts'|'reaction'|'interactive'|'unsupported'
     mediaUrl: { type: String },          // Meta mediaId for media messages
@@ -278,8 +332,13 @@ const messageSchema = new mongoose.Schema({
     replyContextPreview: { type: String, default: null }, // Snapshot of replied-to message text/preview
     status: { type: String, default: 'sent' }, // 'sent' | 'delivered' | 'read' | 'failed'
     errorDetails: { type: String },         // Why message failed
-    source: { type: String, default: null }, // 'chatbot' | 'chatbot_reply' | 'chatbot_trigger' | null (null = live chat)
+    source: { type: String, default: null },
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date, default: null },
 });
+messageSchema.index({ tenantId: 1, contactId: 1, timestamp: -1 });
+messageSchema.index({ tenantId: 1, timestamp: -1 });
+messageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 1296000 });
 const Message = mongoose.model('Message', messageSchema);
 
 const campaignSchema = new mongoose.Schema({
@@ -354,12 +413,14 @@ const recipientSchema = new mongoose.Schema({
     }],
     // Campaign template button click tracking
     clickedButtons: { type: [String], default: [] },   // deduped list of clicked button texts
-    buttonClicks: [{                                     // full click log with timestamps
+        buttonClicks: [{                                     // full click log with timestamps
         buttonText: { type: String },
         buttonId:   { type: String },
         clickedAt:  { type: Date, default: Date.now }
-    }]
-});
+    }],
+    createdAt: { type: Date, default: Date.now, expires: 7776000 } // TTL 90 days
+}, { timestamps: true });
+recipientSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
 recipientSchema.index({ campaignId: 1, phaseNumber: 1 });
 recipientSchema.index({ campaignId: 1, status: 1 });
 recipientSchema.index({ campaignId: 1, phaseNumber: 1, status: 1, 'retryHistory.phaseNumber': 1 });
@@ -466,8 +527,10 @@ const statusMappingSchema = new mongoose.Schema({
     tenantId: String,
     campaignId: String,
     to: String,
-    timestamp: { type: Date, default: Date.now },
+    timestamp: { type: Date, default: Date.now, expires: 604800 }, // TTL 7 days
 });
+statusMappingSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+statusMappingSchema.index({ tenantId: 1, campaignId: 1 });
 const StatusMapping = mongoose.model('StatusMapping', statusMappingSchema);
 
 const chatbotSchema = new mongoose.Schema({
@@ -520,7 +583,7 @@ const webhookLogSchema = new mongoose.Schema({
     tenantId: { type: String, required: true },
     sourceIp: String,
     httpStatus: Number,
-    timestamp: { type: Date, default: Date.now, expires: 2592000 }, // TTL 30 days
+    timestamp: { type: Date, default: Date.now, expires: 604800 }, // TTL 7 days
 });
 const WebhookLog = mongoose.model('WebhookLog', webhookLogSchema);
 
@@ -609,6 +672,7 @@ const notificationSchema = new mongoose.Schema({
 
 notificationSchema.index({ tenantId: 1, createdAt: -1 });
 notificationSchema.index({ tenantId: 1, isRead: 1, isDeleted: 1 });
+notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 }); // TTL 30 days
 
 const Notification = mongoose.model('Notification', notificationSchema);
 
@@ -3871,7 +3935,12 @@ app.put('/conversations/:contactId/avatar', authenticate, async (req, res) => {
 
 app.get('/conversations/:contactId/messages', authenticate, async (req, res) => {
     try {
-        const messages = await Message.find({ tenantId: req.user.tenantId, contactId: req.params.contactId })
+        const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+        const messages = await Message.find({ 
+            tenantId: req.user.tenantId, 
+            contactId: req.params.contactId,
+            timestamp: { $gte: fifteenDaysAgo }
+        })
             .sort({ timestamp: 1 }).lean();
         res.json(messages.map(m => ({
             id: m._id.toString(),
@@ -3890,6 +3959,8 @@ app.get('/conversations/:contactId/messages', authenticate, async (req, res) => 
             status: m.status || 'sent',
             errorDetails: m.errorDetails || null,
             source: m.source || null,
+            isDeleted: m.isDeleted === true,
+            deletedAt: m.deletedAt || null,
         })));
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch messages' });
@@ -7212,7 +7283,31 @@ webhookIngestionService.setHandler(async (body, ctx) => {
                 }
                 // ─────────────────────────────────────────────────────────────────────────
 
-                await chatbotEngineProcessMessage(tenantId, message, profileName, from, tenant);
+                // ── Customer Revoke: when a customer deletes their own message ──────
+                // Meta sends type "request_welcome" is for referrals; "revoke" is for customer-side deletes.
+                if (message.type === 'revoke') {
+                    const originalWamid = message.revoke?.original_message_id;
+                    if (originalWamid) {
+                        try {
+                            const revokeResult = await Message.findOneAndUpdate(
+                                { tenantId, wamid: originalWamid },
+                                { $set: { isDeleted: true, deletedAt: new Date(), text: 'This message was deleted' } },
+                                { new: true }
+                            );
+                            if (revokeResult) {
+                                console.log(`[Revoke] Customer deleted their msg (wamid: ${originalWamid}) for tenant ${tenantId}`);
+                                await broadcastMessages(tenantId, from);
+                                await broadcastConversations(tenantId);
+                            }
+                        } catch (revokeErr) {
+                            console.error('[Revoke] Error handling customer revoke webhook:', revokeErr.message);
+                        }
+                    }
+                    return; // Do not pass revoke events to chatbot engine
+                }
+                // ───────────────────────────────────────────────────────────────────────
+
+                                await chatbotEngineProcessMessage(tenantId, message, profileName, from, tenant);
             }
         }
     });
@@ -7302,7 +7397,12 @@ io.on('connection', (socket) => {
         try {
             const tenantId = socket.user && socket.user.tenantId;
             if (!tenantId || !contactId) return;
-            const messages = await Message.find({ tenantId, contactId })
+            const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+            const messages = await Message.find({ 
+                tenantId, 
+                contactId,
+                timestamp: { $gte: fifteenDaysAgo }
+            })
                 .sort({ timestamp: 1 }).lean();
             const formatted = messages.map(function (m) {
                 return {
@@ -7319,6 +7419,8 @@ io.on('connection', (socket) => {
                     wamid: m.wamid || null,
                     contextMessageId: m.contextMessageId || null,
                     replyContextPreview: m.replyContextPreview || null,
+                    isDeleted: m.isDeleted === true,
+                    deletedAt: m.deletedAt || null,
                 };
             });
             socket.emit('messages_' + contactId, formatted);
@@ -7334,7 +7436,9 @@ io.on('connection', (socket) => {
 async function broadcastConversations(tenantId) {
     try {
         const convs = await Conversation.find({ tenantId })
-            .sort({ lastActive: -1 }).lean();
+            .sort({ lastActive: -1 })
+            .limit(500)
+            .lean();
         const enriched = await enrichConversationsWithNames(tenantId, convs);
         const formatted = enriched.map(function (c) {
             return {
@@ -7352,7 +7456,12 @@ async function broadcastConversations(tenantId) {
 
 async function broadcastMessages(tenantId, contactId) {
     try {
-        const messages = await Message.find({ tenantId, contactId })
+        const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+        const messages = await Message.find({ 
+            tenantId, 
+            contactId,
+            timestamp: { $gte: fifteenDaysAgo }
+        })
             .sort({ timestamp: 1 }).lean();
         const formatted = messages.map(function (m) {
             return {
@@ -7372,6 +7481,8 @@ async function broadcastMessages(tenantId, contactId) {
                 status: m.status || 'sent',
                 errorDetails: m.errorDetails || null,
                 source: m.source || null,
+                isDeleted: m.isDeleted === true,
+                deletedAt: m.deletedAt || null,
             };
         });
         io.to(tenantId).emit("messages_" + contactId, formatted);

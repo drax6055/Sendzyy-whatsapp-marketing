@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 /**
  * WebhookRawLog Schema
  * Provides write-ahead persistence for incoming raw webhook payloads before acknowledging Meta with 200 OK.
- * 30-Day TTL (2,592,000s) matching Meta Business Manager reporting & audit window.
+ * 3-Day TTL (259,200s) for storage optimization; processed entries are additionally purged after 24h.
  */
 const webhookRawLogSchema = new mongoose.Schema({
     payload: { type: mongoose.Schema.Types.Mixed, required: true },
@@ -18,7 +18,7 @@ const webhookRawLogSchema = new mongoose.Schema({
     receivedAt: {
         type: Date,
         default: Date.now,
-        expires: 2592000 // 30 days TTL in seconds
+        expires: 259200 // 3 days TTL in seconds (reduced from 30 days)
     }
 }, { timestamps: true });
 
