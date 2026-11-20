@@ -484,7 +484,7 @@ class _CatalogSelectorContentState extends State<_CatalogSelectorContent> {
                             ),
                             const SizedBox(height: 4),
                             const Text(
-                              'Sync with Meta or connect a catalog by ID below.',
+                              'Click "Sync Meta" below to fetch your catalogs.',
                               style: TextStyle(
                                 fontSize: 12,
                                 color: Color(0xFF6B7280),
@@ -640,67 +640,42 @@ class _CatalogSelectorContentState extends State<_CatalogSelectorContent> {
 
               const Divider(height: 1, color: Color(0xFFE5E7EB)),
 
-              // Bottom Actions: + Add Catalog ID & Sync with Meta
+              // Bottom Action: Sync with Meta
               Padding(
                 padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          CatalogSelectorDropdown.showAddCatalogDialog(context);
-                        },
-                        icon: const Icon(Icons.add_rounded, size: 16),
-                        label: const Text(
-                          'Add Catalog ID',
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF374151),
-                          side: const BorderSide(color: Color(0xFFD1D5DB)),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: state.isSyncingCatalogs
+                        ? null
+                        : () {
+                            context
+                                .read<CatalogBloc>()
+                                .add(SyncCatalogsWithMeta());
+                            Navigator.of(context).pop();
+                          },
+                    icon: state.isSyncingCatalogs
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.sync_rounded, size: 16),
+                    label: Text(
+                      state.isSyncingCatalogs ? 'Syncing...' : 'Sync Meta',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primaryColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: state.isSyncingCatalogs
-                            ? null
-                            : () {
-                                context
-                                    .read<CatalogBloc>()
-                                    .add(SyncCatalogsWithMeta());
-                                Navigator.of(context).pop();
-                              },
-                        icon: state.isSyncingCatalogs
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.sync_rounded, size: 16),
-                        label: Text(
-                          state.isSyncingCatalogs ? 'Syncing...' : 'Sync Meta',
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.primaryColor,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ],

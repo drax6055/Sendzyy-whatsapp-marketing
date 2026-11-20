@@ -540,28 +540,9 @@ class _ConnectedCatalogBanner extends StatelessWidget {
                             ),
                           );
                         }),
-                        const DropdownMenuItem<String>(
-                          value: '__ADD_NEW__',
-                          child: Row(
-                            children: [
-                              Icon(Icons.add_circle_outline_rounded, size: 15, color: Color(0xFF2563EB)),
-                              SizedBox(width: 8),
-                              Text(
-                                '+ Connect Another Catalog ID...',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF2563EB),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
                       ],
                       onChanged: (val) {
-                        if (val == '__ADD_NEW__') {
-                          CatalogSelectorDropdown.showAddCatalogDialog(context);
-                        } else if (val != null && val != state.activeCatalogId) {
+                        if (val != null && val != state.activeCatalogId) {
                           context
                               .read<CatalogBloc>()
                               .add(SelectActiveCatalog(val));
