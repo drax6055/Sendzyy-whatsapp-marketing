@@ -843,26 +843,9 @@ class _CreateTemplatePageState extends State<CreateTemplatePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              'Header · Optional',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            TextButton.icon(
-              onPressed: () => _insertNextVariable(_headerController),
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text(
-                'Add variable',
-                style: TextStyle(fontSize: 12),
-              ),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                minimumSize: Size.zero,
-              ),
-            ),
-          ],
+        const Text(
+          'Header · Optional',
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         TextFormField(

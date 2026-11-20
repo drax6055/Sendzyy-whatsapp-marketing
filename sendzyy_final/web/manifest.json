@@ -1,11 +1,11 @@
 {
-    "name": "send_o",
-    "short_name": "send_o",
+    "name": "Sendzyy",
+    "short_name": "Sendzyy",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Powered by IIPL",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

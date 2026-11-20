@@ -431,7 +431,7 @@ class _DashboardShellState extends State<DashboardShell> {
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Row(
             children: [
-              Expanded(child: Image.asset('assets/images/logo.png')),
+              Expanded(child: Image.asset('assets/images/newlogo.png')),
               if (isDrawer)
                 IconButton(
                   icon: const Icon(Icons.close_rounded),

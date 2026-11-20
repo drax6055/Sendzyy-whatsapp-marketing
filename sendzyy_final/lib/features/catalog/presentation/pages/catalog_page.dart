@@ -406,19 +406,6 @@ class _ConnectedCatalogBanner extends StatelessWidget {
               if (!isMobile) ...[
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: () => CatalogSelectorDropdown.showAddCatalogDialog(context),
-                  icon: const Icon(Icons.add_rounded, size: 16),
-                  label: const Text('Add Catalog'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF374151),
-                    side: const BorderSide(color: Color(0xFFD1D5DB)),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
                   onPressed: state.isSyncingCatalogs
                       ? null
                       : () => context
@@ -447,49 +434,31 @@ class _ConnectedCatalogBanner extends StatelessWidget {
 
           if (isMobile) ...[
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => CatalogSelectorDropdown.showAddCatalogDialog(context),
-                    icon: const Icon(Icons.add_rounded, size: 16),
-                    label: const Text('Add Catalog', style: TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF374151),
-                      side: const BorderSide(color: Color(0xFFD1D5DB)),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                  ),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: state.isSyncingCatalogs
+                    ? null
+                    : () => context
+                        .read<CatalogBloc>()
+                        .add(SyncCatalogsWithMeta()),
+                icon: state.isSyncingCatalogs
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sync_rounded, size: 16),
+                label: Text(
+                    state.isSyncingCatalogs ? 'Syncing...' : 'Sync Meta',
+                    style: const TextStyle(fontSize: 12)),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.primaryColor,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: state.isSyncingCatalogs
-                        ? null
-                        : () => context
-                            .read<CatalogBloc>()
-                            .add(SyncCatalogsWithMeta()),
-                    icon: state.isSyncingCatalogs
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.sync_rounded, size: 16),
-                    label: Text(
-                        state.isSyncingCatalogs ? 'Syncing...' : 'Sync Meta',
-                        style: const TextStyle(fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppTheme.primaryColor,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ],
 

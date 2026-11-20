@@ -115,9 +115,6 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
   }
-      }
-    }
-  }
 
   Future<void> _loadReadContactTimestamps() async {
     try {
@@ -1217,6 +1214,7 @@ class _ChatPageState extends State<ChatPage> {
                       : state.messages;
 
                   final reversedMessages = visibleMessages.reversed.toList();
+                  final hasMessages = reversedMessages.isNotEmpty;
                   return ListView.builder(
                     controller: _messagesScrollController,
                     reverse: true,
