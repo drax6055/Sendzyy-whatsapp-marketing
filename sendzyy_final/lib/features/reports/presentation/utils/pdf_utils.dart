@@ -44,7 +44,7 @@ class PdfUtils {
       totalFailed += (c['failureCount'] as num? ?? 0).toInt();
     }
 
-    const primaryGreen = PdfColor.fromInt(0xFF25D366);
+    const primaryGreen = PdfColor.fromInt(0xFF059669);
 
     pdf.addPage(
       pw.MultiPage(
@@ -195,7 +195,7 @@ class PdfUtils {
     required List<Map<String, dynamic>> recipients,
   }) async {
     final pdf = pw.Document();
-    const primaryGreen = PdfColor.fromInt(0xFF25D366);
+    const primaryGreen = PdfColor.fromInt(0xFF059669);
 
     final template = campaign['template'] ?? 'N/A';
     final timestamp = campaign['timestamp'];
@@ -523,7 +523,7 @@ class PdfUtils {
     required Map<String, dynamic> report,
   }) async {
     final pdf = pw.Document();
-    const primaryGreen = PdfColor.fromInt(0xFF25D366);
+    const primaryGreen = PdfColor.fromInt(0xFF059669);
 
     final totalRecipients = (report['totalRecipients'] as num?)?.toInt() ?? 0;
     final cumulativeSuccess = (report['cumulativeSuccess'] as num?)?.toInt() ?? 0;

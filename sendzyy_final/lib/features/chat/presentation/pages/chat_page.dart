@@ -677,7 +677,7 @@ class _ChatPageState extends State<ChatPage> {
                                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                   decoration: BoxDecoration(
                                     color: (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
-                                        ? const Color(0xFF128C7E).withValues(alpha: 0.1)
+                                        ? const Color(0xFF10B981).withValues(alpha: 0.1)
                                         : Colors.amber.withValues(alpha: 0.15),
                                     borderRadius: BorderRadius.circular(4),
                                   ),
@@ -690,7 +690,7 @@ class _ChatPageState extends State<ChatPage> {
                                             : Icons.person_off_outlined,
                                         size: 11,
                                         color: (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
-                                            ? const Color(0xFF128C7E)
+                                            ? const Color(0xFF10B981)
                                             : Colors.amber.shade900,
                                       ),
                                       const SizedBox(width: 4),
@@ -702,7 +702,7 @@ class _ChatPageState extends State<ChatPage> {
                                           fontSize: 10,
                                           fontWeight: FontWeight.w600,
                                           color: (conv['assignedToName'] != null && (conv['assignedToName'] as String).isNotEmpty)
-                                              ? const Color(0xFF128C7E)
+                                              ? const Color(0xFF10B981)
                                               : Colors.amber.shade900,
                                         ),
                                       ),
@@ -852,10 +852,10 @@ class _ChatPageState extends State<ChatPage> {
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                color: const Color(0xFF10B981).withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.person_outline, color: Color(0xFF128C7E), size: 22),
+              child: const Icon(Icons.person_outline, color: Color(0xFF10B981), size: 22),
             ),
             const SizedBox(width: 12),
             const Text('Edit Contact Name', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
@@ -881,7 +881,7 @@ class _ChatPageState extends State<ChatPage> {
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: Color(0xFF128C7E), width: 2),
+                  borderSide: const BorderSide(color: Color(0xFF10B981), width: 2),
                 ),
               ),
               onSubmitted: (val) {
@@ -900,7 +900,7 @@ class _ChatPageState extends State<ChatPage> {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF128C7E),
+              backgroundColor: const Color(0xFF10B981),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
@@ -1045,20 +1045,20 @@ class _ChatPageState extends State<ChatPage> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                                color: const Color(0xFF10B981).withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  const Icon(Icons.person_outline, size: 12, color: Color(0xFF128C7E)),
+                                  const Icon(Icons.person_outline, size: 12, color: Color(0xFF10B981)),
                                   const SizedBox(width: 4),
                                   Text(
                                     'Assigned to: ${contact['assignedToName']}',
                                     style: const TextStyle(
                                       fontSize: 11,
                                       fontWeight: FontWeight.w600,
-                                      color: Color(0xFF128C7E),
+                                      color: Color(0xFF10B981),
                                     ),
                                   ),
                                 ],

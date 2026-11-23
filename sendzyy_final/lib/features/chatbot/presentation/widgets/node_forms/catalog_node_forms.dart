@@ -66,7 +66,7 @@ class _CatalogMessageNodeFormState extends State<CatalogMessageNodeForm> {
         _NodeTypeHeader(
           icon: Icons.storefront_rounded,
           label: 'Catalog Message',
-          color: const Color(0xFF25D366),
+          color: const Color(0xFF059669),
           description: 'Sends the full catalog with a "View Catalog" button.',
         ),
         const SizedBox(height: 16),

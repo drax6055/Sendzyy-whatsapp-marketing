@@ -103,8 +103,8 @@ class _UpdateMessagePageState extends State<UpdateMessagePage> {
                         decoration: const BoxDecoration(
                           gradient: LinearGradient(
                             colors: [
-                              Color(0xFF25D366),
-                              Color(0xFF128C7E),
+                              Color(0xFF059669),
+                              Color(0xFF10B981),
                             ],
                           ),
                         ),
@@ -120,12 +120,12 @@ class _UpdateMessagePageState extends State<UpdateMessagePage> {
                               Container(
                                 padding: const EdgeInsets.all(16),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF25D366).withValues(alpha: 0.1),
+                                  color: const Color(0xFF059669).withValues(alpha: 0.1),
                                   shape: BoxShape.circle,
                                 ),
                                 child: const Icon(
                                   Icons.security_update_good_rounded,
-                                  color: Color(0xFF128C7E),
+                                  color: Color(0xFF10B981),
                                   size: 40,
                                 ),
                               ),
@@ -234,7 +234,7 @@ class _UpdateMessagePageState extends State<UpdateMessagePage> {
                                   ),
                                   focusedBorder: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(14),
-                                    borderSide: const BorderSide(color: Color(0xFF25D366), width: 2),
+                                    borderSide: const BorderSide(color: Color(0xFF059669), width: 2),
                                   ),
                                 ),
                               ),
@@ -247,8 +247,8 @@ class _UpdateMessagePageState extends State<UpdateMessagePage> {
                                 child: ElevatedButton(
                                   onPressed: _isLoading ? null : _submitForm,
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF25D366),
-                                    disabledBackgroundColor: const Color(0xFF25D366).withValues(alpha: 0.5),
+                                    backgroundColor: const Color(0xFF059669),
+                                    disabledBackgroundColor: const Color(0xFF059669).withValues(alpha: 0.5),
                                     foregroundColor: Colors.white,
                                     elevation: 0,
                                     shape: RoundedRectangleBorder(

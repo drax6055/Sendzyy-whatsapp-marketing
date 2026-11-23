@@ -88,7 +88,7 @@ class CatalogReportExportHelper {
     }
 
     final pdf = pw.Document();
-    const primaryGreen = PdfColor.fromInt(0xFF25D366);
+    const primaryGreen = PdfColor.fromInt(0xFF059669);
     const darkSlate = PdfColor.fromInt(0xFF1A1D1E);
 
     // Compute Executive KPIs

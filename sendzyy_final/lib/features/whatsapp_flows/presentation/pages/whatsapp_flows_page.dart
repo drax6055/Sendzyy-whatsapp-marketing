@@ -133,7 +133,7 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
           children: [
-            const Icon(Icons.send_rounded, color: Color(0xFF25D366)),
+            const Icon(Icons.send_rounded, color: Color(0xFF059669)),
             const SizedBox(width: 8),
             Text('Send Flow: ${flow.name}', style: const TextStyle(fontSize: 16)),
           ],
@@ -187,7 +187,7 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
             style: ElevatedButton.styleFrom(
               minimumSize: Size.zero,
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-              backgroundColor: const Color(0xFF25D366),
+              backgroundColor: const Color(0xFF059669),
               foregroundColor: Colors.white,
             ),
             child: const Text('Send Now'),
@@ -779,7 +779,7 @@ class _WhatsAppFlowsPageState extends State<WhatsAppFlowsPage> with SingleTicker
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(110, 36),
                     padding: const EdgeInsets.symmetric(horizontal: 14),
-                    backgroundColor: const Color(0xFF25D366),
+                    backgroundColor: const Color(0xFF059669),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     elevation: 0,

@@ -267,7 +267,7 @@ class _FlowPickerDialogState extends State<FlowPickerDialog> {
             style: ElevatedButton.styleFrom(
               minimumSize: Size.zero,
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-              backgroundColor: const Color(0xFF25D366),
+              backgroundColor: const Color(0xFF059669),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),

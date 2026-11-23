@@ -232,7 +232,7 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                       padding: const EdgeInsets.symmetric(vertical: 2),
                       child: Row(
                         children: [
-                          const Icon(Icons.check_circle_outline, size: 14, color: Color(0xFF25D366)),
+                          const Icon(Icons.check_circle_outline, size: 14, color: Color(0xFF059669)),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
@@ -330,7 +330,7 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
               style: ElevatedButton.styleFrom(
                 minimumSize: Size.zero,
                 padding: EdgeInsets.symmetric(horizontal: isDesktop ? 16 : 12, vertical: 8),
-                backgroundColor: const Color(0xFF25D366),
+                backgroundColor: const Color(0xFF059669),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
@@ -388,7 +388,7 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF25D366).withValues(alpha: 0.12),
+                          color: const Color(0xFF059669).withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: const Text(
@@ -482,7 +482,7 @@ class _CreateFlowPageState extends State<CreateFlowPage> {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Color(0xFF25D366), width: 1.5),
+        borderSide: const BorderSide(color: Color(0xFF059669), width: 1.5),
       ),
     );
   }

@@ -552,23 +552,23 @@ class _ChatbotCard extends StatelessWidget {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF128C7E).withValues(alpha: 0.1),
+                        color: const Color(0xFF10B981).withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(4),
                         border: Border.all(
-                          color: const Color(0xFF128C7E).withValues(alpha: 0.3),
+                          color: const Color(0xFF10B981).withValues(alpha: 0.3),
                         ),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.person_outline, size: 12, color: Color(0xFF128C7E)),
+                          const Icon(Icons.person_outline, size: 12, color: Color(0xFF10B981)),
                           const SizedBox(width: 4),
                           Text(
                             chatbot.createdByName!.trim(),
                             style: const TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              color: Color(0xFF128C7E),
+                              color: Color(0xFF10B981),
                             ),
                           ),
                         ],

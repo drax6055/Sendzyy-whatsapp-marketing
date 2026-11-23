@@ -430,8 +430,8 @@ class _MyAppState extends State<MyApp> {
                       decoration: const BoxDecoration(
                         gradient: LinearGradient(
                           colors: [
-                            Color(0xFF25D366),
-                            Color(0xFF128C7E),
+                            Color(0xFF059669),
+                            Color(0xFF10B981),
                           ],
                         ),
                       ),
@@ -443,12 +443,12 @@ class _MyAppState extends State<MyApp> {
                           Container(
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF25D366).withValues(alpha: 0.1),
+                              color: const Color(0xFF059669).withValues(alpha: 0.1),
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(
                               Icons.security_update_good_rounded,
-                              color: Color(0xFF128C7E),
+                              color: Color(0xFF10B981),
                               size: 40,
                             ),
                           ),
@@ -487,7 +487,7 @@ class _MyAppState extends State<MyApp> {
                               children: [
                                 const Icon(
                                   Icons.info_outline_rounded,
-                                  color: Color(0xFF075E54),
+                                  color: Color(0xFF064E3B),
                                   size: 20,
                                 ),
                                 const SizedBox(width: 12),
@@ -496,7 +496,7 @@ class _MyAppState extends State<MyApp> {
                                     'Your session will be cleared and the app will reload to ensure a smooth transition.',
                                     style: TextStyle(
                                       fontSize: 12,
-                                      color: const Color(0xFF075E54).withValues(alpha: 0.8),
+                                      color: const Color(0xFF064E3B).withValues(alpha: 0.8),
                                       fontWeight: FontWeight.w500,
                                       height: 1.4,
                                     ),
@@ -516,7 +516,7 @@ class _MyAppState extends State<MyApp> {
                                 webClearStorageAndReload();
                               },
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF25D366),
+                                backgroundColor: const Color(0xFF059669),
                                 foregroundColor: Colors.white,
                                 elevation: 0,
                                 shape: RoundedRectangleBorder(

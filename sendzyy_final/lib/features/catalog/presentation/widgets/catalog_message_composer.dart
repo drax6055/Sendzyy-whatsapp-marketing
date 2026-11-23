@@ -149,7 +149,7 @@ class _CatalogMessageComposerState extends State<CatalogMessageComposer> {
             children: [
               _ComposerInfoBanner(
                 icon: Icons.storefront_rounded,
-                color: const Color(0xFF25D366),
+                color: const Color(0xFF059669),
                 title: 'Catalog Message',
                 description:
                     'Sends a message with a "View Catalog" button that allows customers to browse your full product inventory on WhatsApp.',

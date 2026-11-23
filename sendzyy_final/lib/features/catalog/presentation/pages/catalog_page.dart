@@ -691,7 +691,7 @@ class _HelpCard extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF25D366), Color(0xFF128C7E)],
+          colors: [Color(0xFF059669), Color(0xFF10B981)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -1288,7 +1288,7 @@ class _SendMessagesTabState extends State<_SendMessagesTab> {
   int _selectedComposer = 0;
 
   final _composerLabels = [
-    (icon: Icons.storefront_rounded, label: 'Catalog Msg', color: const Color(0xFF25D366)),
+    (icon: Icons.storefront_rounded, label: 'Catalog Msg', color: const Color(0xFF059669)),
     (icon: Icons.inventory_2_outlined, label: 'Single Product', color: const Color(0xFF06B6D4)),
     (icon: Icons.grid_view_rounded, label: 'Multi-Product', color: const Color(0xFF6366F1)),
     (icon: Icons.view_carousel_rounded, label: 'Carousel', color: const Color(0xFF7C3AED)),

@@ -45,7 +45,7 @@ class FlowMobilePreview extends StatelessWidget {
           children: [
             // WhatsApp Flow Header & Status Bar
             Container(
-              color: const Color(0xFF075E54),
+              color: const Color(0xFF064E3B),
               padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
               child: SafeArea(
                 bottom: false,
@@ -172,7 +172,7 @@ class FlowMobilePreview extends StatelessWidget {
                       onPressed: () {},
                       style: ElevatedButton.styleFrom(
                         minimumSize: Size.zero,
-                        backgroundColor: const Color(0xFF25D366),
+                        backgroundColor: const Color(0xFF059669),
                         foregroundColor: Colors.white,
                         elevation: 0,
                         shape: RoundedRectangleBorder(
@@ -272,7 +272,7 @@ class FlowMobilePreview extends StatelessWidget {
                         child: Row(
                           children: [
                             const Icon(Icons.radio_button_unchecked,
-                                size: 15, color: Color(0xFF25D366)),
+                                size: 15, color: Color(0xFF059669)),
                             const SizedBox(width: 8),
                             Expanded(child: Text(opt, style: const TextStyle(fontSize: 11.5))),
                           ],
@@ -289,7 +289,7 @@ class FlowMobilePreview extends StatelessWidget {
                         child: Row(
                           children: [
                             const Icon(Icons.check_box_outline_blank_rounded,
-                                size: 15, color: Color(0xFF25D366)),
+                                size: 15, color: Color(0xFF059669)),
                             const SizedBox(width: 8),
                             Expanded(child: Text(opt, style: const TextStyle(fontSize: 11.5))),
                           ],
@@ -314,7 +314,7 @@ class FlowMobilePreview extends StatelessWidget {
           ] else if (field.type == 'opt_in') ...[
             Row(
               children: [
-                const Icon(Icons.check_box_rounded, size: 16, color: Color(0xFF25D366)),
+                const Icon(Icons.check_box_rounded, size: 16, color: Color(0xFF059669)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
