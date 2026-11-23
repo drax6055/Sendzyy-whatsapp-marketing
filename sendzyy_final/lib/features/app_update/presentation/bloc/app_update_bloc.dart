@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:open_file/open_file.dart';
 import 'package:iFloraBuzz/features/app_update/data/services/app_update_service.dart';
@@ -80,8 +81,18 @@ class AppUpdateBloc extends Bloc<AppUpdateEvent, AppUpdateState> {
         apkFile: apkFile,
       ));
     } catch (e) {
+      String errorMessage = 'Download failed. Please check your connection and try again.';
+      if (e is DioException) {
+        if (e.response?.statusCode == 404) {
+          errorMessage = 'The update package is currently not available on the server (404). Please try again later.';
+        } else if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout) {
+          errorMessage = 'Connection timed out while downloading the update. Please check your internet connection.';
+        } else if (e.message != null && e.message!.isNotEmpty) {
+          errorMessage = 'Download failed: ${e.message}';
+        }
+      }
       emit(AppUpdateError(
-        'Download failed: $e',
+        errorMessage,
         updateInfo: event.updateInfo,
       ));
     }
