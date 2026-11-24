@@ -245,8 +245,8 @@ class _LoginPageState extends State<LoginPage> {
                                 Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 16),
                                   child: Image.asset(
-                                    'assets/images/logo.png',
-                                    height: 64,
+                                    'assets/images/newlogo.png',
+                                    height: 100,
                                   ),
                                 ),
                                 const SizedBox(height: 24),

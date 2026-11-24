@@ -211,7 +211,7 @@ class _RegisterPageState extends State<RegisterPage> {
                             children: [
                               Padding(
                                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                                child: Image.asset('assets/images/logo.png', height: 64),
+                                child: Image.asset('assets/images/newlogo.png', height: 100),
                               ),
                               const SizedBox(height: 8),
                               const Text(
